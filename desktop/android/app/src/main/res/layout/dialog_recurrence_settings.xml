@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0f172a"
+    android:padding="16dp">
+
+    <!-- Header bar -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="16dp">
+
+        <ImageView
+            android:id="@+id/btn_recurrence_back"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:src="@android:drawable/ic_menu_revert"
+            android:tint="#f1f5f9"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:contentDescription="Back" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Yinelenir"
+            android:textColor="#f1f5f9"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:layout_toEndOf="@+id/btn_recurrence_back"
+            android:layout_marginStart="16dp"
+            android:layout_centerVertical="true" />
+
+        <TextView
+            android:id="@+id/btn_recurrence_done"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Bitti"
+            android:textColor="#38bdf8"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:padding="8dp"
+            android:clickable="true"
+            android:focusable="true" />
+    </RelativeLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Her"
+                android:textColor="#94a3b8"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <!-- Count + Interval Period -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:orientation="horizontal"
+                android:layout_marginBottom="16dp">
+
+                <EditText
+                    android:id="@+id/et_recurrence_count"
+                    android:layout_width="64dp"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/recurrence_input_bg"
+                    android:inputType="number"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:textSize="16sp"
+                    android:text="1"
+                    android:layout_marginEnd="8dp" />
+
+                <Spinner
+                    android:id="@+id/spinner_recurrence_period"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/recurrence_input_bg"
+                    android:textColor="#f1f5f9"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp" />
+            </LinearLayout>
+
+            <!-- Weekdays Row -->
+            <LinearLayout
+                android:id="@+id/layout_recurrence_days"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:id="@+id/day_mon"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="P"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_tue"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="S"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_wed"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="Ç"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_thu"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="P"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_fri"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="C"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_sat"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="C"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+
+                <TextView
+                    android:id="@+id/day_sun"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:text="P"
+                    android:gravity="center"
+                    android:textColor="#f1f5f9"
+                    android:background="@drawable/recurrence_day_unselected"
+                    android:textSize="14sp"
+                    android:layout_margin="3dp" />
+            </LinearLayout>
+
+            <!-- Set Time Box -->
+            <TextView
+                android:id="@+id/box_recurrence_time"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/recurrence_input_bg"
+                android:text="Saati ayarlayın"
+                android:textColor="#94a3b8"
+                android:textSize="16sp"
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:layout_marginBottom="16dp"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Başlangıç zamanı"
+                android:textColor="#94a3b8"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <!-- Start Date Box -->
+            <TextView
+                android:id="@+id/box_recurrence_start_date"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/recurrence_input_bg"
+                android:text="Tarih seçin"
+                android:textColor="#f1f5f9"
+                android:textSize="16sp"
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:layout_marginBottom="16dp"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Bitiş"
+                android:textColor="#94a3b8"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <!-- End Options RadioGroup -->
+            <RadioGroup
+                android:id="@+id/rg_recurrence_end"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/rb_end_never"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:text="Hiçbir zaman"
+                    android:textColor="#f1f5f9"
+                    android:textSize="16sp"
+                    android:checked="true"
+                    android:buttonTint="#38bdf8" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <RadioButton
+                        android:id="@+id/rb_end_date"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:text="Şu tarihte: "
+                        android:textColor="#f1f5f9"
+                        android:textSize="16sp"
+                        android:buttonTint="#38bdf8" />
+
+                    <TextView
+                        android:id="@+id/box_recurrence_end_date"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/recurrence_input_bg"
+                        android:text="Tarih seçin"
+                        android:textColor="#94a3b8"
+                        android:textSize="15sp"
+                        android:gravity="center_vertical"
+                        android:paddingStart="12dp"
+                        android:clickable="false"
+                        android:focusable="true" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <RadioButton
+                        android:id="@+id/rb_end_count"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:text="Yinele: "
+                        android:textColor="#f1f5f9"
+                        android:textSize="16sp"
+                        android:buttonTint="#38bdf8" />
+
+                    <EditText
+                        android:id="@+id/et_recurrence_end_count"
+                        android:layout_width="64dp"
+                        android:layout_height="40dp"
+                        android:background="@drawable/recurrence_input_bg"
+                        android:inputType="number"
+                        android:gravity="center"
+                        android:textColor="#f1f5f9"
+                        android:textSize="15sp"
+                        android:text="13"
+                        android:layout_marginEnd="8dp"
+                        android:focusable="false" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="tekrar"
+                        android:textColor="#94a3b8"
+                        android:textSize="15sp" />
+                </LinearLayout>
+            </RadioGroup>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/quick_add_card_bg"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none"
+        android:overScrollMode="never">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="🧾 Fiş Oluştur (Harcama Kaydı)"
+                android:textColor="#ffffff"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="12dp" />
+
+            <TextView
+                android:id="@+id/tv_receipt_items"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Seçili ürün bulunmamaktadır."
+                android:textColor="#9ca3af"
+                android:textSize="12sp"
+                android:layout_marginBottom="12dp"
+                android:background="#1e293b"
+                android:padding="8dp" />
+
+            <EditText
+                android:id="@+id/receipt_market_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:hint="Alışveriş yapılan yer (Bim, Migros vb.)"
+                android:textColorHint="#4b5563"
+                android:textColor="#ffffff"
+                android:textSize="15sp"
+                android:layout_marginBottom="12dp"
+                android:inputType="textCapSentences"
+                android:minHeight="40dp" />
+
+            <Spinner
+                android:id="@+id/receipt_source_spinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:minHeight="40dp" />
+
+            <Spinner
+                android:id="@+id/receipt_installment_spinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:minHeight="40dp" />
+
+            <EditText
+                android:id="@+id/receipt_amount_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:hint="Toplam Tutar (TL)"
+                android:textColorHint="#4b5563"
+                android:textColor="#ffffff"
+                android:textSize="15sp"
+                android:layout_marginBottom="16dp"
+                android:inputType="numberDecimal"
+                android:minHeight="40dp" />
+
+            <TextView
+                android:id="@+id/btn_save_receipt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#10b981"
+                android:gravity="center"
+                android:text="Fişi Onayla ve Listeyi Temizle"
+                android:textColor="#ffffff"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:padding="12dp"
+                android:clickable="true"
+                android:focusable="true" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

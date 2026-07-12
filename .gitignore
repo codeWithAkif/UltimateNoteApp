@@ -1,0 +1,61 @@
+# ============================================================
+#  UltimateNoteTaking — kök .gitignore
+# ============================================================
+
+# --- Bağımlılıklar ---
+node_modules/
+**/node_modules/
+
+# --- Derleme çıktıları (web / electron) ---
+dist/
+dist-ssr/
+dist-packaged/
+build/
+*.local
+
+# --- Loglar ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+media_debug.txt
+
+# --- Editör / IDE ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Android (Capacitor / Gradle) ---
+desktop/android/.gradle/
+desktop/android/build/
+desktop/android/.idea/
+desktop/android/.kotlin/
+desktop/android/captures/
+desktop/android/local.properties
+desktop/android/app/build/
+desktop/android/**/build/
+*.apk
+*.aab
+
+# --- Android imzalama anahtarları (ASLA commit'lenmemeli) ---
+*.keystore
+*.jks
+keystore.properties
+
+# --- Ortam değişkenleri / gizli anahtarlar ---
+.env
+.env.*
+!.env.example
+secrets.*
+
+# --- Geçici / çalışma dosyaları ---
+scratch/
+*.tmp

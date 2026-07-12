@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/quick_add_card_bg"
+    android:orientation="vertical"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="16dp"
+    android:paddingBottom="12dp">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none"
+        android:overScrollMode="never">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <EditText
+                android:id="@+id/quick_add_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:hint="Yeni görev"
+                android:textColorHint="#4b5563"
+                android:textColor="#ffffff"
+                android:textSize="18sp"
+                android:imeOptions="actionNext"
+                android:inputType="textCapSentences"
+                android:maxLines="4"
+                android:minLines="1" />
+
+            <EditText
+                android:id="@+id/quick_add_detail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:hint="Ayrıntı ekle"
+                android:textColorHint="#4b5563"
+                android:textColor="#9ca3af"
+                android:textSize="14sp"
+                android:layout_marginTop="6dp"
+                android:imeOptions="actionDone"
+                android:inputType="textCapSentences"
+                android:maxLines="4"
+                android:minLines="1" />
+
+            <LinearLayout
+                android:id="@+id/datetime_badge_container"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:background="@drawable/datetime_badge_bg"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tv_datetime_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Bugün, 12:00"
+                    android:textColor="#38bdf8"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btn_clear_datetime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="✕"
+                    android:textColor="#ef4444"
+                    android:textSize="12sp"
+                    android:paddingStart="8dp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true">
+
+            <ImageView
+                android:id="@+id/icon_menu"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_menu_icon"
+                android:layout_marginEnd="20dp"
+                android:contentDescription="Menu" />
+
+            <ImageView
+                android:id="@+id/icon_clock"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_clock_icon"
+                android:layout_marginEnd="20dp"
+                android:contentDescription="Clock" />
+
+            <ImageView
+                android:id="@+id/icon_star"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_star_icon"
+                android:contentDescription="Star" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/btn_save"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:text="Kaydet"
+            android:textColor="#64748b"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:clickable="false"
+            android:focusable="true"
+            android:padding="8dp" />
+    </RelativeLayout>
+</LinearLayout>

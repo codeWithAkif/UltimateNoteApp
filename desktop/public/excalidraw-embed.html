@@ -1,0 +1,200 @@
+<!DOCTYPE html> 
+<html> 
+  <head> 
+    <meta charset="utf-8" /> 
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>Excalidraw Embed</title> 
+    <script src="./react.production.min.js"></script> 
+    <script src="./react-dom.production.min.js"></script> 
+    <script src="./excalidraw.production.min.js"></script> 
+    <style> 
+      * { margin: 0; padding: 0; box-sizing: border-box; } 
+      body { 
+        overflow: hidden; 
+        background-color: #121212; 
+      } 
+      #app { 
+        width: 100vw; 
+        height: 100vh; 
+      } 
+    </style> 
+  </head> 
+  <body> 
+    <div id="app"></div> 
+    <script> 
+      try { 
+        localStorage.setItem('excalidraw-theme', 'dark'); 
+      } catch (e) {} 
+       
+      var excalidrawAPI = null; 
+      var lastSentJson = ""; 
+      var isReady = false; 
+ 
+      var App = function() { 
+        var apiRef = React.useRef(null); 
+        var [sceneData, setSceneData] = React.useState({ 
+          path: "", 
+          elements: [], 
+          appState: { 
+            theme: "dark",
+            viewBackgroundColor: "#ffffff"
+          } 
+        }); 
+ 
+        React.useEffect(function() { 
+          var handleMessage = function(e) { 
+            console.log('IFRAME RECEIVED MESSAGE:', e.data);
+            if (!e.data) return; 
+
+            if (e.data.type === 'ZOOM_IN' && excalidrawAPI) {
+              var currentAppState = excalidrawAPI.getAppState ? excalidrawAPI.getAppState() : {};
+              var currentZoom = currentAppState.zoom ? currentAppState.zoom.value : 1;
+              var nextZoom = Math.min(5, currentZoom + 0.15);
+              excalidrawAPI.updateScene({
+                appState: { zoom: { value: nextZoom } }
+              });
+              return;
+            }
+            if (e.data.type === 'ZOOM_OUT' && excalidrawAPI) {
+              var currentAppState = excalidrawAPI.getAppState ? excalidrawAPI.getAppState() : {};
+              var currentZoom = currentAppState.zoom ? currentAppState.zoom.value : 1;
+              var nextZoom = Math.max(0.1, currentZoom - 0.15);
+              excalidrawAPI.updateScene({
+                appState: { zoom: { value: nextZoom } }
+              });
+              return;
+            }
+            if (e.data.type === 'RESET_ZOOM' && excalidrawAPI) {
+              excalidrawAPI.updateScene({
+                appState: { zoom: { value: 1 } }
+              });
+              return;
+            }
+
+            if (e.data.type !== 'LOAD_DATA') return; 
+             
+            var path = e.data.path || "default"; 
+            var rawAppState = e.data.appState || {}; 
+            var viewBg = rawAppState.viewBackgroundColor || "#ffffff";
+            console.log('IFRAME viewBg before fix:', viewBg);
+            if (viewBg === "#121214" || viewBg === "#121212" || viewBg === "#000000") {
+               viewBg = "#ffffff"; 
+            }
+            console.log('IFRAME viewBg after fix:', viewBg);
+ 
+            var incomingJson = JSON.stringify({ 
+              elements: e.data.elements || [], 
+              appState: rawAppState 
+            }); 
+ 
+            setSceneData({ 
+              path: path, 
+              elements: e.data.elements || [], 
+              appState: Object.assign({}, rawAppState, { 
+                theme: "dark",
+                viewBackgroundColor: viewBg
+              }) 
+            }); 
+ 
+            lastSentJson = incomingJson; 
+ 
+            if (excalidrawAPI) { 
+              var currentAppState = excalidrawAPI.getAppState ? excalidrawAPI.getAppState() : {}; 
+              excalidrawAPI.updateScene({ 
+                elements: e.data.elements || [], 
+                appState: Object.assign({}, currentAppState, rawAppState, { 
+                  theme: "dark",
+                  viewBackgroundColor: viewBg
+                }) 
+              }); 
+            } 
+          }; 
+ 
+          window.addEventListener('message', handleMessage); 
+          return function() { 
+            window.removeEventListener('message', handleMessage); 
+          }; 
+        }, []); 
+ 
+        var handleRef = React.useCallback(function(api) { 
+          if (!api || excalidrawAPI === api) return; 
+          excalidrawAPI = api; 
+          apiRef.current = api; 
+          isReady = true; 
+ 
+          setTimeout(function() { 
+            var currentAppState = api.getAppState ? api.getAppState() : {}; 
+            api.updateScene({ 
+              appState: Object.assign({}, currentAppState, { theme: "dark" }) 
+            }); 
+          }, 100); 
+ 
+          // Notify parent that we are ready 
+          window.parent.postMessage({ type: 'EXCALIDRAW_READY' }, '*'); 
+        }, []); 
+ 
+        var handleChange = React.useCallback(function(elements, appState) { 
+          if (!isReady) { 
+            return; 
+          } 
+ 
+          var activeElements = elements.filter(function(el) { return !el.isDeleted; }); 
+           
+          var cleanState = { 
+            viewBackgroundColor: appState.viewBackgroundColor, 
+            currentItemStrokeColor: appState.currentItemStrokeColor, 
+            currentItemBackgroundColor: appState.currentItemBackgroundColor, 
+            currentItemFillStyle: appState.currentItemFillStyle, 
+            currentItemStrokeWidth: appState.currentItemStrokeWidth, 
+            currentItemStrokeStyle: appState.currentItemStrokeStyle, 
+            currentItemRoughness: appState.currentItemRoughness, 
+            currentItemOpacity: appState.currentItemOpacity, 
+            currentItemFontFamily: appState.currentItemFontFamily, 
+            currentItemFontSize: appState.currentItemFontSize, 
+            currentItemTextAlign: appState.currentItemTextAlign, 
+            currentItemStartArrowhead: appState.currentItemStartArrowhead, 
+            currentItemEndArrowhead: appState.currentItemEndArrowhead, 
+            gridSize: appState.gridSize,
+            zoom: appState.zoom,
+            scrollX: appState.scrollX,
+            scrollY: appState.scrollY
+          }; 
+ 
+          var currentJson = JSON.stringify({ elements: activeElements, appState: cleanState }); 
+          if (currentJson !== lastSentJson) { 
+            lastSentJson = currentJson; 
+            window.parent.postMessage({ 
+              type: 'SAVE_DATA', 
+              elements: activeElements, 
+              appState: cleanState,
+              path: sceneData.path
+            }, '*'); 
+          } 
+        }, [sceneData.path]); 
+ 
+        return React.createElement( 
+          'div', 
+          { style: { width: '100vw', height: '100vh' } }, 
+          React.createElement(ExcalidrawLib.Excalidraw, { 
+            key: sceneData.path, 
+            excalidrawAPI: handleRef, 
+            onChange: handleChange, 
+            theme: "dark", 
+            initialData: { 
+              elements: sceneData.elements, 
+              appState: sceneData.appState 
+            }, 
+            viewModeEnabled: false, 
+            zenModeEnabled: false,
+            UIOptions: { canvasActions: { theme: false } }
+          }) 
+        ); 
+      }; 
+ 
+      var root = ReactDOM.createRoot(document.getElementById('app')); 
+      root.render(React.createElement(App)); 
+    </script> 
+  </body> 
+</html>

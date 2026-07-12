@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#161b24"
+    android:padding="16dp">
+
+    <CalendarView
+        android:id="@+id/dialog_calendar"
+        android:layout_width="match_parent"
+        android:layout_height="280dp"
+        android:theme="@style/DarkCalendar" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#1c2533"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp" />
+
+    <RelativeLayout
+        android:id="@+id/row_set_time"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:background="?android:attr/selectableItemBackground"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <ImageView
+            android:id="@+id/icon_time_row"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_clock_icon"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:contentDescription="Time" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Saati ayarlayın"
+            android:textColor="#f1f5f9"
+            android:textSize="15sp"
+            android:layout_toEndOf="@+id/icon_time_row"
+            android:layout_marginStart="16dp"
+            android:layout_centerVertical="true" />
+
+        <TextView
+            android:id="@+id/tv_selected_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ayarlanmadı"
+            android:textColor="#38bdf8"
+            android:textSize="15sp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true" />
+    </RelativeLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#1c2533"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp" />
+
+    <RelativeLayout
+        android:id="@+id/row_recurrence"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:background="?android:attr/selectableItemBackground"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <ImageView
+            android:id="@+id/icon_repeat_row"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_repeat_icon"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:contentDescription="Repeat" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Yineleme"
+            android:textColor="#f1f5f9"
+            android:textSize="15sp"
+            android:layout_toEndOf="@+id/icon_repeat_row"
+            android:layout_marginStart="16dp"
+            android:layout_centerVertical="true" />
+
+        <TextView
+            android:id="@+id/tv_selected_repeat"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Yinelenmiyor"
+            android:textColor="#38bdf8"
+            android:textSize="15sp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true" />
+    </RelativeLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end"
+        android:layout_marginTop="16dp">
+
+        <TextView
+            android:id="@+id/btn_dialog_cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="İptal"
+            android:textColor="#38bdf8"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:padding="12dp"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/btn_dialog_done"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Bitti"
+            android:textColor="#38bdf8"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:padding="12dp"
+            android:layout_marginStart="16dp"
+            android:clickable="true"
+            android:focusable="true" />
+    </LinearLayout>
+</LinearLayout>
