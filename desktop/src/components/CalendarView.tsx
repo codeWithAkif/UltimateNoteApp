@@ -888,13 +888,24 @@ export default function CalendarView({
     return aggregated;
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "notes" prop'u, App.tsx her arka plan yenilemesinde (odak/focus, kayıt
+  // sonrası, senkron vb.) yeni bir dizi referansıyla geldiği için bu effect
+  // sık sık yeniden tetikleniyordu. Yükleniyor animasyonunu yalnızca GERÇEK
+  // ilk yüklemede gösteriyoruz; sonraki arka plan taramaları sessizce
+  // (spinner göstermeden) güncelleniyor — "Planlanmamış Görevler" paneli artık
+  // her senkronda yanıp sönmüyor.
+  const hasScannedOnceRef = useRef(false);
   useEffect(() => {
     let active = true;
-    setLoading(true);
+    if (!hasScannedOnceRef.current) {
+      setLoading(true);
+    }
     scanAllTasks().then(res => {
       if (active) {
         setTasks(res);
         setLoading(false);
+        hasScannedOnceRef.current = true;
       }
     });
     return () => { active = false; };
@@ -1189,10 +1200,34 @@ export default function CalendarView({
   useEffect(() => {
     if (!resizingEvent) return;
 
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Yükseklik piksel cinsinden doğrudan dakikaya karşılık gelir (1px = 1dk).
+    // ÖNEMLİ: Süreyi (duration) 15'e yuvarlamak yeterli değil — görev
+    // başlangıcı zaten 15'in katı değilse (örn. 20:07), bitiş de "temiz"
+    // görünmez ve kullanıcıya snap hiç olmamış gibi gelir. Bunun yerine
+    // BİTİŞ SAATİNİ (mutlak, gece yarısından itibaren dakika) en yakın
+    // 15 dakikalık takvim çizgisine (:00/:15/:30/:45) yapıştırıyoruz —
+    // Google Calendar tarzı standart "grid snap" davranışı. Bunu hem
+    // sürüklerken hem bırakırken aynı formülle uyguluyoruz ki önizleme
+    // ile sonuç arasında sıçrama olmasın.
+    const SNAP_MINUTES = 15;
+    const timeDataForSnap = parseTime(resizingEvent.originalTimeSlot);
+    const startMinutesAbs = timeDataForSnap ? timeDataForSnap.startHour * 60 + timeDataForSnap.startMin : 0;
+
+    // rawHeightPx: sürükleme sırasında piksel cinsinden ham süre (1px = 1dk).
+    // Geri dönüş: snap'lenmiş MUTLAK bitiş dakikası (gece yarısından itibaren).
+    const snapEndAbsMinutes = (rawHeightPx: number) => {
+      const rawEndAbs = startMinutesAbs + rawHeightPx;
+      const snappedEndAbs = Math.round(rawEndAbs / SNAP_MINUTES) * SNAP_MINUTES;
+      return Math.max(startMinutesAbs + SNAP_MINUTES, snappedEndAbs); // en az 15 dk süre
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       const deltaY = e.clientY - resizingEvent.startY;
-      const newHeight = Math.max(30, resizingEvent.startHeight + deltaY);
-      
+      const rawHeight = Math.max(30, resizingEvent.startHeight + deltaY);
+      const snappedEndAbs = snapEndAbsMinutes(rawHeight);
+      const newHeight = snappedEndAbs - startMinutesAbs;
+
       setTempEventHeights(prev => ({
         ...prev,
         [resizingEvent.taskId]: newHeight
@@ -1202,14 +1237,10 @@ export default function CalendarView({
     const handleMouseUp = async (e: MouseEvent) => {
       const deltaY = e.clientY - resizingEvent.startY;
       const finalHeight = Math.max(30, resizingEvent.startHeight + deltaY);
-      
-      const durationMinutes = Math.round(finalHeight / 15) * 15; // round to nearest 15 mins
-      
-      const timeData = parseTime(resizingEvent.originalTimeSlot);
+      const newEndMinutes = snapEndAbsMinutes(finalHeight); // mutlak, 15 dk çizgisine yapışık
+
+      const timeData = timeDataForSnap;
       if (timeData) {
-        const startMinutes = timeData.startHour * 60 + timeData.startMin;
-        const newEndMinutes = startMinutes + durationMinutes;
-        
         const newEndHour = Math.floor(newEndMinutes / 60);
         const newEndMin = newEndMinutes % 60;
         
@@ -1352,24 +1383,45 @@ export default function CalendarView({
     return null;
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir görevi sürükleyip yeni bir zamana taşırken KENDİ orijinal süresini
+  // (ör. 3 saatlik bir görev 3 saatlik kalmalı) korumak için kullanılır.
+  // timeSlot'u yoksa veya bozuksa güvenli varsayılanlara (alt görev: 30dk,
+  // normal görev: 60dk) düşer.
+  const getTaskDurationMinutes = (task: WorkspaceTask | undefined | null): number => {
+    if (task?.timeSlot) {
+      const t = parseTime(task.timeSlot);
+      if (t) {
+        const startAbs = t.startHour * 60 + t.startMin;
+        const endAbs = t.endHour * 60 + t.endMin;
+        if (endAbs > startAbs) return endAbs - startAbs;
+      }
+    }
+    return task?.isSubtask ? 30 : 60;
+  };
+
   // Filter tasks based on schedule status
   const unscheduledTasks = tasks.filter(t => {
     if (t.isSubtask) return false; // Subtasks are nested, not top-level
-    
+
+    // Tamamlanmış görevler "Planlanmamış Görevler" panelinde gösterilmez.
+    if (t.isChecked) return false;
+
     // Check if task should be skipped/excluded from unplanned list
     const hasExcludeTag = t.tags && (
-      t.tags.includes('no-unplanned') || 
+      t.tags.includes('no-unplanned') ||
       t.tags.includes('exclude-unplanned') ||
       t.tags.includes('hide-unplanned')
     );
     if (hasExcludeTag) return false;
-    
+
     if (t.subtasks && t.subtasks.length > 0) {
-      // Main task with subtasks: show it if it itself has no dueDate AND it has at least one unscheduled subtask
-      const hasUnscheduledSubs = t.subtasks.some(sub => !sub.dueDate);
+      // Main task with subtasks: show it if it itself has no dueDate AND it has at least one
+      // unscheduled VE tamamlanmamış alt görevi varsa.
+      const hasUnscheduledSubs = t.subtasks.some(sub => !sub.dueDate && !sub.isChecked);
       return !t.dueDate && hasUnscheduledSubs;
     }
-    
+
     // Regular task without subtasks: show if not scheduled
     return !t.dueDate;
   });
@@ -1418,7 +1470,7 @@ export default function CalendarView({
     
     // Grid matches 00:00 to 24:00 (24 hours = 1440px, so 1 hour = 60px, 1 min = 1px)
     const startMinutes = mouseY; // direct pixel = minute from midnight
-    const roundedMinutes = Math.round(startMinutes / 30) * 30; // round to nearest 30 mins
+    const roundedMinutes = Math.round(startMinutes / 15) * 15; // 15 dk'lık çizgiye yapış (diğer akışlarla tutarlı)
     
     const startHour = Math.floor(roundedMinutes / 60);
     const startMin = roundedMinutes % 60;
@@ -1991,12 +2043,14 @@ export default function CalendarView({
                             e.preventDefault();
                             const rect = e.currentTarget.getBoundingClientRect();
                             const mouseY = e.clientY - rect.top;
-                            const snappedMin = Math.round(mouseY / 30) * 30;
+                            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                            // 15 dakikalık takvim çizgisine yapıştır (30 dk yerine) — resize ile tutarlı.
+                            const snappedMin = Math.round(mouseY / 15) * 15;
                             const taskId = dragGhostTaskIdRef.current;
                             if (taskId) {
-                              // Estimate duration: subtasks = 30min, others = 60min
+                              // Görevin KENDİ orijinal süresini koru (sabit 30/60dk varsayımı yerine).
                               const dragged = allMergedEvents.find(t => t.id === taskId);
-                              const durationMin = dragged?.isSubtask ? 30 : 60;
+                              const durationMin = getTaskDurationMinutes(dragged);
                               setDragGhostState({ dayStr, snappedMin, taskId, durationMin });
                             }
                           }}
@@ -2006,26 +2060,35 @@ export default function CalendarView({
                             setDragGhostState(null);
                             const rect = e.currentTarget.getBoundingClientRect();
                             const mouseY = e.clientY - rect.top;
-                            
+
+                            const rawData = e.dataTransfer.getData('text/plain');
+                            if (!rawData) return;
+                            const { taskId } = JSON.parse(rawData);
+
+                            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                            // KRİTİK: Önceden bitiş saati her zaman sabit +60dk ile hesaplanıyordu —
+                            // yani 3 saatlik bir görevi taşımak onu 1 saate düşürüyordu. Artık
+                            // sürüklenen görevin KENDİ orijinal süresi korunuyor, yalnızca başlangıç
+                            // saati değişiyor. Ayrıca 15 dakikalık takvim çizgisine (30 yerine) yapışıyor.
+                            const dragged = allMergedEvents.find(t => t.id === taskId);
+                            const durationMin = getTaskDurationMinutes(dragged);
+
                             // 1440px height corresponds to 24 hours (00:00 to 24:00)
                             // 1 hour = 60px, so 1 min = 1px.
                             const totalMinutes = mouseY;
-                            const startMinutes = totalMinutes; // no offset, pixel = minute from midnight
-                            const roundedMinutes = Math.round(startMinutes / 30) * 30; // round to nearest 30 mins
-                            
+                            const roundedMinutes = Math.round(totalMinutes / 15) * 15; // 15 dk'lık çizgiye yapış
+
                             const startHour = Math.floor(roundedMinutes / 60);
                             const startMin = roundedMinutes % 60;
-                            const endHour = Math.floor((roundedMinutes + 60) / 60);
-                            const endMin = (roundedMinutes + 60) % 60;
+                            const endTotalMinutes = roundedMinutes + durationMin;
+                            const endHour = Math.floor(endTotalMinutes / 60);
+                            const endMin = endTotalMinutes % 60;
 
                             const formatTimeStr = (h: number, m: number) => {
                               return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
                             };
 
                             const timeSlot = `${formatTimeStr(startHour, startMin)}-${formatTimeStr(endHour, endMin)}`;
-                            const rawData = e.dataTransfer.getData('text/plain');
-                            if (!rawData) return;
-                            const { taskId } = JSON.parse(rawData);
                             handleDropTask(taskId, dayStr, timeSlot);
                           }}
                         >
@@ -2195,9 +2258,22 @@ export default function CalendarView({
                               
                               // Check if we have a temporary dragging resize height in progress
                               const isResizingThis = resizingEvent && resizingEvent.taskId === task.id;
-                              const height = isResizingThis 
+                              const height = isResizingThis
                                 ? tempEventHeights[task.id] || (endMinutes - startMinutes) * 1
                                 : (endMinutes - startMinutes) * 1;
+
+                              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                              // Süre sürüklenirken kart üzerindeki saat etiketi de canlı olarak
+                              // güncellensin ki kullanıcı hangi saate geldiğini anında görebilsin.
+                              const displayTimeSlot = isResizingThis
+                                ? (() => {
+                                    const liveEndTotal = startMinutes + height;
+                                    const liveEndHour = Math.floor(liveEndTotal / 60) % 24;
+                                    const liveEndMin = liveEndTotal % 60;
+                                    const fmt = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+                                    return `${fmt(timeData.startHour, timeData.startMin)}-${fmt(liveEndHour, liveEndMin)}`;
+                                  })()
+                                : task.timeSlot;
 
                                const totalSub = task.subtasks?.length || 0;
                               const completedSub = task.subtasks?.filter(s => s.isChecked).length || 0;
@@ -2231,6 +2307,13 @@ export default function CalendarView({
                                     left: '4px',
                                     right: '4px',
                                     zIndex: isResizingThis ? 50 : 10,
+                                    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                    // .scheduled-event-card sınıfı `transition: all 0.25s` tanımlıyor.
+                                    // Bu, yükseklik 15dk'lık adımlarla sıçrasa bile CSS'in bunu yumuşak
+                                    // bir animasyonla kaydırmasına (glide) neden olup "yapışma" hissini
+                                    // yok ediyordu. Aktif sürükleme/resize sırasında geçişi kapatıyoruz
+                                    // ki her 15dk'lık snap noktası anında, "tık" diye hissedilsin.
+                                    transition: isResizingThis ? 'none' : undefined,
                                     cursor: task.isExternal ? 'default' : 'grab',
                                     padding: isSmallCard ? '2px 6px' : '6px 8px',
                                     display: 'flex',
@@ -2290,7 +2373,7 @@ export default function CalendarView({
                                     display: 'flex',
                                     flexDirection: 'column'
                                   }}>
-                                    {!isSmallCard && <span className="event-time-lbl">{task.timeSlot}</span>}
+                                    {!isSmallCard && <span className="event-time-lbl">{displayTimeSlot}</span>}
                                     
                                     {height >= 50 ? (
                                       <p className="event-title-lbl" style={{ margin: '2px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -2384,6 +2467,18 @@ export default function CalendarView({
                                   {!task.isChecked && (
                                     <div
                                       className="event-resize-handle"
+                                      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                      // Üst görev kartı `draggable` (native HTML5 sürükle-bırak, günler
+                                      // arası taşımak için). Bu tutamaç o kartın İÇİNDE olduğundan,
+                                      // `onMouseDown`'daki stopPropagation() tarayıcının kendi native
+                                      // dragstart algılamasını DURDURMUYOR — React state güncellemesi
+                                      // (draggable=false) DOM'a yansımadan önce tarayıcı bazen native
+                                      // sürüklemeyi de başlatabiliyordu. Bu, hem "hayalet" sürükleme
+                                      // kutusuna hem de bırakma anının bazen çalışmamasına yol açan
+                                      // yarış durumuydu. `draggable={false}` + dragstart engelleme ile
+                                      // bu tutamaçtan native sürüklemenin asla tetiklenmemesini garanti ediyoruz.
+                                      draggable={false}
+                                      onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                       onMouseDown={(e) => {
                                         e.stopPropagation();
                                         e.preventDefault();
@@ -2463,9 +2558,9 @@ export default function CalendarView({
               const hasSubtasks = task.subtasks && task.subtasks.length > 0;
               const parentTask = task.isSubtask && task.parentTaskId ? tasks.find(t => t.id === task.parentTaskId) : null;
               if (hasSubtasks) {
-                // Filter only unscheduled subtasks
+                // Filter only unscheduled VE tamamlanmamış alt görevleri
                 const unscheduledSubs = (task.subtasks || [])
-                  .filter(sub => !sub.dueDate);
+                  .filter(sub => !sub.dueDate && !sub.isChecked);
                 
                 // If there are no unscheduled subtasks left, do not render the parent task card at all!
                 if (unscheduledSubs.length === 0) return null;
@@ -2964,7 +3059,7 @@ export default function CalendarView({
         >
           <div
             style={{
-              background: 'rgba(20, 20, 25, 0.85)',
+              background: 'var(--bg-secondary)',
               backdropFilter: 'blur(16px)',
               border: '1px solid rgba(6, 182, 212, 0.3)',
               borderRadius: '12px',
@@ -2972,7 +3067,7 @@ export default function CalendarView({
               maxWidth: '450px',
               width: '90%',
               boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6), 0 0 30px rgba(6, 182, 212, 0.15)',
-              color: '#fff',
+              color: 'var(--text-primary)',
               display: 'flex',
               flexDirection: 'column',
               gap: '16px'
@@ -2990,14 +3085,14 @@ export default function CalendarView({
 
             <div style={{
               padding: '12px',
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px dashed rgba(255, 255, 255, 0.1)',
+              background: 'var(--bg-tertiary)',
+              border: '1px dashed var(--border-color)',
               borderRadius: '8px',
               display: 'flex',
               flexDirection: 'column',
               gap: '4px'
             }}>
-              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#fff' }}>
+              <div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text-primary)' }}>
                 {schedulingModalData.task.content}
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
@@ -3029,7 +3124,7 @@ export default function CalendarView({
                   background: 'rgba(99, 102, 241, 0.15)',
                   border: '1px solid rgba(99, 102, 241, 0.4)',
                   borderRadius: '8px',
-                  color: '#fff',
+                  color: 'var(--text-primary)',
                   cursor: 'pointer',
                   textAlign: 'left',
                   transition: 'all 0.2s'
@@ -3067,7 +3162,7 @@ export default function CalendarView({
                   background: 'rgba(16, 185, 129, 0.15)',
                   border: '1px solid rgba(16, 185, 129, 0.4)',
                   borderRadius: '8px',
-                  color: '#fff',
+                  color: 'var(--text-primary)',
                   cursor: 'pointer',
                   textAlign: 'left',
                   transition: 'all 0.2s'
@@ -3153,7 +3248,7 @@ export default function CalendarView({
         >
           <div
             style={{
-              background: 'rgba(20, 20, 25, 0.95)',
+              background: 'var(--bg-secondary)',
               border: '1px solid var(--border-color)',
               borderRadius: '16px',
               padding: '24px',
@@ -3180,10 +3275,10 @@ export default function CalendarView({
                 disabled={!!activeSchedulingModal.taskId}
                 autoFocus
                 style={{
-                  background: 'rgba(0,0,0,0.2)',
+                  background: 'var(--bg-tertiary)',
                   border: '1px solid var(--border-color)',
                   borderRadius: '8px',
-                  color: '#fff',
+                  color: 'var(--text-primary)',
                   padding: '8px 12px',
                   fontSize: '13px',
                   outline: 'none'
@@ -3198,14 +3293,13 @@ export default function CalendarView({
                 value={activeSchedulingModal.dateStr}
                 onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, dateStr: e.target.value })}
                 style={{
-                  background: 'rgba(0,0,0,0.2)',
+                  background: 'var(--bg-tertiary)',
                   border: '1px solid var(--border-color)',
                   borderRadius: '8px',
-                  color: '#fff',
+                  color: 'var(--text-primary)',
                   padding: '8px 12px',
                   fontSize: '13px',
-                  outline: 'none',
-                  colorScheme: 'dark'
+                  outline: 'none'
                 }}
               />
             </div>
@@ -3218,14 +3312,13 @@ export default function CalendarView({
                   value={activeSchedulingModal.startTime}
                   onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, startTime: e.target.value })}
                   style={{
-                    background: 'rgba(0,0,0,0.2)',
+                    background: 'var(--bg-tertiary)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '8px',
-                    color: '#fff',
+                    color: 'var(--text-primary)',
                     padding: '8px 12px',
                     fontSize: '13px',
-                    outline: 'none',
-                    colorScheme: 'dark'
+                    outline: 'none'
                   }}
                 />
               </div>
@@ -3236,14 +3329,13 @@ export default function CalendarView({
                   value={activeSchedulingModal.endTime}
                   onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, endTime: e.target.value })}
                   style={{
-                    background: 'rgba(0,0,0,0.2)',
+                    background: 'var(--bg-tertiary)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '8px',
-                    color: '#fff',
+                    color: 'var(--text-primary)',
                     padding: '8px 12px',
                     fontSize: '13px',
-                    outline: 'none',
-                    colorScheme: 'dark'
+                    outline: 'none'
                   }}
                 />
               </div>
@@ -3255,7 +3347,7 @@ export default function CalendarView({
                 onClick={() => setActiveSchedulingModal(null)}
                 style={{
                   flex: 1,
-                  background: 'rgba(255, 255, 255, 0.05)',
+                  background: 'var(--bg-hover)',
                   border: '1px solid var(--border-color)',
                   borderRadius: '8px',
                   color: 'var(--text-secondary)',

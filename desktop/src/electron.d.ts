@@ -22,6 +22,7 @@ export interface ElectronAPI {
   resolveYoutubePlaylist: (playlistId: string) => Promise<any[]>;
   fileExists: (relativePath: string) => Promise<boolean>;
   toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>;
+  setTitleBarTheme: (theme: 'dark' | 'light') => Promise<{ success: boolean }>;
 }
 
 declare global {

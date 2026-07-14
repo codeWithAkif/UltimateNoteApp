@@ -41,7 +41,7 @@ public class QuickAddActivity extends AppCompatActivity {
 
         Intent intent = getIntent();
         final String mode = intent.getStringExtra("mode");
-        final int position = intent.getIntExtra("item_position", -1);
+        final int lineIndex = intent.getIntExtra("line_index", -1);
         final String initialText = intent.getStringExtra("item_text");
 
         SharedPreferences prefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
@@ -281,7 +281,7 @@ public class QuickAddActivity extends AppCompatActivity {
         android.widget.TextView btnClearDatetime = bottomSheet.findViewById(R.id.btn_clear_datetime);
         android.widget.ImageView iconClock = bottomSheet.findViewById(R.id.icon_clock);
 
-        final boolean isEditMode = "edit".equals(mode) && position != -1;
+        final boolean isEditMode = "edit".equals(mode) && lineIndex != -1;
         
         String parsedDetail = "";
         if (isEditMode) {
@@ -295,41 +295,41 @@ public class QuickAddActivity extends AppCompatActivity {
             
             File file = getNoteFile(pinnedPath);
             if (file != null) {
+                List<String> allLines = new java.util.ArrayList<>();
                 try (BufferedReader br = new BufferedReader(new FileReader(file))) {
                     String line;
-                    int currentIndex = 0;
                     while ((line = br.readLine()) != null) {
-                        String trimmed = line.trim();
-                        if (trimmed.startsWith("- [ ]") || trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") || (trimmed.startsWith("- ") && !trimmed.startsWith("- ["))) {
-                            if (currentIndex == position) {
-                                java.util.regex.Matcher dueMatcher = java.util.regex.Pattern.compile("\\[due:(\\d{4}-\\d{2}-\\d{2})\\]").matcher(line);
-                                if (dueMatcher.find()) {
-                                    selectedDate = dueMatcher.group(1);
-                                }
-                                java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[time:(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(line);
-                                if (timeMatcher.find()) {
-                                    selectedTime = timeMatcher.group(1);
-                                }
-                                java.util.regex.Matcher repeatMatcher = java.util.regex.Pattern.compile("\\[repeat:(daily|günlük|weekly|haftalık|monthly|aylık)\\]", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(line);
-                                if (repeatMatcher.find()) {
-                                    String r = repeatMatcher.group(1).toLowerCase();
-                                    if (r.equals("günlük")) selectedRepeat = "daily";
-                                    else if (r.equals("haftalık")) selectedRepeat = "weekly";
-                                    else if (r.equals("aylık")) selectedRepeat = "monthly";
-                                    else selectedRepeat = r;
-                                }
-                                
-                                String nextLine = br.readLine();
-                                if (nextLine != null && nextLine.startsWith("  ") && !nextLine.trim().startsWith("- ") && !nextLine.trim().startsWith("* ")) {
-                                    parsedDetail = nextLine.trim();
-                                }
-                                break;
-                            }
-                            currentIndex++;
-                        }
+                        allLines.add(line);
                     }
                 } catch (Exception e) {
                     e.printStackTrace();
+                }
+
+                if (lineIndex >= 0 && lineIndex < allLines.size()) {
+                    String line = allLines.get(lineIndex);
+                    java.util.regex.Matcher dueMatcher = java.util.regex.Pattern.compile("\\[due:(\\d{4}-\\d{2}-\\d{2})\\]").matcher(line);
+                    if (dueMatcher.find()) {
+                        selectedDate = dueMatcher.group(1);
+                    }
+                    java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[time:(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(line);
+                    if (timeMatcher.find()) {
+                        selectedTime = timeMatcher.group(1);
+                    }
+                    java.util.regex.Matcher repeatMatcher = java.util.regex.Pattern.compile("\\[repeat:(daily|günlük|weekly|haftalık|monthly|aylık)\\]", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(line);
+                    if (repeatMatcher.find()) {
+                        String r = repeatMatcher.group(1).toLowerCase();
+                        if (r.equals("günlük")) selectedRepeat = "daily";
+                        else if (r.equals("haftalık")) selectedRepeat = "weekly";
+                        else if (r.equals("aylık")) selectedRepeat = "monthly";
+                        else selectedRepeat = r;
+                    }
+
+                    if (lineIndex + 1 < allLines.size()) {
+                        String nextLine = allLines.get(lineIndex + 1);
+                        if (nextLine.startsWith("  ") && !nextLine.trim().startsWith("- ") && !nextLine.trim().startsWith("* ")) {
+                            parsedDetail = nextLine.trim();
+                        }
+                    }
                 }
             }
         } else {
@@ -386,7 +386,7 @@ public class QuickAddActivity extends AppCompatActivity {
                 String detail = inputDetail.getText().toString().trim();
                 if (!text.isEmpty()) {
                     if (isEditMode) {
-                        editItemInFile(pinnedPath, position, text, detail);
+                        editItemInFile(pinnedPath, lineIndex, text, detail);
                     } else {
                         addItemToFile(pinnedPath, text, detail);
                     }
@@ -403,7 +403,7 @@ public class QuickAddActivity extends AppCompatActivity {
                     String detail = inputDetail.getText().toString().trim();
                     if (!text.isEmpty()) {
                         if (isEditMode) {
-                            editItemInFile(pinnedPath, position, text, detail);
+                            editItemInFile(pinnedPath, lineIndex, text, detail);
                         } else {
                             addItemToFile(pinnedPath, text, detail);
                         }
@@ -878,7 +878,7 @@ public class QuickAddActivity extends AppCompatActivity {
         triggerRefresh();
     }
 
-    private void editItemInFile(String pinnedPath, int position, String newText, String detailText) {
+    private void editItemInFile(String pinnedPath, int lineIndex, String newText, String detailText) {
         File file = getNoteFile(pinnedPath);
         if (file == null) return;
 
@@ -893,52 +893,50 @@ public class QuickAddActivity extends AppCompatActivity {
             return;
         }
 
+        if (lineIndex < 0 || lineIndex >= rawLines.size()) return;
+        String targetTrimmed = rawLines.get(lineIndex).trim();
+        if (!(targetTrimmed.startsWith("- [ ]") || targetTrimmed.startsWith("- [x]") || targetTrimmed.startsWith("- [X]"))) {
+            return; // Todo satırı değil.
+        }
+
+        String isCheckedChar = (targetTrimmed.startsWith("- [x]") || targetTrimmed.startsWith("- [X]")) ? "x" : " ";
+        String bulletPrefix = "- [" + isCheckedChar + "] ";
+
+        String newTags = "";
+        if (!selectedDate.isEmpty()) {
+            newTags += " [due:" + selectedDate + "]";
+        }
+        if (!selectedTime.isEmpty()) {
+            String endTime = selectedTime;
+            try {
+                String[] timeParts = selectedTime.split(":");
+                int h = Integer.parseInt(timeParts[0]);
+                int m = Integer.parseInt(timeParts[1]);
+                int eh = (h + 1) % 24;
+                endTime = String.format(Locale.US, "%02d:%02d", eh, m);
+            } catch (Exception e) {}
+            newTags += " [time:" + selectedTime + "-" + endTime + "]";
+        }
+        if (!selectedRepeat.isEmpty() && !"none".equals(selectedRepeat)) {
+            newTags += " [repeat:" + selectedRepeat + "]";
+        }
+
         List<String> newLines = new java.util.ArrayList<>();
-        int currentIndex = 0;
         for (int i = 0; i < rawLines.size(); i++) {
-            String line = rawLines.get(i);
-            String trimmed = line.trim();
-            if (trimmed.startsWith("- [ ]") || trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") || (trimmed.startsWith("- ") && !trimmed.startsWith("- ["))) {
-                if (currentIndex == position) {
-                    String isCheckedChar = trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") ? "x" : " ";
-                    String bulletPrefix = trimmed.startsWith("- ") && !trimmed.startsWith("- [") ? "- " : "- [" + isCheckedChar + "] ";
-                    
-                    String newTags = "";
-                    if (!selectedDate.isEmpty()) {
-                        newTags += " [due:" + selectedDate + "]";
-                    }
-                    if (!selectedTime.isEmpty()) {
-                        String endTime = selectedTime;
-                        try {
-                            String[] timeParts = selectedTime.split(":");
-                            int h = Integer.parseInt(timeParts[0]);
-                            int m = Integer.parseInt(timeParts[1]);
-                            int eh = (h + 1) % 24;
-                            endTime = String.format(Locale.US, "%02d:%02d", eh, m);
-                        } catch (Exception e) {}
-                        newTags += " [time:" + selectedTime + "-" + endTime + "]";
-                    }
-                    if (!selectedRepeat.isEmpty() && !"none".equals(selectedRepeat)) {
-                        newTags += " [repeat:" + selectedRepeat + "]";
-                    }
-                    
-                    newLines.add(bulletPrefix + newText + newTags);
-                    if (!detailText.isEmpty()) {
-                        newLines.add("  " + detailText);
-                    }
-                    
-                    if (i + 1 < rawLines.size()) {
-                        String nextLine = rawLines.get(i + 1);
-                        if (nextLine.startsWith("  ") && !nextLine.trim().startsWith("- ") && !nextLine.trim().startsWith("* ")) {
-                            i++;
-                        }
-                    }
-                } else {
-                    newLines.add(line);
+            if (i == lineIndex) {
+                newLines.add(bulletPrefix + newText + newTags);
+                if (!detailText.isEmpty()) {
+                    newLines.add("  " + detailText);
                 }
-                currentIndex++;
+                // Varsa eski girintili detay satırını atla (yerine yenisi yazıldı).
+                if (i + 1 < rawLines.size()) {
+                    String nextLine = rawLines.get(i + 1);
+                    if (nextLine.startsWith("  ") && !nextLine.trim().startsWith("- ") && !nextLine.trim().startsWith("* ")) {
+                        i++;
+                    }
+                }
             } else {
-                newLines.add(line);
+                newLines.add(rawLines.get(i));
             }
         }
 

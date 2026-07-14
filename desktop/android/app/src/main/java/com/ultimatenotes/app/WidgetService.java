@@ -72,22 +72,38 @@ public class WidgetService extends RemoteViewsService {
 
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
                 String line;
+                int lineIdx = 0;
                 while ((line = br.readLine()) != null) {
                     String trimmed = line.trim();
+                    // Yalnızca todo (checkbox) satırlarını göster; düz madde
+                    // işaretlerini ("- ...") ve diğer satırları atla.
                     if (trimmed.startsWith("- [ ]")) {
                         String text = trimmed.substring(5).trim();
-                        items.add(new TodoItem(text, false));
+                        TodoItem item = new TodoItem(text, false);
+                        item.lineIndex = lineIdx;
+                        items.add(item);
                     } else if (trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]")) {
                         String text = trimmed.substring(5).trim();
-                        items.add(new TodoItem(text, true));
-                    } else if (trimmed.startsWith("- ") && !trimmed.startsWith("- [")) {
-                        String text = trimmed.substring(2).trim();
-                        items.add(new TodoItem(text, false, true));
+                        TodoItem item = new TodoItem(text, true);
+                        item.lineIndex = lineIdx;
+                        items.add(item);
                     }
+                    lineIdx++;
                 }
             } catch (IOException e) {
                 e.printStackTrace();
             }
+
+            // İşaretlenenleri (tamamlananları) listenin en altına taşı:
+            // önce yapılacaklar, sonra tamamlananlar. Collections.sort kararlıdır,
+            // dolayısıyla her grup içinde dosyadaki orijinal sıra korunur.
+            java.util.Collections.sort(items, new java.util.Comparator<TodoItem>() {
+                @Override
+                public int compare(TodoItem a, TodoItem b) {
+                    if (a.isChecked == b.isChecked) return 0;
+                    return a.isChecked ? 1 : -1;
+                }
+            });
         }
 
         private static String formatDateText(String dateStr) {
@@ -166,22 +182,22 @@ public class WidgetService extends RemoteViewsService {
                 views.setViewVisibility(R.id.layout_badge_container, android.view.View.GONE);
             }
 
-            // 1. Toggle Action
+            // 1. Toggle Action — mutlak satır indeksini taşı (ekran sırasından bağımsız)
             Intent toggleIntent = new Intent();
-            toggleIntent.putExtra("item_position", position);
+            toggleIntent.putExtra("line_index", item.lineIndex);
             toggleIntent.putExtra("click_action", "toggle");
             views.setOnClickFillInIntent(R.id.item_status, toggleIntent);
 
             // 2. Edit Action
             Intent editIntent = new Intent();
-            editIntent.putExtra("item_position", position);
+            editIntent.putExtra("line_index", item.lineIndex);
             editIntent.putExtra("click_action", "edit");
             editIntent.putExtra("item_text", item.text);
             views.setOnClickFillInIntent(R.id.item_text, editIntent);
 
             // 3. Delete Action
             Intent deleteIntent = new Intent();
-            deleteIntent.putExtra("item_position", position);
+            deleteIntent.putExtra("line_index", item.lineIndex);
             deleteIntent.putExtra("click_action", "delete");
             views.setOnClickFillInIntent(R.id.item_delete, deleteIntent);
 
@@ -213,7 +229,10 @@ public class WidgetService extends RemoteViewsService {
         final String text;
         final boolean isChecked;
         final boolean isBulletOnly;
-        
+
+        // Dosyadaki mutlak satır indeksi (0 tabanlı). Toggle/düzenle/sil
+        // işlemleri, ekrandaki sıralamadan bağımsız olarak bu indekse göre yapılır.
+        int lineIndex = -1;
         String dueDate = "";
         String dueTime = "";
         String repeat = "";

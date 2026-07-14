@@ -94,7 +94,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
             style={{
               padding: '8px 16px', borderRadius: '6px', cursor: 'pointer',
               background: activeTab === 'dashboard' ? 'var(--accent-color)' : 'var(--bg-secondary)',
-              color: activeTab === 'dashboard' ? '#fff' : 'var(--text-color)',
+              color: activeTab === 'dashboard' ? '#fff' : 'var(--text-primary)',
               border: 'none', display: 'flex', alignItems: 'center', gap: '6px'
             }}
           >
@@ -105,7 +105,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
             style={{
               padding: '8px 16px', borderRadius: '6px', cursor: 'pointer',
               background: activeTab === 'kanban' ? 'var(--accent-color)' : 'var(--bg-secondary)',
-              color: activeTab === 'kanban' ? '#fff' : 'var(--text-color)',
+              color: activeTab === 'kanban' ? '#fff' : 'var(--text-primary)',
               border: 'none', display: 'flex', alignItems: 'center', gap: '6px'
             }}
           >
@@ -116,7 +116,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
             style={{
               padding: '8px 16px', borderRadius: '6px', cursor: 'pointer',
               background: activeTab === 'clients' ? 'var(--accent-color)' : 'var(--bg-secondary)',
-              color: activeTab === 'clients' ? '#fff' : 'var(--text-color)',
+              color: activeTab === 'clients' ? '#fff' : 'var(--text-primary)',
               border: 'none', display: 'flex', alignItems: 'center', gap: '6px'
             }}
           >
@@ -140,8 +140,8 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                 borderRadius: '6px',
                 cursor: 'pointer',
                 marginBottom: '8px',
-                background: selectedProject === null ? 'var(--bg-surface)' : 'transparent',
-                color: selectedProject === null ? 'var(--text-color)' : 'var(--text-muted)',
+                background: selectedProject === null ? 'var(--bg-hover)' : 'transparent',
+                color: selectedProject === null ? 'var(--text-primary)' : 'var(--text-muted)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px'
@@ -162,8 +162,8 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                     borderRadius: '6px',
                     cursor: 'pointer',
                     marginBottom: '8px',
-                    background: selectedProject === cleanName ? 'var(--bg-surface)' : 'transparent',
-                    color: selectedProject === cleanName ? 'var(--text-color)' : 'var(--text-muted)',
+                    background: selectedProject === cleanName ? 'var(--bg-hover)' : 'transparent',
+                    color: selectedProject === cleanName ? 'var(--text-primary)' : 'var(--text-muted)',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -204,7 +204,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                         <span>{stats.percent}% ({stats.done}/{stats.total})</span>
                       </div>
                       
-                      <div style={{ height: '8px', background: 'var(--bg-surface)', borderRadius: '4px', overflow: 'hidden', marginBottom: '16px' }}>
+                      <div style={{ height: '8px', background: 'var(--bg-hover)', borderRadius: '4px', overflow: 'hidden', marginBottom: '16px' }}>
                         <div style={{ height: '100%', background: stats.percent === 100 ? '#4caf50' : 'var(--accent-color)', width: `${stats.percent}%`, transition: 'width 0.3s ease' }} />
                       </div>
                     </div>
@@ -245,7 +245,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           <User size={18} color="var(--accent-color)" />
                           {cleanClientName}
                         </h3>
-                        <span style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: '12px' }}>
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px' }}>
                           {linkedProjects.length} Proje
                         </span>
                       </div>
@@ -255,7 +255,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           linkedProjects.map(proj => {
                             const stats = getProjectProgress(proj.name);
                             return (
-                              <div key={proj.path} style={{ fontSize: '13px', background: 'var(--bg-surface)', padding: '10px', borderRadius: '6px' }}>
+                              <div key={proj.path} style={{ fontSize: '13px', background: 'var(--bg-hover)', padding: '10px', borderRadius: '6px' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                                   <span style={{ fontWeight: 500 }}>{proj.name.replace('.md', '')}</span>
                                   <span style={{ color: 'var(--text-muted)' }}>{stats.percent}%</span>

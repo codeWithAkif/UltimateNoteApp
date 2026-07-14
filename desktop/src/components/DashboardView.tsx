@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import NoteFactoryView from './NoteFactoryView';
 import type { Track } from './MusicPlayerView';
-import { 
-  Play, Pause, RotateCcw, Clock, CheckSquare, FileText, BarChart2, GripVertical, Music, Plus, Check, SkipForward, SkipBack
+import {
+  Play, Pause, RotateCcw, Clock, CheckSquare, FileText, BarChart2, GripVertical, Music, Plus, Check, SkipForward, SkipBack, AlertTriangle, Sun
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -51,8 +51,13 @@ export default function DashboardView({
   // Widget sıralama durumunu localStorage'dan al veya varsayılanı kullan
   const [widgetOrder, setWidgetOrder] = useState<string[]>(() => {
     const saved = localStorage.getItem('dashboard_widget_order_v2');
-    const order = saved ? JSON.parse(saved) : ['pomodoro', 'recentNotes', 'taskSummary', 'productivity', 'musicPlayer'];
-    return order.filter((id: string) => id !== 'notfactory');
+    const order = saved ? JSON.parse(saved) : ['todayReview', 'pomodoro', 'recentNotes', 'taskSummary', 'productivity', 'musicPlayer'];
+    const filtered = order.filter((id: string) => id !== 'notfactory');
+    // Daha önce kaydedilmiş sıralamalarda yeni "todayReview" widget'ı yoksa başa ekle.
+    if (!filtered.includes('todayReview')) {
+      filtered.unshift('todayReview');
+    }
+    return filtered;
   });
 
   const [draggedOverId, setDraggedOverId] = useState<string | null>(null);
@@ -105,6 +110,43 @@ export default function DashboardView({
     });
     return tasks.slice(0, 5);
   }, [fileContents]);
+
+  // Günlük Özet: geciken görevler + bugüne düşen görevler (tüm notlar taranır)
+  const todayReview = useMemo(() => {
+    const dueRegex = /\[due:(\d{4}-\d{2}-\d{2})(?:\s\d{2}:\d{2})?\]/;
+    const cleanText = (raw: string) => raw
+      .replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/g, '')
+      .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/g, '')
+      .replace(/\[p:[a-zçığşü]+\]/gi, '')
+      .replace(/\[repeat:[a-zçığşü]+\]/gi, '')
+      .replace(/#[a-zA-Z0-9_çığşüöÇİĞŞÜÖ]+/g, '')
+      .trim();
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStr = `${todayStart.getFullYear()}-${String(todayStart.getMonth() + 1).padStart(2, '0')}-${String(todayStart.getDate()).padStart(2, '0')}`;
+
+    interface DueTask { path: string; noteName: string; text: string; dueDate: string; }
+    const overdue: DueTask[] = [];
+    const dueToday: DueTask[] = [];
+
+    notes.filter(n => n.type === 'note').forEach(note => {
+      const content = fileContents[note.path] || '';
+      const noteName = note.name || note.path.split('/').pop() || note.path;
+      content.split('\n').forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('- [ ]')) return;
+        const dm = trimmed.match(dueRegex);
+        if (!dm) return;
+        const entry = { path: note.path, noteName, text: cleanText(trimmed.substring(5)), dueDate: dm[1] };
+        if (dm[1] === todayStr) dueToday.push(entry);
+        else if (dm[1] < todayStr) overdue.push(entry);
+      });
+    });
+
+    overdue.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    return { overdue, dueToday };
+  }, [notes, fileContents]);
 
   // Verimlilik Analiz Verileri
   const stats = useMemo(() => {
@@ -198,6 +240,53 @@ export default function DashboardView({
             </div>
           </div>
         );
+
+      case 'todayReview': {
+        const { overdue, dueToday } = todayReview;
+        const isEmpty = overdue.length === 0 && dueToday.length === 0;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sun size={16} style={{ color: '#f59e0b' }} />
+              <span style={{ fontSize: '13px', fontWeight: 600 }}>Bugün</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1, overflowY: 'auto', maxHeight: '220px' }}>
+              {isEmpty ? (
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>Geciken veya bugüne düşen görev yok. 🎉</div>
+              ) : (
+                <>
+                  {overdue.map((t, idx) => (
+                    <div
+                      key={`o-${idx}`}
+                      onClick={() => onSelectNote(t.path)}
+                      style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', background: 'rgba(239, 68, 68, 0.06)' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <AlertTriangle size={11} style={{ color: '#ef4444', flexShrink: 0 }} />
+                        <span style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.text || '(başlıksız görev)'}</span>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#ef4444', marginLeft: '17px' }}>{t.dueDate} · {t.noteName}</span>
+                    </div>
+                  ))}
+                  {dueToday.map((t, idx) => (
+                    <div
+                      key={`t-${idx}`}
+                      onClick={() => onSelectNote(t.path)}
+                      style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.06)' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Sun size={11} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                        <span style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.text || '(başlıksız görev)'}</span>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#f59e0b', marginLeft: '17px' }}>{t.noteName}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      }
 
       case 'pomodoro':
         return (

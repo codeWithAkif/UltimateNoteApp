@@ -1214,6 +1214,12 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+     Flex öğeleri varsayılan olarak min-width:auto taşır — yani içeriklerinin
+     (ör. araç çubuğundaki çok sayıda ikon butonu) doğal genişliğinin altına
+     asla küçülmezler. Bu, mobilde tüm editörü viewport'tan geniş yapıp yatay
+     kaydırmaya (ve metin taşmasına) yol açıyordu. min-width: 0 bu zinciri kırar. */
+  min-width: 0;
 }
 
 .notes-editor.empty {
@@ -1248,6 +1254,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .active-note-meta {
@@ -2780,7 +2787,7 @@ input:focus, textarea:focus, select:focus {
 }
 
 .modal-content {
-  background: rgba(24, 24, 27, 0.85);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   border-radius: 16px;
@@ -3252,7 +3259,7 @@ input:focus, textarea:focus, select:focus {
 
 .inbox-type-toggle {
   display: flex;
-  background: rgba(18, 18, 20, 0.6);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 4px;
@@ -3266,7 +3273,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(18, 18, 20, 0.4);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 5px 12px;
@@ -3637,7 +3644,7 @@ input:focus, textarea:focus, select:focus {
 }
 
 .workspace-task-drawer {
-  background: rgba(18, 18, 20, 0.9) !important;
+  background: var(--bg-tertiary) !important;
   border-color: var(--border-color) !important;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4) !important;
 }
@@ -3704,6 +3711,7 @@ input:focus, textarea:focus, select:focus {
   background-color: var(--bg-primary);
   user-select: text;
   position: relative;
+  min-width: 0;
 }
 
 .live-editor-lines {
@@ -3714,6 +3722,7 @@ input:focus, textarea:focus, select:focus {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
+  min-width: 0;
 }
 
 .editor-line-container {
@@ -3979,7 +3988,7 @@ input:focus, textarea:focus, select:focus {
 .calendar-header-left h2 {
   font-size: 18px;
   font-weight: 800;
-  color: #fff;
+  color: var(--text-primary);
   letter-spacing: -0.01em;
 }
 
@@ -3987,7 +3996,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(18, 18, 20, 0.5);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   padding: 3px;
   border-radius: 8px;
@@ -4027,7 +4036,7 @@ input:focus, textarea:focus, select:focus {
 /* View Switcher */
 .calendar-view-toggle {
   display: flex;
-  background: rgba(18, 18, 20, 0.6);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 3px;
@@ -4118,7 +4127,7 @@ input:focus, textarea:focus, select:focus {
 
 .mini-cell-task.completed {
   opacity: 0.45 !important;
-  background: rgba(18, 18, 20, 0.5) !important;
+  background: var(--bg-tertiary) !important;
   border-color: rgba(255, 255, 255, 0.05) !important;
   border-left-color: rgba(255, 255, 255, 0.2) !important;
   box-shadow: none !important;
@@ -4333,7 +4342,7 @@ input:focus, textarea:focus, select:focus {
 
 .scheduled-event-card.completed {
   opacity: 0.45 !important;
-  background: rgba(18, 18, 20, 0.5) !important;
+  background: var(--bg-tertiary) !important;
   border-color: rgba(255, 255, 255, 0.05) !important;
   border-left-color: rgba(255, 255, 255, 0.2) !important;
   box-shadow: none !important;
@@ -4722,7 +4731,7 @@ input:focus, textarea:focus, select:focus {
 
 .allday-task-card.completed {
   opacity: 0.45 !important;
-  background: rgba(18, 18, 20, 0.5) !important;
+  background: var(--bg-tertiary) !important;
   border-color: rgba(255, 255, 255, 0.05) !important;
   border-left-color: rgba(255, 255, 255, 0.2) !important;
   box-shadow: none !important;
@@ -7759,6 +7768,7 @@ input:focus, textarea:focus, select:focus {
   height: 44px !important;
   border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.05)) !important;
   background: transparent !important;
+  min-width: 0;
 }
 .editor-header h3 {
   font-size: 13px !important;
@@ -7811,6 +7821,32 @@ input:focus, textarea:focus, select:focus {
   }
   .split-btn, .close-pane-btn {
     display: none !important;
+  }
+
+  /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+     Mobilde editör başlığı (not adı + klasör rozeti + araç çubuğu ikonları) tek
+     satıra sığmayabilir. Sayfanın tamamını yatay kaydırılabilir yapmak yerine
+     yalnızca bu başlık çubuğunu kendi içinde daraltıyor/kaydırıyoruz — asıl not
+     metni her zaman viewport'a sığıp satır kaydırması (word-wrap) yapmalı. */
+  .editor-header {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .editor-header::-webkit-scrollbar {
+    display: none;
+  }
+  .active-note-meta {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .active-note-meta h3 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
   }
 }
 
@@ -8160,6 +8196,47 @@ input:focus, textarea:focus, select:focus {
 .col-container:hover {
   background-color: rgba(255, 255, 255, 0.01);
   border-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+   Standart Markdown (GFM) "| a | b |" tablo sözdizimi için stil. Geniş tablolarda
+   yatay kaydırma sağlanır, tema değişkenleri kullanılarak açık/koyu modda uyumlu çalışır. */
+.md-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.md-table th,
+.md-table td {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.md-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.md-table td {
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+}
+
+.md-table tr:nth-child(even) td {
+  background: var(--bg-tertiary);
 }
 
 .media-resize-handle {

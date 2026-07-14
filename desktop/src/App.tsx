@@ -44,6 +44,9 @@ interface ShortcutKey {
   metaKey: boolean;
 }
 
+// Not başına saklanacak maksimum sürüm geçmişi anlık görüntüsü sayısı.
+const MAX_NOTE_VERSIONS = 20;
+
 const DEFAULT_SHORTCUTS: Record<string, { label: string; shortcut: ShortcutKey }> = {
   openBrowser: { label: 'Web Araştırma Tarayıcısını Aç', shortcut: { key: 'w', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   openHelp: { label: 'Yardım Rehberini Aç', shortcut: { key: 'h', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
@@ -157,6 +160,15 @@ export default function App() {
       document.documentElement.classList.remove('light-theme');
     }
     localStorage.setItem('app-theme', theme);
+
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Elektron'un çerçevesiz (frameless) pencere başlığındaki simge düğmeleri
+    // (minimize/maximize/kapat) React'ın dışında, işletim sistemi seviyesinde
+    // çizilir; bu yüzden tema her değiştiğinde ana sürece (main process) haber
+    // vererek titleBarOverlay rengini de güncelliyoruz.
+    if (isElectron) {
+      window.electron?.setTitleBarTheme?.(theme);
+    }
   }, [theme]);
 
   // Music Player States
@@ -1434,6 +1446,46 @@ export default function App() {
         }
       }
 
+      // Kademeli hatırlatmalar: bitiş tarihi geçmiş ama hâlâ tamamlanmamış
+      // görevler için, geciken süreye göre giderek aciliyeti artan ek
+      // bildirimler planla (gecikmeden +1, +3 ve +7 gün sonra, sabit bir saatte).
+      // Yalnızca henüz gelmemiş (gelecekteki) zaman noktaları planlanır.
+      const REMINDER_HOUR = 9; // Sabah 09:00
+      const ESCALATION_OFFSETS_DAYS = [
+        { days: 1, label: '1 gündür gecikti ⏰' },
+        { days: 3, label: '3 gündür gecikti ⚠️' },
+        { days: 7, label: '1 haftadır gecikti! 🚨' }
+      ];
+
+      const overdueTodos = activeTodos.filter(t => {
+        const [y, m, d] = t.dateStr.split('-').map(Number);
+        if (!y || !m || !d) return false;
+        const due = new Date(y, m - 1, d, 23, 59, 59);
+        return due.getTime() < Date.now();
+      });
+
+      for (let i = 0; i < Math.min(overdueTodos.length, 30); i++) {
+        const task = overdueTodos[i];
+        const [year, month, day] = task.dateStr.split('-').map(Number);
+        if (!year || !month || !day) continue;
+
+        ESCALATION_OFFSETS_DAYS.forEach(({ days, label }) => {
+          const reminderTime = new Date(year, month - 1, day + days, REMINDER_HOUR, 0, 0);
+          if (reminderTime.getTime() > Date.now()) {
+            notificationsToSchedule.push({
+              title: `Geciken Görev: ${label}`,
+              body: task.content,
+              id: uniqueIdCounter++,
+              schedule: { at: reminderTime, allowWhileIdle: true, exact: true },
+              channelId: 'tasks_v2',
+              attachments: [],
+              actionTypeId: '',
+              extra: null
+            });
+          }
+        });
+      }
+
       for (let i = 0; i < Math.min(alarms.length, 20); i++) {
         const alarm = alarms[i];
         const [year, month, day] = alarm.dateStr.split('-').map(Number);
@@ -1522,6 +1574,71 @@ export default function App() {
       setIsSidebarOpen(false);
     }
   }, [activeTab]);
+
+  // TÜRKÇE YORUM (Kural 5):
+  // Onboarding: Kasa (vault) tamamen boşsa (ilk açılış), kullanıcıya sistemi
+  // canlı örneklerle anlatan bir "Başlangıç" notu otomatik oluşturup açar.
+  // localStorage bayrağı sayesinde bu yalnızca bir kez tetiklenir — kullanıcı
+  // notu sildikten sonra tekrar dirilmez (RFC şablonundan farklı olarak).
+  useEffect(() => {
+    if (isBrowser) return; // Web mock'ta onboarding'i atla
+    // KRİTİK: notes state'i, gerçek disk okuması bitene kadar geçici olarak boş
+    // dizidir. hasCompletedInitialLoadRef kontrolü olmadan bu geçici boşluk
+    // "kasa gerçekten boş" sanılıp mevcut, dolu bir kasaya bile onboarding notu
+    // yazılabilirdi (yaşanan hata buydu). Bu yüzden en az bir gerçek yükleme
+    // tamamlanmadan asla tetiklenmez.
+    if (!hasCompletedInitialLoadRef.current) return;
+    if (notes.length !== 0) return;
+    if (localStorage.getItem('onboarding_completed_v1')) return;
+
+    const onboardingPath = '🚀 Başlangıç/👋 Hoş Geldin.md';
+    const onboardingContent = `# 👋 Ultimate NoteFactory'ye Hoş Geldin!
+
+Bu uygulamanın kalbinde yatan fikir basit: **tüm notların düz metin (.md) dosyaları olarak tamamen sana ait olsun.** Hiçbir "bulut kilidi" yok.
+
+## ⚡ Hızlı Yakalama Sözdizimi
+
+Yukarıdaki **Hızlı Not Fabrikası**'na şunu yazıp Enter'a bas, ne olduğunu gör:
+
+\`\`\`
+Faturayı öde @Ev #todo [due:2026-08-01] [p:high]
+\`\`\`
+
+Bu tek satır otomatik olarak: **Ev** klasörüne giden, **yüksek öncelikli**, **1 Ağustos**'a kadar süresi olan bir **görev** oluşturur.
+
+| Etiket | Ne yapar |
+| :--- | :--- |
+| \`@klasör\` | Notu o klasöre yönlendirir |
+| \`#todo\` | Girdiğini bir Göreve dönüştürür |
+| \`[p:high]\` | Öncelik atar (critical/high/medium/low) |
+| \`[due:2026-08-01]\` | Bitiş tarihi ekler |
+
+## ✅ Görev Listesi Örneği (bu notta dene!)
+
+- [ ] Bu bir görev — tıklayarak tamamlayabilirsin
+- [ ] Bunu tamamlanmış olarak işaretle, üstü çizili görünecek
+- [x] Bu zaten tamamlanmış bir görev
+
+## 🔗 Not Bağlantıları
+
+Herhangi bir yerde \`[[Not Adı]]\` yazarsan, o nota bağlantı oluşturur ve **Bağlantılı Notlar** panelinde görünür.
+
+## 📚 Daha Fazlası
+
+Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşabilirsin. Bu notu silmekten çekinme, sadece bir başlangıç noktası!
+`;
+
+    platform.writeNote(onboardingPath, onboardingContent).then(() => {
+      localStorage.setItem('onboarding_completed_v1', '1');
+      return loadAllData();
+    }).then(() => {
+      setActiveTab('notes');
+      setSelectedFolder('🚀 Başlangıç');
+      setActiveNotePath(onboardingPath);
+    }).catch(err => {
+      console.error('Failed to create onboarding note:', err);
+    });
+  }, [notes]);
 
   // TÜRKÇE YORUM (Kural 5):
   // Şablon (template) klasöründeki şablonları denetleyen ve eğer klasör boşsa varsayılan mühendislik planını (RFC) otomatik oluşturan yan etki.
@@ -1871,6 +1988,8 @@ export default function App() {
     setActiveTab('notes');
   };
 
+  const hasCompletedInitialLoadRef = useRef(false);
+
   const loadAllData = async () => {
     let loadedNotes: NoteItem[] | null = null;
     if (!isBrowser) {
@@ -1880,6 +1999,12 @@ export default function App() {
         const filteredList = fileList.filter(f => f.path !== 'music_library.md');
         setNotes(filteredList);
         loadedNotes = filteredList;
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // "notes" state'i ilk render'da (gerçek disk okuması tamamlanmadan önce) hâlâ
+        // boş dizi olduğundan, "kasa boş mu?" kontrolü yapan kodların (ör. onboarding)
+        // bu geçici boş durumu "gerçekten boş kasa" sanmaması için, en az bir kez
+        // gerçek bir dosya listesi okunduğunu bu ref ile işaretliyoruz.
+        hasCompletedInitialLoadRef.current = true;
 
         // Extract folder list and sort alphabetically (excluding media assets)
         const folderList = filteredList
@@ -2559,6 +2684,33 @@ export default function App() {
   // 3. Save Note Content
   const handleSaveNote = async (path: string, content: string) => {
     if (!isBrowser) {
+      // Sürüm Geçmişi (Version History): içerik gerçekten değiştiyse, üzerine
+      // yazılmadan önceki hâli `.versions/<yol>.json` altında JSON anlık
+      // görüntü olarak sakla. Nokta ile başlayan bu klasör hem masaüstü hem
+      // mobil dosya listelemesinde otomatik olarak gizlenir (bkz. platform.ts,
+      // electron/main.cjs), dolayısıyla not listesinde görünmez.
+      const previousContent = fileContents[path];
+      if (previousContent !== undefined && previousContent !== content) {
+        try {
+          const historyPath = `.versions/${path}.json`;
+          let history: { timestamp: number; content: string }[] = [];
+          try {
+            const raw = await platform.readNote(historyPath);
+            const parsed = raw ? JSON.parse(raw) : [];
+            if (Array.isArray(parsed)) history = parsed;
+          } catch (_e) {
+            // Geçmiş dosyası yok ya da bozuk; boş geçmişle devam et.
+          }
+          history.push({ timestamp: Date.now(), content: previousContent });
+          if (history.length > MAX_NOTE_VERSIONS) {
+            history = history.slice(history.length - MAX_NOTE_VERSIONS);
+          }
+          await platform.writeNote(historyPath, JSON.stringify(history));
+        } catch (e) {
+          console.error('Sürüm geçmişi kaydedilemedi:', e);
+        }
+      }
+
       await platform.writeNote(path, content);
       handleLocalSave(path, content);
       
@@ -2661,6 +2813,12 @@ export default function App() {
       }
       const res = await platform.deletePath(path);
       if (res.success) {
+        // Silinen nota ait sürüm geçmişi anlık görüntüsünü de temizle (best-effort).
+        if (isFile) {
+          try {
+            await platform.deletePath(`.versions/${path}.json`);
+          } catch (_e) { /* geçmiş dosyası zaten yoksa yok say */ }
+        }
         await loadAllData();
       }
     } else {

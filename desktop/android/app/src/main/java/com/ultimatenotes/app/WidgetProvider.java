@@ -67,13 +67,13 @@ public class WidgetProvider extends AppWidgetProvider {
                 }
             }
         } else if ("com.ultimatenotes.app.action.TOGGLE_ITEM".equals(action)) {
-            int position = intent.getIntExtra("item_position", -1);
+            int lineIndex = intent.getIntExtra("line_index", -1);
             String clickAction = intent.getStringExtra("click_action");
             SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
             String pinnedPath = prefs.getString("widget_pinned_list", null);
-            if (position != -1 && pinnedPath != null) {
+            if (lineIndex != -1 && pinnedPath != null) {
                 if ("delete".equals(clickAction)) {
-                    deleteItemInFile(context, pinnedPath, position);
+                    deleteItemInFile(context, pinnedPath, lineIndex);
                     mgr.notifyAppWidgetViewDataChanged(appWidgetIds, R.id.widget_list);
                     for (int appWidgetId : appWidgetIds) {
                         updateAppWidget(context, mgr, appWidgetId);
@@ -82,12 +82,12 @@ public class WidgetProvider extends AppWidgetProvider {
                     String currentText = intent.getStringExtra("item_text");
                     Intent editIntent = new Intent(context, QuickAddActivity.class);
                     editIntent.putExtra("mode", "edit");
-                    editIntent.putExtra("item_position", position);
+                    editIntent.putExtra("line_index", lineIndex);
                     editIntent.putExtra("item_text", currentText);
                     editIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     context.startActivity(editIntent);
                 } else {
-                    toggleItemInFile(context, pinnedPath, position);
+                    toggleItemInFile(context, pinnedPath, lineIndex);
                     mgr.notifyAppWidgetViewDataChanged(appWidgetIds, R.id.widget_list);
                     for (int appWidgetId : appWidgetIds) {
                         updateAppWidget(context, mgr, appWidgetId);
@@ -256,8 +256,8 @@ public class WidgetProvider extends AppWidgetProvider {
         return lists;
     }
 
-    private static void toggleItemInFile(Context context, String pinnedPath, int position) {
-        File file = null;
+    // Kök dizinleri tarayıp sabitlenmiş not dosyasını döndürür.
+    private static File resolveNoteFile(Context context, String pinnedPath) {
         File[] rootDirs = new File[]{
             new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
             new File(context.getExternalFilesDir(null), "Documents/UltimateNotes"),
@@ -265,46 +265,30 @@ public class WidgetProvider extends AppWidgetProvider {
             new File(context.getFilesDir(), "UltimateNotes"),
             new File(context.getFilesDir(), "Documents/UltimateNotes")
         };
-
         for (File rootDir : rootDirs) {
             File testFile = new File(rootDir, pinnedPath);
             if (testFile.exists() && testFile.isFile()) {
-                file = testFile;
-                break;
+                return testFile;
             }
         }
+        return null;
+    }
 
-        if (file == null) {
-            return;
-        }
-
+    private static List<String> readAllLines(File file) {
         List<String> lines = new java.util.ArrayList<>();
         try (BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(file))) {
             String line;
-            int currentIndex = 0;
             while ((line = br.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.startsWith("- [ ]") || trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") || (trimmed.startsWith("- ") && !trimmed.startsWith("- ["))) {
-                    if (currentIndex == position) {
-                        if (trimmed.startsWith("- [ ]")) {
-                            line = line.replace("- [ ]", "- [x]");
-                        } else if (trimmed.startsWith("- [x]")) {
-                            line = line.replace("- [x]", "- [ ]");
-                        } else if (trimmed.startsWith("- [X]")) {
-                            line = line.replace("- [X]", "- [ ]");
-                        } else if (trimmed.startsWith("- ")) {
-                            line = line.replace("- ", "- [x] ");
-                        }
-                    }
-                    currentIndex++;
-                }
                 lines.add(line);
             }
         } catch (Exception e) {
             e.printStackTrace();
-            return;
+            return null;
         }
+        return lines;
+    }
 
+    private static void writeAllLines(File file, List<String> lines) {
         try (java.io.BufferedWriter bw = new java.io.BufferedWriter(new java.io.FileWriter(file))) {
             for (int i = 0; i < lines.size(); i++) {
                 bw.write(lines.get(i));
@@ -317,57 +301,61 @@ public class WidgetProvider extends AppWidgetProvider {
         }
     }
 
-    private static void deleteItemInFile(Context context, String pinnedPath, int position) {
-        File file = null;
-        File[] rootDirs = new File[]{
-            new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(context.getExternalFilesDir(null), "Documents/UltimateNotes"),
-            new File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(context.getFilesDir(), "UltimateNotes"),
-            new File(context.getFilesDir(), "Documents/UltimateNotes")
-        };
-
-        for (File rootDir : rootDirs) {
-            File testFile = new File(rootDir, pinnedPath);
-            if (testFile.exists() && testFile.isFile()) {
-                file = testFile;
-                break;
-            }
-        }
-
+    // Mutlak satır indeksine göre checkbox durumunu değiştirir.
+    private static void toggleItemInFile(Context context, String pinnedPath, int lineIndex) {
+        File file = resolveNoteFile(context, pinnedPath);
         if (file == null) {
             return;
         }
 
-        List<String> lines = new java.util.ArrayList<>();
-        try (BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(file))) {
-            String line;
-            int currentIndex = 0;
-            while ((line = br.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.startsWith("- [ ]") || trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") || (trimmed.startsWith("- ") && !trimmed.startsWith("- ["))) {
-                    if (currentIndex == position) {
-                        currentIndex++;
-                        continue;
-                    }
-                    currentIndex++;
-                }
-                lines.add(line);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        List<String> lines = readAllLines(file);
+        if (lines == null || lineIndex < 0 || lineIndex >= lines.size()) {
             return;
         }
 
-        try (java.io.BufferedWriter bw = new java.io.BufferedWriter(new java.io.FileWriter(file))) {
-            for (int i = 0; i < lines.size(); i++) {
-                bw.write(lines.get(i));
-                if (i < lines.size() - 1) {
-                    bw.newLine();
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        String line = lines.get(lineIndex);
+        String trimmed = line.trim();
+        if (trimmed.startsWith("- [ ]")) {
+            line = line.replaceFirst("- \\[ \\]", "- [x]");
+        } else if (trimmed.startsWith("- [x]")) {
+            line = line.replaceFirst("- \\[x\\]", "- [ ]");
+        } else if (trimmed.startsWith("- [X]")) {
+            line = line.replaceFirst("- \\[X\\]", "- [ ]");
+        } else {
+            return; // Todo satırı değil; dokunma.
         }
+        lines.set(lineIndex, line);
+
+        writeAllLines(file, lines);
+    }
+
+    // Mutlak satır indeksindeki todo satırını (varsa hemen altındaki girintili
+    // detay satırıyla birlikte) siler.
+    private static void deleteItemInFile(Context context, String pinnedPath, int lineIndex) {
+        File file = resolveNoteFile(context, pinnedPath);
+        if (file == null) {
+            return;
+        }
+
+        List<String> lines = readAllLines(file);
+        if (lines == null || lineIndex < 0 || lineIndex >= lines.size()) {
+            return;
+        }
+
+        String trimmed = lines.get(lineIndex).trim();
+        if (!(trimmed.startsWith("- [ ]") || trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]"))) {
+            return; // Todo satırı değil; güvenlik için silme.
+        }
+
+        // Hemen altındaki girintili detay satırını da temizle (yetim kalmasın).
+        if (lineIndex + 1 < lines.size()) {
+            String nextLine = lines.get(lineIndex + 1);
+            if (nextLine.startsWith("  ") && !nextLine.trim().startsWith("- ") && !nextLine.trim().startsWith("* ")) {
+                lines.remove(lineIndex + 1);
+            }
+        }
+        lines.remove(lineIndex);
+
+        writeAllLines(file, lines);
     }
 }

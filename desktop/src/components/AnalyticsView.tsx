@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
-import { 
-  Clock, CheckSquare, FileText, BarChart2, Calendar, TrendingUp, BookOpen, ChevronRight
+import {
+  Clock, CheckSquare, FileText, BarChart2, Calendar, TrendingUp, BookOpen, ChevronRight, AlertTriangle, Sun, Archive
 } from 'lucide-react';
 
 interface AnalyticsViewProps {
@@ -8,6 +8,22 @@ interface AnalyticsViewProps {
   fileContents: Record<string, string>;
   onSelectNote: (path: string) => void;
 }
+
+// Görev satırındaki "- [ ] metin [due:...] #etiket" gibi eklentileri temizleyip
+// yalnızca okunabilir görev metnini döndürür.
+function cleanTaskText(raw: string): string {
+  return raw
+    .replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/g, '')
+    .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/g, '')
+    .replace(/\[p:[a-zçığşü]+\]/gi, '')
+    .replace(/\[repeat:[a-zçığşü]+\]/gi, '')
+    .replace(/#[a-zA-Z0-9_çığşüöÇİĞŞÜÖ]+/g, '')
+    .trim();
+}
+
+// Durağan proje eşiği: bu kadar gündür güncellenmemiş, hâlâ açık görevi olan
+// notlar "durağan" sayılır.
+const STALE_DAYS_THRESHOLD = 7;
 
 export default function AnalyticsView({
   notes,
@@ -24,17 +40,31 @@ export default function AnalyticsView({
     
     // Günlük odaklanma süreleri eşlemesi (Tarih -> Toplam Dakika)
     const dailyFocus: Record<string, number> = {};
-    
+
     // Klasör bazında not sayıları
     const folderStats: Record<string, number> = { 'Kök Dizin': 0 };
 
     // Not dosyalarını filtrele (excalidraw dosyaları hariç düz metin notları)
     const textNotes = notes.filter(n => n.type === 'note');
 
+    // Günlük Özet: geciken görevler, bugüne düşen görevler ve durağan projeler
+    const dueRegex = /\[due:(\d{4}-\d{2}-\d{2})(?:\s\d{2}:\d{2})?\]/;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStr = `${todayStart.getFullYear()}-${String(todayStart.getMonth() + 1).padStart(2, '0')}-${String(todayStart.getDate()).padStart(2, '0')}`;
+    const now = Date.now();
+
+    interface DueTask { path: string; noteName: string; text: string; dueDate: string; }
+    const overdueTasks: DueTask[] = [];
+    const dueTodayTasks: DueTask[] = [];
+
+    interface StaleNote { path: string; noteName: string; daysSinceUpdate: number; pendingCount: number; }
+    const staleNotesMap: Record<string, StaleNote> = {};
+
     // Her bir notun içeriğini tara
     textNotes.forEach(note => {
       const content = fileContents[note.path] || '';
-      
+
       // Kelime sayısını topla
       const words = content.trim().split(/\s+/).filter(w => w.length > 0).length;
       totalWords += words;
@@ -48,16 +78,37 @@ export default function AnalyticsView({
         folderStats['Kök Dizin']++;
       }
 
+      const noteName = note.name || pathParts[pathParts.length - 1];
+      let notePendingCount = 0;
+
       // Satır satır tara
       const lines = content.split('\n');
       lines.forEach(line => {
         const trimmed = line.trim();
-        
+
         // 1. Görev Durumu Taraması (- [ ] ve - [x])
         if (trimmed.startsWith('- [x]') || trimmed.startsWith('- [X]')) {
           completedTasks++;
         } else if (trimmed.startsWith('- [ ]')) {
           pendingTasks++;
+          notePendingCount++;
+
+          // Geciken / bugüne düşen görev tespiti
+          const dm = trimmed.match(dueRegex);
+          if (dm) {
+            const dueDateStr = dm[1];
+            const taskEntry: DueTask = {
+              path: note.path,
+              noteName,
+              text: cleanTaskText(trimmed.substring(5)),
+              dueDate: dueDateStr
+            };
+            if (dueDateStr === todayStr) {
+              dueTodayTasks.push(taskEntry);
+            } else if (dueDateStr < todayStr) {
+              overdueTasks.push(taskEntry);
+            }
+          }
         }
 
         // 2. Odak Süresi Taraması (- YYYY-MM-DD: XX dk çalışıldı)
@@ -70,7 +121,18 @@ export default function AnalyticsView({
           dailyFocus[date] = (dailyFocus[date] || 0) + mins;
         }
       });
+
+      // Durağan proje tespiti: açık görevi olan, uzun süredir güncellenmemiş notlar
+      if (notePendingCount > 0 && note.updatedAt) {
+        const daysSinceUpdate = Math.floor((now - note.updatedAt) / (1000 * 60 * 60 * 24));
+        if (daysSinceUpdate >= STALE_DAYS_THRESHOLD) {
+          staleNotesMap[note.path] = { path: note.path, noteName, daysSinceUpdate, pendingCount: notePendingCount };
+        }
+      }
     });
+
+    overdueTasks.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const staleNotesList = Object.values(staleNotesMap).sort((a, b) => b.daysSinceUpdate - a.daysSinceUpdate);
 
     // Son 7 günlük odak verilerini al (SVG grafik için)
     const last7Days = Array.from({ length: 7 }).map((_, i) => {
@@ -96,7 +158,10 @@ export default function AnalyticsView({
       last7Days,
       folderStats: Object.entries(folderStats)
         .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
+        .sort((a, b) => b.count - a.count),
+      overdueTasks,
+      dueTodayTasks,
+      staleNotesList
     };
   }, [notes, fileContents]);
 
@@ -107,7 +172,10 @@ export default function AnalyticsView({
     totalWords,
     totalNotes,
     last7Days,
-    folderStats
+    folderStats,
+    overdueTasks,
+    dueTodayTasks,
+    staleNotesList
   } = analyticsData;
 
   const totalTasks = completedTasks + pendingTasks;
@@ -135,6 +203,114 @@ export default function AnalyticsView({
         <BarChart2 size={24} style={{ color: 'var(--accent)' }} />
         <h2 style={{ fontSize: '20px', fontWeight: 600, margin: 0 }}>Verimlilik ve Çalışma Süresi Analiz Paneli</h2>
       </div>
+
+      {/* Daily Review: Geciken + Bugüne Düşen Görevler + Durağan Projeler */}
+      {(overdueTasks.length > 0 || dueTodayTasks.length > 0 || staleNotesList.length > 0) && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: '16px'
+        }}>
+          {/* Geciken Görevler */}
+          <div style={{
+            background: 'var(--bg-sidebar)',
+            border: '1px solid rgba(239, 68, 68, 0.25)',
+            borderRadius: '12px',
+            padding: '16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            maxHeight: '260px',
+            overflowY: 'auto'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={16} style={{ color: '#ef4444' }} />
+              <span style={{ fontSize: '14px', fontWeight: 600 }}>Geciken Görevler</span>
+              <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, color: '#ef4444' }}>{overdueTasks.length}</span>
+            </div>
+            {overdueTasks.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Geciken görev yok. 🎉</div>
+            ) : (
+              overdueTasks.map((t, i) => (
+                <div
+                  key={i}
+                  onClick={() => onSelectNote(t.path)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', background: 'rgba(239, 68, 68, 0.06)' }}
+                >
+                  <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>{t.text || '(başlıksız görev)'}</span>
+                  <span style={{ fontSize: '10px', color: '#ef4444' }}>{t.dueDate} · {t.noteName}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Bugüne Düşen Görevler */}
+          <div style={{
+            background: 'var(--bg-sidebar)',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            borderRadius: '12px',
+            padding: '16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            maxHeight: '260px',
+            overflowY: 'auto'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sun size={16} style={{ color: '#f59e0b' }} />
+              <span style={{ fontSize: '14px', fontWeight: 600 }}>Bugüne Düşen Görevler</span>
+              <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, color: '#f59e0b' }}>{dueTodayTasks.length}</span>
+            </div>
+            {dueTodayTasks.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Bugün için planlanmış görev yok.</div>
+            ) : (
+              dueTodayTasks.map((t, i) => (
+                <div
+                  key={i}
+                  onClick={() => onSelectNote(t.path)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', background: 'rgba(245, 158, 11, 0.06)' }}
+                >
+                  <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>{t.text || '(başlıksız görev)'}</span>
+                  <span style={{ fontSize: '10px', color: '#f59e0b' }}>{t.noteName}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Durağan Projeler */}
+          <div style={{
+            background: 'var(--bg-sidebar)',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            borderRadius: '12px',
+            padding: '16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            maxHeight: '260px',
+            overflowY: 'auto'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Archive size={16} style={{ color: '#8b5cf6' }} />
+              <span style={{ fontSize: '14px', fontWeight: 600 }}>Durağan Projeler</span>
+              <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, color: '#8b5cf6' }}>{staleNotesList.length}</span>
+            </div>
+            {staleNotesList.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Durağan proje yok.</div>
+            ) : (
+              staleNotesList.map((s, i) => (
+                <div
+                  key={i}
+                  onClick={() => onSelectNote(s.path)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer', padding: '6px 8px', borderRadius: '6px', background: 'rgba(139, 92, 246, 0.06)' }}
+                >
+                  <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>{s.noteName}</span>
+                  <span style={{ fontSize: '10px', color: '#8b5cf6' }}>{s.daysSinceUpdate} gündür güncellenmedi · {s.pendingCount} açık görev</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Summary Cards Row */}
       <div style={{

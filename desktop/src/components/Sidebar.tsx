@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Inbox, FileText, Calendar, Clock, Database, Folder, Tag, Plus, Settings, CheckSquare, Zap, Trash2, Globe,
   Briefcase, Code, Heart, Star, BookOpen, Sparkles, Coffee, Rocket, Smile, HelpCircle, Headphones,
-  ChevronLeft, ChevronRight, Wallet, KanbanSquare, BarChart2, Layout, Building2, Volume2, FlaskConical, Compass, Sun, Moon
+  ChevronLeft, ChevronRight, ChevronDown, Wallet, KanbanSquare, BarChart2, Layout, Building2, Volume2, FlaskConical, Compass, Sun, Moon
 } from 'lucide-react';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
@@ -657,6 +657,27 @@ export default function Sidebar({
   const [isWorkExpanded, setIsWorkExpanded] = React.useState(false);
   const [isToolsExpanded, setIsToolsExpanded] = React.useState(false);
 
+  // Klasör ağacı Accordion durumu: alt klasörü olan bir klasör daraltıldığında
+  // (collapsed) tüm alt öğeleri gizlenir. Seçim yapılabilirlik için localStorage'da saklanır.
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('sidebar_collapsed_folders');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch (e) {
+      return new Set();
+    }
+  });
+
+  const toggleFolderCollapse = (folder: string) => {
+    setCollapsedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      localStorage.setItem('sidebar_collapsed_folders', JSON.stringify([...next]));
+      return next;
+    });
+  };
+
   const renderItem = (item: typeof primaryItems[0]) => {
     const Icon = item.icon;
     return (
@@ -799,7 +820,18 @@ export default function Sidebar({
                 const parts = folder.split('/');
                 const name = parts[parts.length - 1];
                 const depth = parts.length - 1;
-                
+
+                // Bu klasörün üstündeki (ata) klasörlerden herhangi biri daraltılmışsa
+                // (collapsed) bu klasörü gizle — Accordion görünürlük mantığı.
+                const isHiddenByCollapsedAncestor = parts.slice(0, depth).some((_, i) => {
+                  const ancestorPath = parts.slice(0, i + 1).join('/');
+                  return collapsedFolders.has(ancestorPath);
+                });
+                if (isHiddenByCollapsedAncestor) return null;
+
+                const hasChildren = folders.some(f => f !== folder && f.startsWith(folder + '/'));
+                const isCollapsed = collapsedFolders.has(folder);
+
                 const custom = folderCustomizations[folder] || {};
                 const customColor = custom.color;
                 const customIconName = custom.icon || 'Folder';
@@ -808,7 +840,7 @@ export default function Sidebar({
 
                 const itemStyle: React.CSSProperties = {
                   paddingLeft: `${10 + depth * 12}px`,
-                  paddingRight: '28px',
+                  paddingRight: hasChildren ? '46px' : '28px',
                   width: '100%'
                 };
 
@@ -835,23 +867,48 @@ export default function Sidebar({
                       }}
                       onContextMenu={(e) => onFolderContextMenu?.(e, folder)}
                     >
-                      <CustomFolderIcon 
-                        size={14} 
-                        style={{ 
-                          opacity: customColor ? 1 : (1 - depth * 0.15), 
-                          flexShrink: 0, 
-                          color: customColor || undefined 
-                        }} 
+                      <CustomFolderIcon
+                        size={14}
+                        style={{
+                          opacity: customColor ? 1 : (1 - depth * 0.15),
+                          flexShrink: 0,
+                          color: customColor || undefined
+                        }}
                       />
-                      <span style={{ 
-                        fontSize: depth > 0 ? '11.5px' : '12px', 
-                        fontWeight: (depth === 0 || isActive) ? '600' : '400', 
-                        overflow: 'hidden', 
-                        textOverflow: 'ellipsis', 
+                      <span style={{
+                        fontSize: depth > 0 ? '11.5px' : '12px',
+                        fontWeight: (depth === 0 || isActive) ? '600' : '400',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                         color: customColor || undefined
                       }}>{name}</span>
                     </button>
+                    {hasChildren && (
+                      <span
+                        role="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFolderCollapse(folder);
+                        }}
+                        title={isCollapsed ? 'Genişlet' : 'Daralt'}
+                        style={{
+                          position: 'absolute',
+                          right: '26px',
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '16px',
+                          height: '16px',
+                          cursor: 'pointer',
+                          color: 'var(--text-muted)'
+                        }}
+                      >
+                        {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                      </span>
+                    )}
                     <button
                       className="btn-delete-folder"
                       onClick={(e) => {

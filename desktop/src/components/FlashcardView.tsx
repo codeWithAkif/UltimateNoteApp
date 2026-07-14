@@ -503,14 +503,26 @@ export default function FlashcardView({
     const render = () => {
       ctx.clearRect(0, 0, 600, 400);
       const todayStr = getTodayStr();
-      
+
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // Bu sahne Canvas API ile elle çiziliyor; CSS değişkenlerine bağlı değil,
+      // dolayısıyla uygulama tema değiştirse bile sabit koyu renklerde kalıyordu.
+      // Yapısal renkleri (zemin, ızgara, sınırlar, soluk metin) açık/koyu temaya
+      // göre seçilen bir palet üzerinden çiziyoruz; canlı vurgu/durum renklerine
+      // (oda renkleri, kırmızı/yeşil, parçacıklar) dokunmuyoruz — onlar zaten
+      // her iki temada da okunaklı.
+      const isLight = document.documentElement.classList.contains('light-theme');
+      const palette = isLight
+        ? { mapBg: '#eef1f6', roomBg: 'rgba(255, 255, 255, 0.75)', roomBgHover: 'rgba(226, 232, 240, 0.9)', gridLine: 'rgba(15, 23, 42, 0.05)', roomBorder: 'rgba(15, 23, 42, 0.1)', titleText: '#0f172a', mutedText: 'rgba(15, 23, 42, 0.35)', mutedText2: 'rgba(15, 23, 42, 0.55)' }
+        : { mapBg: '#0b0f19', roomBg: 'rgba(15, 23, 42, 0.7)', roomBgHover: 'rgba(30, 41, 59, 0.85)', gridLine: 'rgba(255, 255, 255, 0.02)', roomBorder: 'rgba(255, 255, 255, 0.08)', titleText: '#fff', mutedText: 'rgba(255,255,255,0.35)', mutedText2: 'rgba(255,255,255,0.6)' };
+
       if (activeRoom === null) {
         // --- 1. SARAY HARİTASI (KUŞ BAKIŞI) ---
-        ctx.fillStyle = '#0b0f19';
+        ctx.fillStyle = palette.mapBg;
         ctx.fillRect(0, 0, 600, 400);
-        
+
         // Zemin ızgara çizgileri
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+        ctx.strokeStyle = palette.gridLine;
         ctx.lineWidth = 1;
         for (let i = 0; i < 600; i += 30) {
           ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 400); ctx.stroke();
@@ -544,7 +556,7 @@ export default function FlashcardView({
           });
           
           // Oda kutusu
-          ctx.fillStyle = isHovered ? 'rgba(30, 41, 59, 0.85)' : 'rgba(15, 23, 42, 0.7)';
+          ctx.fillStyle = isHovered ? palette.roomBgHover : palette.roomBg;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
             ctx.roundRect(room.x, room.y, room.w, room.h, 12);
@@ -552,24 +564,24 @@ export default function FlashcardView({
             ctx.rect(room.x, room.y, room.w, room.h);
           }
           ctx.fill();
-          
-          ctx.strokeStyle = isHovered ? room.color : 'rgba(255, 255, 255, 0.08)';
+
+          ctx.strokeStyle = isHovered ? room.color : palette.roomBorder;
           ctx.lineWidth = isHovered ? 2 : 1;
           ctx.stroke();
-          
+
           // Başlık
           ctx.font = 'bold 13px sans-serif';
-          ctx.fillStyle = '#fff';
+          ctx.fillStyle = palette.titleText;
           ctx.textAlign = 'left';
           ctx.fillText(`${room.emoji} ${room.name}`, room.x + 16, room.y + 30);
-          
+
           // Bilgiler
           ctx.font = '11px sans-serif';
           if (roomTotal === 0) {
-            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.fillStyle = palette.mutedText;
             ctx.fillText('Lokasyon Boş', room.x + 16, room.y + 62);
           } else {
-            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.fillStyle = palette.mutedText2;
             ctx.fillText(`Toplam: ${roomTotal} Kart`, room.x + 16, room.y + 58);
             
             if (roomDue > 0) {
@@ -602,11 +614,11 @@ export default function FlashcardView({
         // --- 2. ODA GÖRÜNÜMÜ (ZOOMED) ---
         const room = PALACE_ROOMS.find(r => r.id === activeRoom)!;
         
-        ctx.fillStyle = '#060a13';
+        ctx.fillStyle = isLight ? '#f4f6fa' : '#060a13';
         ctx.fillRect(0, 0, 600, 400);
-        
+
         // "Geri Dön" butonu çizimi
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.fillStyle = isLight ? 'rgba(15, 23, 42, 0.04)' : 'rgba(255, 255, 255, 0.04)';
         ctx.beginPath();
         if (typeof ctx.roundRect === 'function') {
           ctx.roundRect(10, 10, 100, 30, 6);
@@ -614,21 +626,21 @@ export default function FlashcardView({
           ctx.rect(10, 10, 100, 30);
         }
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.strokeStyle = isLight ? 'rgba(15, 23, 42, 0.15)' : 'rgba(255, 255, 255, 0.15)';
         ctx.stroke();
-        
+
         ctx.font = '11.5px sans-serif';
-        ctx.fillStyle = '#cbd5e1';
+        ctx.fillStyle = isLight ? '#334155' : '#cbd5e1';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('⬅ Saraya Dön', 60, 25);
-        
+
         // Oda Başlığı
         ctx.font = 'bold 16px sans-serif';
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = palette.titleText;
         ctx.textAlign = 'left';
         ctx.fillText(`${room.emoji} ${room.name}`, 130, 25);
-        
+
         // Oda sınır duvarları
         ctx.strokeStyle = `${room.color}33`;
         ctx.lineWidth = 2;
@@ -639,9 +651,9 @@ export default function FlashcardView({
           ctx.rect(30, 50, 540, 320);
         }
         ctx.stroke();
-        
+
         // Oda içi karo ızgarası
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.015)';
+        ctx.strokeStyle = palette.gridLine;
         ctx.lineWidth = 1;
         for (let i = 50; i < 550; i += 25) {
           ctx.beginPath(); ctx.moveTo(i, 60); ctx.lineTo(i, 360); ctx.stroke();
@@ -738,12 +750,14 @@ export default function FlashcardView({
           }
           
           // Nesne dairesi arka planı
-          ctx.fillStyle = isLocusHovered ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.4)';
+          ctx.fillStyle = isLocusHovered
+            ? (isLight ? 'rgba(15, 23, 42, 0.08)' : 'rgba(255,255,255,0.08)')
+            : (isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(0, 0, 0, 0.4)');
           ctx.beginPath();
           ctx.arc(locus.x, locus.y, 25, 0, Math.PI * 2);
           ctx.fill();
-          
-          ctx.strokeStyle = isLocusHovered ? '#fff' : 'rgba(255,255,255,0.1)';
+
+          ctx.strokeStyle = isLocusHovered ? palette.titleText : (isLight ? 'rgba(15, 23, 42, 0.15)' : 'rgba(255,255,255,0.1)');
           ctx.lineWidth = isLocusHovered ? 2 : 1;
           ctx.beginPath();
           ctx.arc(locus.x, locus.y, 25, 0, Math.PI * 2);
@@ -763,7 +777,7 @@ export default function FlashcardView({
           
           // Nesne İsmi
           ctx.font = '11px sans-serif';
-          ctx.fillStyle = isLocusHovered ? '#fff' : 'rgba(255,255,255,0.7)';
+          ctx.fillStyle = isLocusHovered ? palette.titleText : (isLight ? 'rgba(15, 23, 42, 0.7)' : 'rgba(255,255,255,0.7)');
           ctx.fillText(locus.name, locus.x, locus.y + 40);
           
           // Görev bekleyen kart sayısı balonu

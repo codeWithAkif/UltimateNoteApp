@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electron', {
   resolveYoutubePlaylist: (playlistId) => ipcRenderer.invoke('resolve-youtube-playlist', playlistId),
   fileExists: (relativePath) => ipcRenderer.invoke('file-exists', relativePath),
   toggleMiniMode: (isMini) => ipcRenderer.invoke('toggle-mini-mode', { isMini }),
+  setTitleBarTheme: (theme) => ipcRenderer.invoke('set-titlebar-theme', theme),
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);

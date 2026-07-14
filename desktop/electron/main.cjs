@@ -582,6 +582,21 @@ ipcMain.handle('save-git-creds', () => {
   return { success: true };
 });
 
+// IPC Handler: Uygulamanın açık/koyu tema durumuna göre özel (frameless) pencere
+// başlığındaki minimize/maximize/kapat kontrollerinin rengini günceller. Bu
+// kontroller React tarafında değil, işletim sistemi seviyesinde (titleBarOverlay)
+// çizildiği için tema değişimini renderer'dan main process'e bildirmemiz gerekir.
+ipcMain.handle('set-titlebar-theme', (event, theme) => {
+  if (!mainWindow) return { success: false };
+  const isLight = theme === 'light';
+  mainWindow.setTitleBarOverlay({
+    color: isLight ? '#f8fafc' : '#121214',
+    symbolColor: isLight ? '#0f172a' : '#e1e1e6',
+    height: 35
+  });
+  return { success: true };
+});
+
 ipcMain.handle('toggle-mini-mode', async (event, { isMini }) => {
   if (isMini) {
     originalBounds = mainWindow.getBounds();

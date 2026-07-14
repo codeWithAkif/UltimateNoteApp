@@ -6,7 +6,7 @@ import {
   RotateCcw, Volume2, Mic, Square, Check, Copy, Table, HelpCircle, Activity, Heart, Sparkles, 
   Pin, Music, X, Globe, PenTool, Database, Inbox,
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
-  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video
+  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History
 } from 'lucide-react';
 import { platform, isElectron, isCapacitor, isBrowser } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
@@ -425,48 +425,60 @@ const InlineExcalidrawEditor: React.FC<InlineExcalidrawEditorProps> = ({
 };
 
 // Helper to calculate caret coordinates inside a textarea
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Modül seviyesinde tek bir aynalama (mirror) elemanı önbelleğe alınır; eskiden
+// her çağrıda yeni <div>/<span> oluşturup DOM'a ekleyip siliyorduk, bu da
+// (örn. "[[" ile wiki-link yazarken) her tuş vuruşunda zorunlu bir senkron
+// reflow'a (forced layout) yol açıp donmaya sebep oluyordu.
+let caretMirrorEls: { div: HTMLDivElement; span: HTMLSpanElement } | null = null;
+
 function getCaretCoordinates(
   element: HTMLTextAreaElement,
   position: number
 ): { top: number; left: number } {
-  const div = document.createElement('div');
+  if (!caretMirrorEls) {
+    const div = document.createElement('div');
+    const span = document.createElement('span');
+    div.style.position = 'fixed';
+    div.style.visibility = 'hidden';
+    div.style.top = '0';
+    div.style.left = '0';
+    div.style.pointerEvents = 'none';
+    div.appendChild(span);
+    document.body.appendChild(div);
+    caretMirrorEls = { div, span };
+  }
+  const { div, span } = caretMirrorEls;
   const style = window.getComputedStyle(element);
-  
+
   const properties = [
     'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
     'borderWidth', 'borderStyle', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
     'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant', 'lineHeight',
     'letterSpacing', 'wordSpacing', 'textTransform', 'whiteSpace', 'wordBreak', 'wordWrap'
   ];
-  
   properties.forEach(prop => {
     (div.style as any)[prop] = (style as any)[prop];
   });
-  
-  div.style.position = 'absolute';
-  div.style.visibility = 'hidden';
   div.style.whiteSpace = 'pre-wrap';
   div.style.wordWrap = 'break-word';
   div.style.width = `${element.clientWidth}px`;
-  
+
   const textBeforeCaret = element.value.substring(0, position);
-  div.textContent = textBeforeCaret;
-  
-  const span = document.createElement('span');
+  div.textContent = '';
+  div.appendChild(document.createTextNode(textBeforeCaret));
   span.textContent = element.value.substring(position, position + 1) || '.';
   div.appendChild(span);
-  
-  document.body.appendChild(div);
-  
+
   const lineHeightVal = parseInt(style.lineHeight || '');
   const finalLineHeight = isNaN(lineHeightVal) ? parseInt(style.fontSize || '14') * 1.25 : lineHeightVal;
-  
+
+  // Tek zorunlu layout okuması burada gerçekleşir.
   const coordinates = {
     top: span.offsetTop + finalLineHeight - element.scrollTop + element.offsetTop,
     left: span.offsetLeft - element.scrollLeft + element.offsetLeft
   };
-  
-  document.body.removeChild(div);
+
   return coordinates;
 }
 
@@ -1950,6 +1962,13 @@ export default function NotesView({
   
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Blok gömme (Block Transclusion) sihirbazında seçilen not, arama filtresi ve satır bilgilerini tutan durum değişkenleri.
+  // Sürüm Geçmişi (Version History) modalının durumu: notun önceki içerik
+  // anlık görüntülerini listeler ve seçilen bir sürümü geri yükleme imkanı sağlar.
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [versionHistory, setVersionHistory] = useState<{ timestamp: number; content: string }[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [previewVersion, setPreviewVersion] = useState<{ timestamp: number; content: string } | null>(null);
+
   const [isTransclusionModalOpen, setIsTransclusionModalOpen] = useState(false);
   const [transclusionSearch, setTransclusionSearch] = useState('');
   const [selectedTransclusionNote, setSelectedTransclusionNote] = useState<any | null>(null);
@@ -2083,6 +2102,76 @@ export default function NotesView({
       .slice(0, 4)
       .map(s => s.note);
   }, [activeNotePath, fileContents, notes]);
+
+  // Backlink'ler: [[Not Adı]] sözdizimiyle aktif nota referans veren diğer
+  // notları bulur (GraphView'daki çözümleme mantığıyla aynı).
+  const backlinks = useMemo(() => {
+    if (!activeNotePath || !notes || notes.length === 0) return [];
+
+    const activeNote = notes.find(n => n.path === activeNotePath);
+    if (!activeNote) return [];
+
+    const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+    const results: { note: any; snippet: string }[] = [];
+
+    notes.forEach(note => {
+      if (note.path === activeNotePath) return;
+      const content = fileContents[note.path] || '';
+      if (!content.includes('[[')) return;
+
+      linkRegex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = linkRegex.exec(content)) !== null) {
+        const linkTarget = match[1].trim().toLowerCase();
+        const nameLower = activeNote.name.toLowerCase();
+        const pathLower = activeNote.path.toLowerCase().replace('.md', '').replace('.excalidraw', '');
+        const isMatch = nameLower === linkTarget || pathLower === linkTarget || pathLower.endsWith('/' + linkTarget);
+
+        if (isMatch) {
+          // Bağlantının geçtiği satırı kısa bir önizleme olarak al
+          const lineStart = content.lastIndexOf('\n', match.index) + 1;
+          const lineEnd = content.indexOf('\n', match.index);
+          const line = content.substring(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
+          results.push({ note, snippet: line.length > 120 ? line.slice(0, 120) + '…' : line });
+          break; // Aynı not için tek bir referans yeterli
+        }
+      }
+    });
+
+    return results;
+  }, [activeNotePath, fileContents, notes]);
+
+  // Sürüm Geçmişini Aç: notun kaydedilmiş önceki içerik anlık görüntülerini
+  // `.versions/<notPath>.json` dosyasından okuyup en yeniden en eskiye sıralar.
+  const openVersionHistory = async () => {
+    if (!activeNotePath) return;
+    setIsLoadingHistory(true);
+    setPreviewVersion(null);
+    try {
+      const raw = await readNoteContent(`.versions/${activeNotePath}.json`);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const list = Array.isArray(parsed) ? parsed : [];
+      setVersionHistory([...list].sort((a, b) => b.timestamp - a.timestamp));
+    } catch (e) {
+      setVersionHistory([]);
+    } finally {
+      setIsLoadingHistory(false);
+      setIsHistoryModalOpen(true);
+    }
+  };
+
+  // Seçilen sürümü geri yükler: editör içeriğini anında günceller ve kalıcı
+  // olarak kaydeder (bu kayıt işlemi, geri yüklemeden önceki hâli de otomatik
+  // olarak yeni bir sürüm anlık görüntüsü olarak saklar).
+  const handleRestoreVersion = async (version: { timestamp: number; content: string }) => {
+    if (!activeNotePath) return;
+    setEditorContent(version.content);
+    previousContentRef.current = version.content;
+    localStorage.removeItem(`active_note_draft_${activeNotePath}`);
+    await onSaveNote(activeNotePath, version.content);
+    setIsHistoryModalOpen(false);
+    setPreviewVersion(null);
+  };
 
   const handleInsertSmartLink = (noteName: string) => {
     const linesArr = editorContent.split('\n');
@@ -2365,7 +2454,14 @@ export default function NotesView({
   const handleRedoRef = useRef<(() => void) | null>(null);
   const isSourceModeRef = useRef<boolean>(false);
 
-  const lines = editorContent.split('\n');
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // `lines` her render'da yeniden `split` edilirse (memoize edilmezse) referansı
+  // her seferinde değişir; bu da içerik hiç değişmese bile (ör. 1 saniyelik saat
+  // tick'i, WPM/combo güncellemeleri gibi ilgisiz render'larda) [lines]'a bağlı
+  // ağır useMemo/useEffect'lerin (kod bloğu taraması vb.) gereksiz yere tekrar
+  // çalışmasına yol açar. useMemo ile yalnızca editorContent gerçekten
+  // değiştiğinde yeniden hesaplanmasını sağlıyoruz.
+  const lines = useMemo(() => editorContent.split('\n'), [editorContent]);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Eğer kullanıcı bir kod bloğunu düzenliyorsa, o kod bloğunun sınırlarını belirler.
@@ -2418,6 +2514,37 @@ export default function NotesView({
     size: number;
     decay: number;
   }>>([]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Yazma hızı istatistikleri (toplam süre/karakter/en yüksek WPM) önceden her
+  // tuş vuruşunda senkron localStorage.setItem ile yazılıyordu; bu, ana thread'i
+  // bloke ederek kıvılcım efektiyle birlikte donmaya yol açıyordu. Artık bu
+  // değerler yalnızca bellekteki bu ref'te biriktirilir ve periyodik olarak
+  // (2 saniyede bir) veya not değişiminde/unmount'ta diske yazılır.
+  const typingStatsRef = useRef<{ totalTimeMs: number; totalChars: number; maxWpm: number; dirty: boolean }>({
+    totalTimeMs: Number(localStorage.getItem('typing_total_time_ms') || '0'),
+    totalChars: Number(localStorage.getItem('typing_total_chars') || '0'),
+    maxWpm: Number(localStorage.getItem('typing_max_wpm') || '0'),
+    dirty: false
+  });
+
+  useEffect(() => {
+    const flushTypingStats = () => {
+      const s = typingStatsRef.current;
+      if (!s.dirty) return;
+      localStorage.setItem('typing_total_time_ms', String(s.totalTimeMs));
+      localStorage.setItem('typing_total_chars', String(s.totalChars));
+      localStorage.setItem('typing_max_wpm', String(s.maxWpm));
+      s.dirty = false;
+    };
+    const interval = setInterval(flushTypingStats, 2000);
+    window.addEventListener('beforeunload', flushTypingStats);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', flushTypingStats);
+      flushTypingStats();
+    };
+  }, []);
 
   // Obsidian-Style Premium States
   // Obsidian-Style Premium States
@@ -3548,14 +3675,22 @@ export default function NotesView({
   }, []);
 
   // Synchronize editorContent draft to localStorage
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // localStorage.setItem senkron bir işlemdir ve önceden her tuş vuruşunda
+  // (debounce'suz) çağrılıyordu; büyük notlarda bu, yazarken hissedilen
+  // donmaya katkıda bulunuyordu. 200ms'lik kısa bir debounce ile ana thread'i
+  // bloke eden bu yazmaları tuş vuruşlarından ayırıyoruz (taslak kaybı riski yok,
+  // gecikme çok kısa).
   useEffect(() => {
-    if (activeNotePath && activeNotePath === lastLoadedPathRef.current) {
+    if (!(activeNotePath && activeNotePath === lastLoadedPathRef.current)) return;
+    const timer = setTimeout(() => {
       if (editorContent) {
         localStorage.setItem(`active_note_draft_${activeNotePath}`, editorContent);
       } else {
         localStorage.removeItem(`active_note_draft_${activeNotePath}`);
       }
-    }
+    }, 200);
+    return () => clearTimeout(timer);
   }, [editorContent, activeNotePath]);
 
   // Synchronize focusedLineIdx to localStorage
@@ -3620,28 +3755,35 @@ export default function NotesView({
     }
   };
 
-  // Debounced auto-save hook
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // KRİTİK HATA DÜZELTMESİ: Bu effect'in bağımlılık dizisi [editorContent, activeNotePath]
+  // olduğundan, önceki hâlde her tuş vuruşunda (editorContent her değiştiğinde) React
+  // ÖNCE bir önceki effect çalıştırmasının cleanup fonksiyonunu çağırıyordu. O cleanup,
+  // "not değişti/kapandı" sanıp BİR TUŞ GERİSİNDEKİ (bayat) içeriği diske yazıyordu —
+  // yani hızlı yazarken pratikte her karakterde gerçek bir disk yazma + tüm kasayı yeniden
+  // okuma (loadAllData) tetikleniyordu. Bu hem donmaya hem de (yazma sırasında eski/bayat
+  // içerik geç dönüp üzerine yazdığı için) az önce silinen kelimelerin geri gelmesi gibi
+  // yarış durumlarına yol açıyordu. Çözüm: "her tuşta zamanlayıcı kur" ile "not gerçekten
+  // değişince/kapanınca bekleyen içeriği kaydet" mantığını birbirinden ayırdık.
+  const latestEditorContentRef = useRef(editorContent);
+  useEffect(() => {
+    latestEditorContentRef.current = editorContent;
+  }, [editorContent]);
+
+  // Effect A: Sadece debounce zamanlayıcısını kurar. Her tuş vuruşunda yeniden kurulur
+  // ama cleanup'ı YALNIZCA eski zamanlayıcıyı iptal eder — asla kendi başına kaydetmez.
   useEffect(() => {
     if (!activeNotePath) return;
-
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Dosya yolu değiştiği halde yeni not içeriği henüz yüklenmediyse kaydetmeyi pas geçiyoruz.
-    // Bu kontrol, not geçişlerinde veya silme işlemlerinde eski not içeriğinin yeni nota yazılmasını (yarış durumunu) kesin olarak engeller.
     if (activeNotePath !== lastLoadedPathRef.current) {
       addDebugLog('Auto-save hook: Path changed but content not loaded yet. Skipping save. Path: ' + activeNotePath);
       return;
     }
-
-    // Check if this matches the initial file load
-    if (activeNotePath === lastLoadedPathRef.current && editorContent === lastLoadedContentRef.current) {
-      addDebugLog('Auto-save hook: content matches initial load. Skipping save. Path: ' + activeNotePath);
+    if (editorContent === lastLoadedContentRef.current) {
       setSyncStatus('saved');
       return;
     }
 
-    addDebugLog('Auto-save hook: content changed. Triggering save in 1s. Path: ' + activeNotePath);
     setSyncStatus('saving');
-
     const timer = setTimeout(async () => {
       try {
         addDebugLog('Auto-save timer fired. Saving note to path: ' + activeNotePath);
@@ -3649,28 +3791,33 @@ export default function NotesView({
         lastLoadedContentRef.current = editorContent;
         lastLoadedPathRef.current = activeNotePath;
         setSyncStatus('saved');
-        addDebugLog('Auto-save successful for path: ' + activeNotePath);
         localStorage.removeItem(`active_note_draft_${activeNotePath}`);
       } catch (error) {
         addDebugLog('Otomatik kaydetme hatası: ' + String(error));
       }
     }, 1000); // 1 second of typing inactivity
 
+    return () => clearTimeout(timer);
+  }, [editorContent, activeNotePath]);
+
+  // Effect B: Yalnızca activeNotePath GERÇEKTEN değiştiğinde (ya da bileşen unmount
+  // olduğunda) tetiklenir. Cleanup'ı, ayrılınan nota ait en güncel içeriği (ref üzerinden)
+  // henüz diske yazılmamışsa anında kaydeder. Her tuş vuruşunda ÇALIŞMAZ.
+  useEffect(() => {
+    const pathBeingLeft = activeNotePath;
     return () => {
-      clearTimeout(timer);
-      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-      // Sekme geçişi yapıldığında veya not kapatıldığında, henüz kaydedilmemiş değişiklikler (örn: çizim linki)
-      // varsa timer'ın temizlenmesiyle kaybolmasını önlemek için anında (cleanup anında) kaydederiz.
-      if (activeNotePath && editorContent !== lastLoadedContentRef.current) {
-        addDebugLog('Cleanup/Unmount save: Saving dirty content for path: ' + activeNotePath);
-        onSaveNote(activeNotePath, editorContent).then(() => {
-          lastLoadedContentRef.current = editorContent;
+      if (!pathBeingLeft) return;
+      const latest = latestEditorContentRef.current;
+      if (latest !== lastLoadedContentRef.current) {
+        addDebugLog('Note switch/unmount flush: Saving dirty content for path: ' + pathBeingLeft);
+        onSaveNote(pathBeingLeft, latest).then(() => {
+          lastLoadedContentRef.current = latest;
         }).catch(error => {
-          console.error('Error saving on unmount cleanup:', error);
+          console.error('Error saving on note switch/unmount:', error);
         });
       }
     };
-  }, [editorContent, activeNotePath]);
+  }, [activeNotePath]);
 
   // Focus and Caret restore hook
   useEffect(() => {
@@ -5706,56 +5853,71 @@ export default function NotesView({
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Kıvılcım efektleri için imlecin tam koordinatlarını (x, y) hatasız ve kayma olmadan bulmak amacıyla
   // yazılan özel yardımcı fonksiyon. Parent element referanslı çalışarak sidebar veya sayfa kaymalarından etkilenmez.
+  //
+  // PERFORMANS NOTU: Bu fonksiyon eskiden her çağrıda yeni bir <div>/<span>
+  // oluşturup DOM'a ekleyip ölçüp siliyordu — bu, tarayıcıyı senkron bir
+  // "forced reflow" (zorunlu yeniden düzen hesaplaması) yapmaya zorlar ve her
+  // tuş vuruşunda tekrarlandığında ciddi bir donmaya yol açar. Artık aynalama
+  // (mirror) elemanı bir ref'te bir kez oluşturulup DOM'a bir kez eklenir ve
+  // sonraki çağrılarda yeniden kullanılır; yalnızca zorunlu tek bir layout
+  // okuması (offsetTop/offsetLeft) kalır, node oluşturma/ekleme/silme reflow'ları
+  // ortadan kalkar.
+  const sparkMirrorRef = useRef<{ div: HTMLDivElement; span: HTMLSpanElement } | null>(null);
+  const lastSparkTimeRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (sparkMirrorRef.current) {
+        sparkMirrorRef.current.div.remove();
+        sparkMirrorRef.current = null;
+      }
+    };
+  }, []);
+
   const getSparkCaretCoordinates = (element: HTMLTextAreaElement, position: number) => {
-    const div = document.createElement('div');
+    if (!sparkMirrorRef.current) {
+      const div = document.createElement('div');
+      const span = document.createElement('span');
+      div.style.position = 'fixed';
+      div.style.visibility = 'hidden';
+      div.style.top = '0';
+      div.style.left = '0';
+      div.style.pointerEvents = 'none';
+      div.appendChild(span);
+      document.body.appendChild(div);
+      sparkMirrorRef.current = { div, span };
+    }
+    const { div, span } = sparkMirrorRef.current;
     const style = window.getComputedStyle(element);
-    
+
     const properties = [
       'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
       'borderWidth', 'borderStyle', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
       'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant', 'lineHeight',
       'letterSpacing', 'wordSpacing', 'textTransform', 'whiteSpace', 'wordBreak', 'wordWrap'
     ];
-    
     properties.forEach(prop => {
       (div.style as any)[prop] = (style as any)[prop];
     });
-    
-    div.style.position = 'absolute';
-    div.style.visibility = 'hidden';
     div.style.whiteSpace = 'pre-wrap';
     div.style.wordWrap = 'break-word';
     div.style.width = `${element.clientWidth}px`;
-    div.style.top = '0';
-    div.style.left = '0';
-    
-    if (element.parentElement) {
-      element.parentElement.appendChild(div);
-    } else {
-      document.body.appendChild(div);
-    }
-    
+
     const textBeforeCaret = element.value.substring(0, position);
-    div.textContent = textBeforeCaret;
-    
-    const span = document.createElement('span');
+    div.textContent = '';
+    div.appendChild(document.createTextNode(textBeforeCaret));
     span.textContent = element.value.substring(position, position + 1) || '.';
     div.appendChild(span);
-    
+
     const lineHeightVal = parseInt(style.lineHeight || '');
     const finalLineHeight = isNaN(lineHeightVal) ? parseInt(style.fontSize || '14') * 1.25 : lineHeightVal;
-    
+
+    // Tek zorunlu layout okuması burada gerçekleşir.
     const coordinates = {
       top: span.offsetTop + finalLineHeight - element.scrollTop,
       left: span.offsetLeft - element.scrollLeft
     };
-    
-    if (element.parentElement) {
-      element.parentElement.removeChild(div);
-    } else {
-      document.body.removeChild(div);
-    }
-    
+
     return coordinates;
   };
 
@@ -5814,30 +5976,23 @@ export default function NotesView({
       
       if (diff > 0) {
         // Ortalama hız istatistiği için toplam karakter ve net aktif yazma süresi takibi
+        // (artık senkron localStorage yazmıyor, bkz. typingStatsRef flush mekanizması)
+        const stats = typingStatsRef.current;
         if (lastTypeTime > 0) {
           const elapsed = now - lastTypeTime;
-          if (elapsed < 3000) {
-            const totalTime = Number(localStorage.getItem('typing_total_time_ms') || '0');
-            localStorage.setItem('typing_total_time_ms', String(totalTime + elapsed));
-          } else {
-            // Uzun aradan sonraki ilk tuş için varsayılan 200ms aktif süre ekle
-            const totalTime = Number(localStorage.getItem('typing_total_time_ms') || '0');
-            localStorage.setItem('typing_total_time_ms', String(totalTime + 200));
-          }
+          stats.totalTimeMs += elapsed < 3000 ? elapsed : 200;
         } else {
           // İlk vuruş için varsayılan 200ms aktif süre ekle
-          const totalTime = Number(localStorage.getItem('typing_total_time_ms') || '0');
-          localStorage.setItem('typing_total_time_ms', String(totalTime + 200));
+          stats.totalTimeMs += 200;
         }
-        
-        const totalChars = Number(localStorage.getItem('typing_total_chars') || '0');
-        localStorage.setItem('typing_total_chars', String(totalChars + diff));
-        
+        stats.totalChars += diff;
+        stats.dirty = true;
+
         // Keystroke zaman takibi (anlık sıçramaları engellemek için son 5 saniye kullanılır)
         setKeystrokes(prev => {
           const filtered = prev.filter(t => now - t < 5000);
           filtered.push(now);
-          
+
           // CPS (Saniyedeki Karakter) hesaplaması (5 saniyeye bölüyoruz)
           const cps = filtered.length / 5;
           if (cps > 1.2) {
@@ -5848,34 +6003,42 @@ export default function NotesView({
           const calculatedWpm = Math.round(cps * 12);
           setCurrentWpm(calculatedWpm);
 
-          // En yüksek hız (Max WPM) kaydı
-          const maxWpm = Number(localStorage.getItem('typing_max_wpm') || '0');
-          if (calculatedWpm > maxWpm) {
-            localStorage.setItem('typing_max_wpm', String(calculatedWpm));
+          // En yüksek hız (Max WPM) kaydı (bellekte; diske periyodik flush edilir)
+          if (calculatedWpm > stats.maxWpm) {
+            stats.maxWpm = calculatedWpm;
+            stats.dirty = true;
           }
-          
+
           return filtered;
         });
 
-        // İmleç koordinatlarını bulup kıvılcımları Canvas üzerinde canlandırıyoruz
-        const textarea = e.target;
-        const caret = textarea.selectionStart;
-        try {
-          const caretCoords = getSparkCaretCoordinates(textarea, caret);
-          const rect = textarea.getBoundingClientRect();
-          let x = rect.left + caretCoords.left;
-          let y = rect.top + caretCoords.top;
-          
-          const canvas = canvasRef.current;
-          if (canvas) {
-            const canvasRect = canvas.getBoundingClientRect();
-            x = x - canvasRect.left;
-            y = y - canvasRect.top;
+        // İmleç koordinatlarını bulup kıvılcımları Canvas üzerinde canlandırıyoruz.
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // Koordinat hesaplaması hâlâ (azaltılmış da olsa) bir layout okuması
+        // gerektirdiğinden, hızlı yazımda her tuşta değil en fazla ~45ms'de bir
+        // tetiklenecek şekilde throttle edilir. Görsel akıcılık kaybolmaz
+        // (parçacıklar zaten süzülerek sönüyor) ama layout maliyeti düşer.
+        if (now - lastSparkTimeRef.current >= 45) {
+          lastSparkTimeRef.current = now;
+          const textarea = e.target;
+          const caret = textarea.selectionStart;
+          try {
+            const caretCoords = getSparkCaretCoordinates(textarea, caret);
+            const rect = textarea.getBoundingClientRect();
+            let x = rect.left + caretCoords.left;
+            let y = rect.top + caretCoords.top;
+
+            const canvas = canvasRef.current;
+            if (canvas) {
+              const canvasRect = canvas.getBoundingClientRect();
+              x = x - canvasRect.left;
+              y = y - canvasRect.top;
+            }
+
+            spawnParticles(x, y);
+          } catch (err) {
+            // Hata durumunda uygulamanın göçmemesi için sessizce yakalanır
           }
-          
-          spawnParticles(x, y);
-        } catch (err) {
-          // Hata durumunda uygulamanın göçmemesi için sessizce yakalanır
         }
       }
 
@@ -6682,6 +6845,14 @@ export default function NotesView({
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
     // Editör satırlarına sağ tıklandığında, tıklanılan satırın indeksini tespit eder ve
     // özel sağ tık menüsünün (context menu) koordinatlarını ayarlayarak açılmasını sağlar.
+    // KRİTİK: Android'de (Capacitor) "contextmenu" olayı long-press (uzun basma) ile
+    // tetiklenir — bu da metin seçip kopyalamak için kullanılan native jestin AYNISI.
+    // Burada preventDefault() çağırmak, telefonun native "Kopyala/Yapıştır" menüsünü
+    // tamamen bastırıp yerine yalnızca "YouTube Videosu Göm" seçeneği olan bu özel
+    // menüyü açıyordu — kullanıcı hiçbir metni kopyalayamıyordu. Bu yüzden bu özel
+    // sağ tık menüsü yalnızca masaüstünde (fare ile sağ tık) devreye giriyor;
+    // mobilde native long-press davranışına asla dokunmuyoruz.
+    if (isCapacitor) return;
     const target = e.target as HTMLElement;
     const lineEl = target.closest('.editor-line-container');
     if (lineEl) {
@@ -7362,7 +7533,26 @@ export default function NotesView({
                     <Info size={14} />
                   </button>
                 )}
-                
+                {activeNotePath && activeNote.type !== 'excalidraw' && (
+                  <button
+                    type="button"
+                    className="toolbar-btn history-btn"
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      padding: 0,
+                      borderRadius: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                    onClick={openVersionHistory}
+                    title="Sürüm Geçmişi"
+                  >
+                    <History size={14} />
+                  </button>
+                )}
+
                 {(() => {
                   const isHarcamaNote = editorContent.toLowerCase().includes('#harcama');
                   const checkedItems = lines
@@ -7710,6 +7900,37 @@ export default function NotesView({
                       return skipped;
                     };
 
+                    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                    // Standart GitHub-Flavored Markdown (GFM) pipe tablosu tespiti:
+                    // "| a | b |" satırı, hemen ardından "|---|---|" hizalama satırı
+                    // geldiğinde bir tablo olarak kabul edilir. Bu, uygulamanın kendi
+                    // özel "Tablo:" widget sisteminden ayrı, standart .md dosyalarında
+                    // (örn. bir yapay zekadan yapıştırılan) yaygın kullanılan sözdizimini
+                    // düzgün render etmek için gereklidir.
+                    const isMdTableSeparatorRow = (line: string): boolean => {
+                      const trimmed = line.trim();
+                      if (!trimmed.includes('|') && !trimmed.includes('-')) return false;
+                      const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+                      if (!inner.trim()) return false;
+                      const cells = inner.split('|');
+                      return cells.length > 0 && cells.every(c => /^\s*:?-{1,}:?\s*$/.test(c));
+                    };
+                    const parseMdTableRow = (line: string): string[] => {
+                      let t = line.trim();
+                      if (t.startsWith('|')) t = t.slice(1);
+                      if (t.endsWith('|')) t = t.slice(0, -1);
+                      return t.split('|').map(c => c.trim());
+                    };
+                    const getMdTableColAlign = (sepCell: string): 'left' | 'center' | 'right' | undefined => {
+                      const c = sepCell.trim();
+                      const left = c.startsWith(':');
+                      const right = c.endsWith(':');
+                      if (left && right) return 'center';
+                      if (right) return 'right';
+                      if (left) return 'left';
+                      return undefined;
+                    };
+
                     const renderLinesWithColumns = () => {
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
     // Satırları <<<row>>> ve <<<col>>> etiketlerine göre gruplayarak yan yana flex grid kolonlar halinde render eder.
@@ -7762,6 +7983,60 @@ export default function NotesView({
         );
         
         i = j + 1;
+      } else if (
+        lineText.startsWith('|') &&
+        i + 1 < lines.length &&
+        !hiddenLines.has(i + 1) && !skippedLines.has(i + 1) &&
+        isMdTableSeparatorRow(lines[i + 1])
+      ) {
+        // Standart Markdown (GFM) pipe tablosu: başlık satırı + |---|---| hizalama satırı + veri satırları.
+        const headerCells = parseMdTableRow(lines[i]);
+        const alignCells = parseMdTableRow(lines[i + 1]).map(getMdTableColAlign);
+        const bodyRowIndices: number[] = [];
+        let j = i + 2;
+        while (j < lines.length && !hiddenLines.has(j) && !skippedLines.has(j) && lines[j].trim().startsWith('|')) {
+          bodyRowIndices.push(j);
+          j++;
+        }
+
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // Odaklanılan satır bu tablonun bir parçasıysa (kullanıcı ham sözdizimini
+        // düzenliyorsa), tabloyu derlenmiş <table> olarak göstermek yerine normal
+        // düzenlenebilir satırlara düş — "Tablo:" widget'ındaki davranışla tutarlı.
+        const tableLineRange = [i, i + 1, ...bodyRowIndices];
+        const isEditingThisTable = focusedLineIdx !== null && tableLineRange.includes(focusedLineIdx);
+
+        if (isEditingThisTable) {
+          tableLineRange.forEach(lineIdx => result.push(renderSingleLine(lineIdx)));
+        } else {
+          result.push(
+            <div key={`mdtable-${i}`} className="md-table-wrapper" onClick={(e) => e.stopPropagation()}>
+              <table className="md-table">
+                <thead>
+                  <tr>
+                    {headerCells.map((cell, ci) => (
+                      <th key={ci} style={{ textAlign: alignCells[ci] || 'left' }}>{parseInlineStylesAndTags(cell)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {bodyRowIndices.map(rowIdx => {
+                    const rowCells = parseMdTableRow(lines[rowIdx]);
+                    return (
+                      <tr key={rowIdx}>
+                        {headerCells.map((_, ci) => (
+                          <td key={ci} style={{ textAlign: alignCells[ci] || 'left' }}>{parseInlineStylesAndTags(rowCells[ci] || '')}</td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
+        i = j;
       } else {
         result.push(renderSingleLine(i));
         i++;
@@ -8724,6 +8999,49 @@ export default function NotesView({
                 </div>
               );
             })()}
+
+            {backlinks.length > 0 && (
+              <div className="backlinks-panel" style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '10px 16px 14px 16px',
+                borderTop: '1px solid rgba(255, 255, 255, 0.05)'
+              }}>
+                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: '600', fontSize: '11px' }}>
+                  <Link2 size={12} />
+                  <span>Bağlantılı Notlar ({backlinks.length}):</span>
+                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {backlinks.map(({ note, snippet }) => (
+                    <div
+                      key={note.path}
+                      onClick={() => setActiveNotePath(note.path)}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '2px',
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid rgba(255, 255, 255, 0.04)',
+                        cursor: 'pointer',
+                        transition: 'background 0.15s ease'
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(99, 102, 241, 0.06)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'; }}
+                    >
+                      <span style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--text-primary)' }}>📄 {note.name}</span>
+                      {snippet && (
+                        <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {snippet}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
               </>
             )}
 
@@ -8912,6 +9230,123 @@ export default function NotesView({
         }, [activeNotePath, editorContent]);
         return null;
       })()}
+
+      {/* Sürüm Geçmişi (Version History) Modalı */}
+      {isHistoryModalOpen && (
+        <div className="modal-overlay active" onClick={() => { setIsHistoryModalOpen(false); setPreviewVersion(null); }}>
+          <div
+            className="modal-container"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '640px',
+              maxWidth: '95%',
+              maxHeight: '80vh',
+              padding: '20px',
+              background: 'rgba(15, 23, 42, 0.95)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '12px',
+              color: '#fff',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--accent)' }}>
+                <History size={16} /> Sürüm Geçmişi
+              </h3>
+              <button onClick={() => { setIsHistoryModalOpen(false); setPreviewVersion(null); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+            </div>
+
+            {isLoadingHistory ? (
+              <div style={{ padding: '24px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>Yükleniyor...</div>
+            ) : versionHistory.length === 0 ? (
+              <div style={{ padding: '24px', textAlign: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
+                Bu not için henüz kaydedilmiş bir sürüm geçmişi yok.<br />
+                <span style={{ fontSize: '10.5px' }}>Not her düzenlenip kaydedildiğinde, bir önceki hâli otomatik olarak burada saklanır.</span>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '12px', minHeight: '300px', maxHeight: '55vh' }}>
+                {/* Sol: Sürüm Listesi */}
+                <div style={{ width: '200px', flexShrink: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', borderRight: '1px solid rgba(255,255,255,0.06)', paddingRight: '10px' }}>
+                  {versionHistory.map((v, idx) => {
+                    const isSelected = previewVersion?.timestamp === v.timestamp;
+                    return (
+                      <div
+                        key={v.timestamp}
+                        onClick={() => setPreviewVersion(v)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '11.5px',
+                          background: isSelected ? 'rgba(99,102,241,0.18)' : 'rgba(255,255,255,0.02)',
+                          border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
+                          transition: 'background 0.15s'
+                        }}
+                      >
+                        <div style={{ fontWeight: 600 }}>{new Date(v.timestamp).toLocaleDateString('tr-TR')}</div>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{new Date(v.timestamp).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</div>
+                        {idx === 0 && <div style={{ fontSize: '9px', color: 'var(--accent)', marginTop: '2px' }}>En yeni</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Sağ: Önizleme + Geri Yükle */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', minWidth: 0 }}>
+                  {!previewVersion ? (
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: 'var(--text-muted)' }}>
+                      Önizlemek için sol taraftan bir sürüm seçin.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{
+                        flex: 1,
+                        overflowY: 'auto',
+                        background: 'rgba(0,0,0,0.2)',
+                        borderRadius: '8px',
+                        padding: '12px',
+                        fontSize: '12px',
+                        fontFamily: 'monospace',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        color: 'var(--text-secondary)'
+                      }}>
+                        {previewVersion.content || '(boş içerik)'}
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (confirm('Bu sürümü geri yüklemek istediğinize emin misiniz? Mevcut hâl de otomatik olarak geçmişe kaydedilecek.')) {
+                            handleRestoreVersion(previewVersion);
+                          }
+                        }}
+                        style={{
+                          background: 'var(--accent)',
+                          border: 'none',
+                          borderRadius: '6px',
+                          color: 'white',
+                          padding: '8px 14px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <History size={13} /> Bu Sürümü Geri Yükle
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Dynamic Block Transclusion / Embedding Picker Modal */}
       {isTransclusionModalOpen && (
@@ -9234,15 +9669,23 @@ export default function NotesView({
                 className="db-view-modal-btn confirm" 
                 onClick={() => {
                   if (!youtubeEmbedUrl.trim() || youtubeModalLineIdx === null) return;
-                  
+
                   const widthParam = `w:${youtubeWidth}`;
                   const heightParam = `h:${youtubeHeight}`;
                   const alignParam = youtubeAlign;
-                  
+
                   const embedMarkdown = `\n![youtube|${widthParam}|${heightParam}|${alignParam}](${youtubeEmbedUrl.trim()})\n`;
-                  
+
                   const newLines = [...lines];
-                  newLines[youtubeModalLineIdx] = newLines[youtubeModalLineIdx] + embedMarkdown;
+                  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                  // Satırda zaten ham (yapıştırılmış) bir YouTube linki varsa, gömme
+                  // markdown'unu eklemeden önce onu satırdan temizliyoruz — aksi halde
+                  // hem ham link metni hem de gömülü video aynı anda görünüyordu
+                  // (otomatik algılama akışıyla tutarsız bir davranıştı).
+                  const strippedOriginalLine = newLines[youtubeModalLineIdx]
+                    .replace(/https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)[a-zA-Z0-9_\-]{11}(?:\S*)?/gi, '')
+                    .trim();
+                  newLines[youtubeModalLineIdx] = strippedOriginalLine + embedMarkdown;
                   setEditorContent(newLines.join('\n'));
                   
                   setIsYoutubeModalOpen(false);

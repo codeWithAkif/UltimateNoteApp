@@ -41,7 +41,7 @@ export default function KanbanBoard({ tasks, onChangeTaskStatus, onOpenNote }: K
       onDragStart={(e) => handleDragStart(e, task.id)}
       className="kanban-card"
       style={{
-        background: 'var(--bg-card, #1e1e1e)',
+        background: 'var(--bg-tertiary)',
         padding: '12px',
         borderRadius: '8px',
         marginBottom: '10px',
@@ -51,7 +51,7 @@ export default function KanbanBoard({ tasks, onChangeTaskStatus, onOpenNote }: K
       }}
       onClick={() => onOpenNote?.(task)}
     >
-      <div style={{ fontSize: '13px', lineHeight: '1.4', marginBottom: '8px', color: 'var(--text-color)' }}>
+      <div style={{ fontSize: '13px', lineHeight: '1.4', marginBottom: '8px', color: 'var(--text-primary)' }}>
         {task.content}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
@@ -85,7 +85,7 @@ export default function KanbanBoard({ tasks, onChangeTaskStatus, onOpenNote }: K
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
           <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>Yapılacaklar</h3>
-          <span style={{ background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{todoTasks.length}</span>
+          <span style={{ background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{todoTasks.length}</span>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {todoTasks.map(renderCard)}
@@ -101,7 +101,7 @@ export default function KanbanBoard({ tasks, onChangeTaskStatus, onOpenNote }: K
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
           <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: 'var(--accent-color)' }}>Devam Edenler</h3>
-          <span style={{ background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{inProgressTasks.length}</span>
+          <span style={{ background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{inProgressTasks.length}</span>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {inProgressTasks.map(renderCard)}
@@ -117,7 +117,7 @@ export default function KanbanBoard({ tasks, onChangeTaskStatus, onOpenNote }: K
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
           <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#4caf50' }}>Bitenler</h3>
-          <span style={{ background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{doneTasks.length}</span>
+          <span style={{ background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{doneTasks.length}</span>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {doneTasks.map(renderCard)}
