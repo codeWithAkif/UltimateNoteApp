@@ -1720,7 +1720,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     const scannedAlarms: AlarmItem[] = [];
     const fileContents: Record<string, string> = {};
 
-    for (const note of noteFiles) {
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Bu fonksiyon loadAllData() içinden çok sık çağrılır (her kayıt, odak
+    // değişimi, senkron sonrası) ve önceden tüm notları TEK TEK, sırayla
+    // okuyordu — büyük bir kasada, özellikle Android'de (her okuma native
+    // köprü üzerinden ayrı bir round-trip) bu, hem sayfa geçişlerini hem
+    // genel uygulama tepkiselliğini ciddi şekilde yavaşlatan en büyük
+    // darboğazlardan biriydi. Dosya okumaları artık PARALEL yapılıyor.
+    const fileReadResults = await Promise.all(noteFiles.map(async (note) => {
       try {
         let content = '';
         if (!isBrowser) {
@@ -1728,7 +1735,16 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         } else {
           content = localStorage.getItem(`mock_note_${note.path}`) || '';
         }
+        return { note, content, readError: false };
+      } catch (err) {
+        console.error(`Error reading note ${note.path}:`, err);
+        return { note, content: '', readError: true };
+      }
+    }));
 
+    for (const { note, content, readError } of fileReadResults) {
+      if (readError) continue;
+      try {
         fileContents[note.path] = content;
         if (!content) continue;
 

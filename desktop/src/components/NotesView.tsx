@@ -8,7 +8,7 @@ import {
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
   DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History
 } from 'lucide-react';
-import { platform, isElectron, isCapacitor, isBrowser } from '../services/platform';
+import { platform, isElectron, isBrowser } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
 import { Preferences } from '@capacitor/preferences';
 import MindmapView from './MindmapView';
@@ -2555,27 +2555,6 @@ export default function NotesView({
   const [dragSelectStartIdx, setDragSelectStartIdx] = useState<number | null>(null);
   const [dragSelectEndIdx, setDragSelectEndIdx] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-
-  // Context Menu ve YouTube Gömme modalı state'leri (Kural 5)
-  const [editorContextMenu, setEditorContextMenu] = useState<{ x: number; y: number; lineIdx: number } | null>(null);
-  const [isYoutubeModalOpen, setIsYoutubeModalOpen] = useState(false);
-  const [youtubeEmbedUrl, setYoutubeEmbedUrl] = useState('');
-  const [youtubeWidth, setYoutubeWidth] = useState(560);
-  const [youtubeHeight, setYoutubeHeight] = useState(315);
-  const [youtubeAlign, setYoutubeAlign] = useState<'left' | 'right' | 'center'>('center');
-  const [youtubeModalLineIdx, setYoutubeModalLineIdx] = useState<number | null>(null);
-
-  useEffect(() => {
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Özel sağ tık menüsünün sayfa genelinde boş bir yere tıklandığında otomatik kapanmasını sağlar.
-    const handleWindowClick = () => {
-      setEditorContextMenu(null);
-    };
-    window.addEventListener('click', handleWindowClick);
-    return () => {
-      window.removeEventListener('click', handleWindowClick);
-    };
-  }, []);
 
   // Ultimate Note Factory Widget states
   const [activeTimers, setActiveTimers] = useState<Record<number, { remaining: number; isRunning: boolean; duration: number }>>({});
@@ -5519,14 +5498,6 @@ export default function NotesView({
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>🎥 YouTube: {cleanAlt || 'Video'}</span>
               
               {lineIdx !== undefined && (
-                <div className="media-align-toolbar" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'left')} className={align === 'left' ? 'active' : ''}>Sola</button>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'center')} className={align === 'center' ? 'active' : ''}>Ortala</button>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'right')} className={align === 'right' ? 'active' : ''}>Sağa</button>
-                </div>
-              )}
-
-              {lineIdx !== undefined && (
                 <div 
                   className="media-resize-handle" 
                   onMouseDown={(e) => handleResizeMouseDown(e, lineIdx)}
@@ -5541,24 +5512,16 @@ export default function NotesView({
         if (isVideo) {
           return (
             <div key={i} className="preview-media-container" style={{ ...floatStyle, width: width === '100%' ? '320px' : width, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
-              <video 
-                src={finalSrc} 
-                controls 
-                style={{ width: '100%', height: height === 'auto' ? 'auto' : height, maxHeight: '240px', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'block' }} 
+              <video
+                src={finalSrc}
+                controls
+                style={{ width: '100%', height: height === 'auto' ? 'auto' : height, maxHeight: height === 'auto' ? '240px' : 'none', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'block' }}
                 onError={(e) => {
                   (e.target as HTMLElement).style.display = 'none';
-                }} 
+                }}
               />
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>🎥 {cleanAlt || 'Video'}</span>
               
-              {lineIdx !== undefined && (
-                <div className="media-align-toolbar" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'left')} className={align === 'left' ? 'active' : ''}>Sola</button>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'center')} className={align === 'center' ? 'active' : ''}>Ortala</button>
-                  <button onClick={() => updateLineAlignment(lineIdx, 'right')} className={align === 'right' ? 'active' : ''}>Sağa</button>
-                </div>
-              )}
-
               {lineIdx !== undefined && (
                 <div 
                   className="media-resize-handle" 
@@ -5571,21 +5534,29 @@ export default function NotesView({
 
         return (
           <div key={i} className="preview-media-container" style={{ ...floatStyle, width: width === '100%' ? 'auto' : width, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
-            <img src={finalSrc} alt={cleanAlt} style={{ maxHeight: '180px', maxWidth: '100%', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'block' }} onError={(e) => {
+            {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                Önceden bu stil "maxHeight: 180px" olarak sabitti ve kaydedilmiş
+                w:/h: boyutlarını hiç okumuyordu. Kullanıcı resmi sürükleyip
+                büyüttükten sonra (handleResizeMouseUp ile satıra doğru şekilde
+                yazılan boyutlar), hizalama butonuna tıklamak React'i yeniden
+                render ettiriyor ve bu sabit 180px sınırı resmi tekrar küçültüp
+                "eski boyutuna dönmüş" gibi gösteriyordu. Artık kaydedilmiş
+                boyut varsa onu, yoksa varsayılan 180px sınırını kullanıyoruz. */}
+            <img src={finalSrc} alt={cleanAlt} style={{
+              width: height !== 'auto' ? '100%' : 'auto',
+              height: height !== 'auto' ? height : 'auto',
+              maxHeight: height !== 'auto' ? 'none' : '180px',
+              maxWidth: '100%',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              display: 'block'
+            }} onError={(e) => {
               (e.target as HTMLElement).style.display = 'none';
             }} />
             <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>✨ {cleanAlt || 'Görsel'}</span>
             
             {lineIdx !== undefined && (
-              <div className="media-align-toolbar" onClick={(e) => e.stopPropagation()}>
-                <button onClick={() => updateLineAlignment(lineIdx, 'left')} className={align === 'left' ? 'active' : ''}>Sola</button>
-                <button onClick={() => updateLineAlignment(lineIdx, 'center')} className={align === 'center' ? 'active' : ''}>Ortala</button>
-                <button onClick={() => updateLineAlignment(lineIdx, 'right')} className={align === 'right' ? 'active' : ''}>Sağa</button>
-              </div>
-            )}
-
-            {lineIdx !== undefined && (
-              <div 
+              <div
                 className="media-resize-handle" 
                 onMouseDown={(e) => handleResizeMouseDown(e, lineIdx)}
               />
@@ -6823,53 +6794,6 @@ export default function NotesView({
     }
   };
 
-  const updateLineAlignment = (lineIdx: number, newAlign: string) => {
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Görsel veya videonun hizalama butonu tıklandığında, ilgili markdown satırındaki hizalama parametresini
-    // (left, right, center) günceller ve editör içeriğini yeniler.
-    const currentLine = lines[lineIdx];
-    const updatedLine = currentLine.replace(/!\[(.*?)\]\((.*?)\)/, (match, alt, url) => {
-      const altParts = alt.split('|');
-      const cleanAlt = altParts[0];
-      return `![${cleanAlt}|${newAlign}](${url})`;
-    });
-    
-    if (updatedLine !== currentLine) {
-      const newLines = [...lines];
-      newLines[lineIdx] = updatedLine;
-      setEditorContent(newLines.join('\n'));
-    }
-  };
-
-  const handleEditorContextMenu = (e: React.MouseEvent) => {
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Editör satırlarına sağ tıklandığında, tıklanılan satırın indeksini tespit eder ve
-    // özel sağ tık menüsünün (context menu) koordinatlarını ayarlayarak açılmasını sağlar.
-    // KRİTİK: Android'de (Capacitor) "contextmenu" olayı long-press (uzun basma) ile
-    // tetiklenir — bu da metin seçip kopyalamak için kullanılan native jestin AYNISI.
-    // Burada preventDefault() çağırmak, telefonun native "Kopyala/Yapıştır" menüsünü
-    // tamamen bastırıp yerine yalnızca "YouTube Videosu Göm" seçeneği olan bu özel
-    // menüyü açıyordu — kullanıcı hiçbir metni kopyalayamıyordu. Bu yüzden bu özel
-    // sağ tık menüsü yalnızca masaüstünde (fare ile sağ tık) devreye giriyor;
-    // mobilde native long-press davranışına asla dokunmuyoruz.
-    if (isCapacitor) return;
-    const target = e.target as HTMLElement;
-    const lineEl = target.closest('.editor-line-container');
-    if (lineEl) {
-      e.preventDefault();
-      const idStr = lineEl.id;
-      const idxMatch = idStr.match(/editor-line-(\d+)/);
-      if (idxMatch) {
-        const lineIdx = parseInt(idxMatch[1], 10);
-        setEditorContextMenu({
-          x: e.clientX,
-          y: e.clientY,
-          lineIdx
-        });
-      }
-    }
-  };
-
   // Blok Taşıma ve Boyutlandırma State ve Event Handler'ları (Kural 5)
   const [dragOverIdx, setDragOverIdx] = useState<{ idx: number; position: 'top' | 'bottom' } | null>(null);
   const dragLineIdxRef = useRef<number | null>(null);
@@ -7752,7 +7676,6 @@ export default function NotesView({
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onPaste={handlePaste}
-                    onContextMenu={handleEditorContextMenu}
                   >
                     {isSourceMode ? (
                       <textarea
@@ -9548,153 +9471,6 @@ export default function NotesView({
               {currentWpm} WPM
             </span>
           )}
-        </div>
-      )}
-
-      {/* SAĞ TIK CONTEXT MENU (Kural 5) */}
-      {editorContextMenu && (
-        <div 
-          className="editor-custom-context-menu"
-          style={{
-            position: 'fixed',
-            top: `${editorContextMenu.y}px`,
-            left: `${editorContextMenu.x}px`,
-            zIndex: 9999,
-            background: 'rgba(15, 23, 42, 0.95)',
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            borderRadius: '8px',
-            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
-            padding: '4px',
-            minWidth: '180px',
-            backdropFilter: 'blur(12px)'
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button 
-            onClick={async () => {
-              const lineIdx = editorContextMenu.lineIdx;
-              setYoutubeModalLineIdx(lineIdx);
-              setYoutubeWidth(560);
-              setYoutubeHeight(315);
-              setYoutubeAlign('center');
-              
-              // Panodaki linki otomatik okumaya çalış
-              try {
-                const clipboardText = await navigator.clipboard.readText();
-                if (clipboardText && (clipboardText.includes('youtube.com') || clipboardText.includes('youtu.be'))) {
-                  setYoutubeEmbedUrl(clipboardText);
-                } else {
-                  setYoutubeEmbedUrl('');
-                }
-              } catch (e) {
-                setYoutubeEmbedUrl('');
-              }
-              
-              setIsYoutubeModalOpen(true);
-              setEditorContextMenu(null);
-            }}
-            style={{
-              width: '100%',
-              textAlign: 'left',
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-primary)',
-              padding: '8px 12px',
-              fontSize: '13px',
-              cursor: 'pointer',
-              borderRadius: '6px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            🎥 YouTube Videosu Göm
-          </button>
-        </div>
-      )}
-
-      {/* YOUTUBE EMBED MODAL (Kural 5) */}
-      {isYoutubeModalOpen && (
-        <div className="db-view-modal-overlay" onClick={() => setIsYoutubeModalOpen(false)}>
-          <div className="db-view-modal" onClick={e => e.stopPropagation()} style={{ width: '420px' }}>
-            <h3>YouTube Videosu Göm</h3>
-            
-            <div className="db-view-modal-field">
-              <label>YouTube Linki veya Video ID</label>
-              <input 
-                type="text" 
-                placeholder="https://www.youtube.com/watch?v=..." 
-                value={youtubeEmbedUrl}
-                onChange={e => setYoutubeEmbedUrl(e.target.value)}
-                autoFocus
-              />
-            </div>
-            
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div className="db-view-modal-field">
-                <label>Genişlik (px)</label>
-                <input 
-                  type="number" 
-                  value={youtubeWidth}
-                  onChange={e => setYoutubeWidth(parseInt(e.target.value) || 560)}
-                />
-              </div>
-              <div className="db-view-modal-field">
-                <label>Yükseklik (px)</label>
-                <input 
-                  type="number" 
-                  value={youtubeHeight}
-                  onChange={e => setYoutubeHeight(parseInt(e.target.value) || 315)}
-                />
-              </div>
-            </div>
-
-            <div className="db-view-modal-field">
-              <label>Hizalama</label>
-              <select 
-                value={youtubeAlign}
-                onChange={e => setYoutubeAlign(e.target.value as any)}
-              >
-                <option value="left">Sola Yasla (Metin Sağdan Akar)</option>
-                <option value="center">Ortala (Metin Alttan Devam Eder)</option>
-                <option value="right">Sağa Yasla (Metin Soldan Akar)</option>
-              </select>
-            </div>
-            
-            <div className="db-view-modal-actions">
-              <button className="db-view-modal-btn cancel" onClick={() => setIsYoutubeModalOpen(false)}>
-                İptal
-              </button>
-              <button 
-                className="db-view-modal-btn confirm" 
-                onClick={() => {
-                  if (!youtubeEmbedUrl.trim() || youtubeModalLineIdx === null) return;
-
-                  const widthParam = `w:${youtubeWidth}`;
-                  const heightParam = `h:${youtubeHeight}`;
-                  const alignParam = youtubeAlign;
-
-                  const embedMarkdown = `\n![youtube|${widthParam}|${heightParam}|${alignParam}](${youtubeEmbedUrl.trim()})\n`;
-
-                  const newLines = [...lines];
-                  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-                  // Satırda zaten ham (yapıştırılmış) bir YouTube linki varsa, gömme
-                  // markdown'unu eklemeden önce onu satırdan temizliyoruz — aksi halde
-                  // hem ham link metni hem de gömülü video aynı anda görünüyordu
-                  // (otomatik algılama akışıyla tutarsız bir davranıştı).
-                  const strippedOriginalLine = newLines[youtubeModalLineIdx]
-                    .replace(/https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)[a-zA-Z0-9_\-]{11}(?:\S*)?/gi, '')
-                    .trim();
-                  newLines[youtubeModalLineIdx] = strippedOriginalLine + embedMarkdown;
-                  setEditorContent(newLines.join('\n'));
-                  
-                  setIsYoutubeModalOpen(false);
-                }}
-              >
-                Göm ve Hizala
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

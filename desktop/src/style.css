@@ -7834,13 +7834,23 @@ input:focus, textarea:focus, select:focus {
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+       "space-between" ile overflow-x:auto birlikte kullanıldığında flex öğeleri
+       (özellikle .active-note-meta) sıfır genişliğe kadar sıkıştırılabiliyordu —
+       bu da başlık/rozet metninin kutusundan taşıp araç çubuğu ikonlarının
+       üzerine binmesine yol açıyordu. Kaydırma zaten mevcut olduğundan
+       "space-between" yerine doğal soldan-sağa akışa geçiyoruz. */
+    justify-content: flex-start;
+    gap: 8px;
   }
   .editor-header::-webkit-scrollbar {
     display: none;
   }
   .active-note-meta {
     min-width: 0;
-    flex-shrink: 1;
+    /* Kutuyu sıfıra kadar sıkıştırmak yerine (rozetin taşmasına yol açıyordu),
+       başlık çubuğunun kendi içinde kaydırılmasına izin veriyoruz. */
+    flex-shrink: 0;
   }
   .active-note-meta h3 {
     overflow: hidden;
@@ -8142,6 +8152,16 @@ input:focus, textarea:focus, select:focus {
   z-index: 100;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(8px);
+  /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+     .preview-media-container "center" hizalamada satır içi stil olarak
+     display:flex alıyor; bu araç çubuğu mutlak konumlansa da, bazı WebView
+     motorlarında flex ebeveynin align-items:stretch varsayılanından
+     etkilenip resim yeniden boyutlandırılırken dikeyde gerilebiliyordu.
+     align-self:flex-start ile bu miras alınan gerilmeyi kesin olarak iptal
+     ediyoruz; height:auto da kendi içeriğine göre boyutlanmasını garanti eder. */
+  align-self: flex-start;
+  align-items: center;
+  height: auto;
 }
 
 .preview-media-container:hover .media-align-toolbar {
@@ -8149,6 +8169,8 @@ input:focus, textarea:focus, select:focus {
 }
 
 .media-align-toolbar button {
+  flex: 0 0 auto;
+  align-self: center;
   background: transparent;
   border: none;
   color: var(--text-secondary);

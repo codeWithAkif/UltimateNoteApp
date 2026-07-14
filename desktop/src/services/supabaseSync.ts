@@ -236,6 +236,23 @@ const startSync = async () => {
     }
 
     // 4. Set up Realtime WebSockets Channel
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // startSync() her not kaydından sonra ve pencere odaklandığında yeniden
+    // çağrılabiliyor (triggerRemoteSync üzerinden). Önceden bu fonksiyon,
+    // ZATEN ABONE OLMUŞ eski bir kanal varken bile doğrudan yeni bir
+    // .channel(...).on(...).subscribe() zinciri kuruyordu — Supabase istemcisi
+    // aynı isimli (topic) kanalı önbellekte tuttuğu için bu, "cannot add
+    // postgres_changes callbacks after subscribe()" hatasına yol açıyordu.
+    // Yeni bir kanal kurmadan önce eskisini (varsa) temizliyoruz.
+    if (realtimeChannel) {
+      try {
+        supabase.removeChannel(realtimeChannel);
+      } catch (e) {
+        console.error('[Supabase Realtime] Error removing previous channel before resubscribe:', e);
+      }
+      realtimeChannel = null;
+    }
+
     realtimeChannel = supabase
       .channel('realtime-notes-changes')
       .on(

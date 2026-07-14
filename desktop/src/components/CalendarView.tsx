@@ -690,9 +690,24 @@ export default function CalendarView({
     const noteFiles = notes.filter(n => n.type === 'note');
     const aggregated: WorkspaceTask[] = [];
 
-    for (const note of noteFiles) {
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Notlar önceden tek tek, sırayla okunuyordu — büyük bir kasada, özellikle
+    // Android'de (her dosya okuması native köprü üzerinden ayrı bir round-trip)
+    // bu çok yavaş oluyordu. Tüm dosya okumaları artık PARALEL yapılıyor.
+    const fileResults = await Promise.all(noteFiles.map(async (note) => {
       try {
         const content = await readNoteContent(note.path);
+        return { note, content };
+      } catch (err) {
+        console.error('Notes task scan error in Calendar:', note.path, err);
+        return null;
+      }
+    }));
+
+    for (const fileResult of fileResults) {
+      if (!fileResult) continue;
+      const { note, content } = fileResult;
+      try {
         if (!content) continue;
 
         // Parse note-level tags

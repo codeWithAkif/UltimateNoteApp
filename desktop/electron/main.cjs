@@ -76,6 +76,37 @@ function createWindow() {
     console.log(`[Frontend Console] [Level ${level}]: ${message} (Source: ${sourceId}:${line})`);
   });
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Electron, normal bir tarayıcı sekmesinin aksine, düz metin (div/span) üzerinde
+  // sağ tıklandığında OTOMATİK bir "Kopyala" menüsü GÖSTERMEZ — bu yalnızca gerçek
+  // <input>/<textarea> alanları için Chromium tarafından sağlanır. Uygulamanın eski
+  // özel sağ tık menüsü kaldırıldığında bu yüzden hem düzenleme hem önizleme
+  // modunda hiçbir menü çıkmaz hale geldi. Burada native, OS tarzı bir sağ tık
+  // menüsü kuruyoruz (Kes/Kopyala/Yapıştır/Tümünü Seç), bağlama göre (seçili metin
+  // var mı, düzenlenebilir bir alanda mıyız) doğru öğeleri gösterir.
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const hasSelection = !!params.selectionText && params.selectionText.trim().length > 0;
+    const template = [];
+
+    if (params.isEditable) {
+      template.push(
+        { label: 'Kes', role: 'cut', enabled: hasSelection },
+        { label: 'Kopyala', role: 'copy', enabled: hasSelection },
+        { label: 'Yapıştır', role: 'paste' },
+        { type: 'separator' },
+        { label: 'Tümünü Seç', role: 'selectAll' }
+      );
+    } else if (hasSelection) {
+      template.push(
+        { label: 'Kopyala', role: 'copy' }
+      );
+    }
+
+    if (template.length > 0) {
+      Menu.buildFromTemplate(template).popup({ window: mainWindow });
+    }
+  });
+
   // Open external links in default browser instead of new Electron windows
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http:') || url.startsWith('https:')) {

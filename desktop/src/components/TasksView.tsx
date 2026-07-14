@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle } from 'lucide-react';
 
 interface NoteItem {
@@ -134,17 +134,45 @@ export default function TasksView({
   }, [selectedFolder]);
 
   // Scan all markdown files for tasks
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // hasScannedOnceRef: "notes" prop'u her arka plan yenilemesinde (senkron,
+  // odak, 10sn zamanlayıcı) yeni referansla geldiği için bu effect sık sık
+  // yeniden tetikleniyor ve "loading" her seferinde true'ya dönüp "Çalışma
+  // alanı taranıyor..." panelini gereksiz yere yeniden gösteriyordu. Spinner
+  // artık yalnızca GERÇEK ilk taramada gösteriliyor.
+  const hasScannedOnceRef = useRef(false);
   useEffect(() => {
     let active = true;
-    
-    const scanTasks = async () => {
-      setLoading(true);
-      const noteFiles = notes.filter(n => n.type === 'note');
-      const aggregated: WorkspaceTask[] = [];
 
-      for (const note of noteFiles) {
+    const scanTasks = async () => {
+      if (!hasScannedOnceRef.current) {
+        setLoading(true);
+      }
+      const noteFiles = notes.filter(n => n.type === 'note');
+
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // Notlar önceden TEK TEK, sırayla (await ile) okunuyordu — büyük bir
+      // kasada bu, özellikle Android'de (her dosya okuması native köprü
+      // üzerinden ayrı bir round-trip) çok yavaş oluyor ve "Görev Havuzu"
+      // sonsuza kadar "taranıyor" durumunda kalabiliyordu. Artık tüm dosya
+      // okumaları PARALEL yapılıyor; ayrıştırma (senkron/CPU işi) hâlâ
+      // sırayla ama bu zaten hızlı.
+      const fileResults = await Promise.all(noteFiles.map(async (note) => {
         try {
           const content = await readNoteContent(note.path);
+          return { note, content };
+        } catch (err) {
+          console.error('Error reading file for task scan:', note.path, err);
+          return null;
+        }
+      }));
+
+      const aggregated: WorkspaceTask[] = [];
+
+      for (const result of fileResults) {
+        if (!result) continue;
+        const { note, content } = result;
+        try {
           const lines = content.split('\n');
           const noteTasks: WorkspaceTask[] = [];
           const parentStack: { indent: number; id: string }[] = [];
@@ -325,6 +353,7 @@ export default function TasksView({
         // Sort by score descending
         setTasks(aggregated.sort((a, b) => b.score - a.score));
         setLoading(false);
+        hasScannedOnceRef.current = true;
       }
     };
 
