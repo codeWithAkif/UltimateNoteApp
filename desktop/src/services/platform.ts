@@ -29,6 +29,10 @@ export interface PlatformAPI {
   resolveYoutubePlaylist: (playlistId: string) => Promise<any[]>;
   fileExists: (relativePath: string) => Promise<boolean>;
   downloadMedia?: (relativePath: string, url: string) => Promise<{ success: boolean; error?: string }>;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // listFiles() yalnızca .md/.excalidraw/.drawio döndürür; bu, notlara eklenen resim/ses
+  // gibi medya eklerini AYRI olarak bulmak için kullanılır (bkz. supabaseSync.ts medya senkronu).
+  listMediaFiles: () => Promise<Array<{ path: string; size?: number; updatedAt: number }>>;
 }
 
 // --------------------------------------------------------------------------
@@ -129,8 +133,54 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
   }
 };
 
-import { 
-  triggerMobileGitSync, 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// main.cjs'teki MEDIA_EXTENSIONS ile aynı liste — mobilde de medya eklerini (notlardan
+// ayrı olarak) bulup Supabase Storage'a senkronize edebilmek için kullanılır.
+const MEDIA_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp',
+  '.mp3', '.m4a', '.wav', '.webm', '.ogg', '.flac', '.opus', '.aac', '.mp4'
+]);
+
+const listMobileMediaRecursively = async (dirRelPath: string = ''): Promise<Array<{ path: string; size?: number; updatedAt: number }>> => {
+  try {
+    await ensureMobileRoot();
+    const targetPath = dirRelPath ? `UltimateNotes/${dirRelPath}` : 'UltimateNotes';
+    const result = await Filesystem.readdir({ path: targetPath, directory: Directory.Documents });
+
+    const fileList: Array<{ path: string; size?: number; updatedAt: number }> = [];
+    for (const file of result.files) {
+      if (file.name === '.git') continue;
+      const fileRelPath = dirRelPath ? `${dirRelPath}/${file.name}` : file.name;
+
+      if (file.type === 'directory') {
+        const subFiles = await listMobileMediaRecursively(fileRelPath);
+        fileList.push(...subFiles);
+        continue;
+      }
+
+      const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+      if (!MEDIA_EXTENSIONS.has(ext)) continue;
+
+      let mtime = 0;
+      let size: number | undefined;
+      try {
+        const statResult = await Filesystem.stat({ path: `UltimateNotes/${fileRelPath}`, directory: Directory.Documents });
+        mtime = statResult.mtime || 0;
+        size = statResult.size;
+      } catch (_e) {
+        mtime = 0;
+      }
+      fileList.push({ path: fileRelPath, size, updatedAt: mtime });
+    }
+    return fileList;
+  } catch (err) {
+    console.error('Error listing mobile media files:', err);
+    return [];
+  }
+};
+
+import {
+  triggerMobileGitSync,
   getMobileSyncStatus, 
   getMobileSyncError,
   onMobileSyncStatusChanged 
@@ -354,6 +404,9 @@ const mobilePlatform: PlatformAPI = {
     } catch (err) {
       return { success: false, error: String(err) };
     }
+  },
+  listMediaFiles: async () => {
+    return await listMobileMediaRecursively();
   }
 };
 
@@ -363,6 +416,7 @@ const mobilePlatform: PlatformAPI = {
 const desktopPlatform: PlatformAPI = {
   getNotesPath: () => window.electron.getNotesPath(),
   listFiles: () => window.electron.listFiles(),
+  listMediaFiles: () => window.electron.listMediaFiles(),
   readNote: (relativePath) => window.electron.readNote(relativePath),
   readMedia: (relativePath) => window.electron.readMedia(relativePath),
   writeNote: (relativePath, content) => window.electron.writeNote(relativePath, content),
@@ -490,7 +544,8 @@ const webPlatform: PlatformAPI = {
       return false;
     }
   },
-  resolveYoutubePlaylist: async () => []
+  resolveYoutubePlaylist: async () => [],
+  listMediaFiles: async () => []
 };
 
 // --------------------------------------------------------------------------

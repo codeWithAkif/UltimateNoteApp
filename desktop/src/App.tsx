@@ -23,7 +23,7 @@ import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
-import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, type SyncConflict } from './services/supabaseSync';
 import { Preferences } from '@capacitor/preferences';
 import { registerPlugin } from '@capacitor/core';
 
@@ -258,6 +258,11 @@ export default function App() {
     return localStorage.getItem('selected_tag');
   });
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('offline');
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir senkron sırasında hem yerel hem uzak taraf değişmişse (gerçek çakışma), sync motoru
+  // zaman damgasına göre otomatik bir seçim yapar (veri kaybı yok, .backup dosyası kalır) ve
+  // bu listeye ekler. Kullanıcı isterse ÇakışmaÇözücü panelinden diğer sürümü seçebilir.
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [activeNotePath, setActiveNotePath] = useState<string | null>(() => {
     return localStorage.getItem('active_note_path');
   });
@@ -1551,6 +1556,34 @@ export default function App() {
     }
   };
 
+  const handleConflicts = (conflicts: SyncConflict[]) => {
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Aynı yol için birden fazla senkron turundan gelen bildirim varsa en güncelini tutar.
+    setSyncConflicts(prev => {
+      const merged = [...prev];
+      conflicts.forEach(c => {
+        const existingIdx = merged.findIndex(m => m.path === c.path);
+        if (existingIdx >= 0) merged[existingIdx] = c;
+        else merged.push(c);
+      });
+      return merged;
+    });
+  };
+
+  const handleResolveConflict = async (conflict: SyncConflict, side: 'local' | 'remote') => {
+    try {
+      await resolveConflict(conflict.path, side, conflict.localContent, conflict.remoteContent, conflict.remoteUpdatedAt);
+    } catch (err) {
+      console.error('Failed to resolve conflict:', err);
+    } finally {
+      setSyncConflicts(prev => prev.filter(c => c.path !== conflict.path));
+    }
+  };
+
+  const dismissConflict = (path: string) => {
+    setSyncConflicts(prev => prev.filter(c => c.path !== path));
+  };
+
   // Load Supabase credentials and initialize sync on startup
   useEffect(() => {
     // Request local notification permissions on mobile startup
@@ -1574,7 +1607,8 @@ export default function App() {
           creds.vault || 'default',
           platform,
           handleRemoteChange,
-          handleStatusChange
+          handleStatusChange,
+          handleConflicts
         );
       } catch (e) {
         console.error('Failed to parse Supabase creds', e);
@@ -4461,7 +4495,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       creds.vault,
                       platform,
                       handleRemoteChange,
-                      handleStatusChange
+                      handleStatusChange,
+                      handleConflicts
                     );
                   }}
                   style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}
@@ -5758,6 +5793,100 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               Aktif Nota Ekle
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Senkron Çakışma Çözücü: hem yerel hem bulut tarafı aynı anda değişmiş notlar için
+          zaman damgasına göre otomatik yapılan seçimi burada gösterir. Kullanıcı isterse
+          diğer sürümü tek tıkla seçebilir (veri kaybı yok, orijinal içerik zaten korunur). */}
+      {syncConflicts.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '12px',
+          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
+          zIndex: 9998,
+          width: '380px',
+          maxHeight: '70vh',
+          overflowY: 'auto',
+          animation: 'fadeIn 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+        }}>
+          <div style={{
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--border-color)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '12px',
+            fontWeight: 700,
+            color: '#f59e0b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
+            ⚠️ Senkronizasyon Çakışması ({syncConflicts.length})
+          </div>
+          {syncConflicts.map(c => (
+            <div key={c.path} style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
+              <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px', wordBreak: 'break-all' }}>
+                {c.path}
+              </div>
+              <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '0 0 8px 0', lineHeight: 1.4 }}>
+                Bu not hem bu cihazda hem bulutta değişmiş. Otomatik olarak <strong>{c.autoChosenSide === 'local' ? 'yerel' : 'bulut'}</strong> sürüm kullanıldı; dilerseniz diğerini seçebilirsiniz.
+              </p>
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+                <button
+                  onClick={() => handleResolveConflict(c, 'local')}
+                  style={{
+                    flex: 1,
+                    background: c.autoChosenSide === 'local' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.05)',
+                    border: c.autoChosenSide === 'local' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.08)',
+                    color: 'var(--text-primary)',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {c.autoChosenSide === 'local' ? '✓ ' : ''}Yerel Sürümü Kullan
+                </button>
+                <button
+                  onClick={() => handleResolveConflict(c, 'remote')}
+                  style={{
+                    flex: 1,
+                    background: c.autoChosenSide === 'remote' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.05)',
+                    border: c.autoChosenSide === 'remote' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.08)',
+                    color: 'var(--text-primary)',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {c.autoChosenSide === 'remote' ? '✓ ' : ''}Bulut Sürümünü Kullan
+                </button>
+              </div>
+              <button
+                onClick={() => dismissConflict(c.path)}
+                style={{
+                  width: '100%',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  fontSize: '10.5px',
+                  cursor: 'pointer',
+                  padding: '2px'
+                }}
+              >
+                Kapat (otomatik seçimi onayla)
+              </button>
+            </div>
+          ))}
         </div>
       )}
 

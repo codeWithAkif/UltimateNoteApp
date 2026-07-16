@@ -380,6 +380,47 @@ ipcMain.handle('list-files', async () => {
   }
 });
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// MEDYA SENKRONİZASYONU: notlara eklenen resim/ses dosyaları önceden Supabase'e hiç
+// yüklenmiyordu (yalnızca .md/.excalidraw/.drawio senkronize ediliyordu) — bir cihazda
+// eklenen medya diğer cihazda bozuk link olarak kalıyordu. Bu handler, bilinen medya
+// uzantılarına sahip dosyaları (list-files'ın aksine .md/.excalidraw/.drawio HARİÇ)
+// listeler; supabaseSync.ts bunları Supabase Storage'a yükler/indirir.
+const MEDIA_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp',
+  '.mp3', '.m4a', '.wav', '.webm', '.ogg', '.flac', '.opus', '.aac', '.mp4'
+]);
+
+ipcMain.handle('list-media-files', async () => {
+  try {
+    const listAllMedia = (dir, fileList = []) => {
+      const files = fs.readdirSync(dir);
+      files.forEach(file => {
+        if (file === '.git') return;
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          listAllMedia(filePath, fileList);
+          return;
+        }
+        const ext = path.extname(file).toLowerCase();
+        if (!MEDIA_EXTENSIONS.has(ext)) return;
+        const relativePath = path.relative(DEFAULT_NOTES_DIR, filePath).replace(/\\/g, '/');
+        fileList.push({
+          path: relativePath,
+          size: stat.size,
+          updatedAt: stat.mtimeMs
+        });
+      });
+      return fileList;
+    };
+    return listAllMedia(DEFAULT_NOTES_DIR);
+  } catch (error) {
+    console.error('Error listing media files:', error);
+    return [];
+  }
+});
+
 // IPC Handler: Resolve YouTube Playlist items via RSS Feed
 ipcMain.handle('resolve-youtube-playlist', async (event, playlistId) => {
   return new Promise((resolve) => {

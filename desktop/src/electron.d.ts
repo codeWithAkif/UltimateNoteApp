@@ -7,6 +7,7 @@ export interface ElectronAPI {
     createdAt: number;
     updatedAt: number;
   }>>;
+  listMediaFiles: () => Promise<Array<{ path: string; size?: number; updatedAt: number }>>;
   readNote: (relativePath: string) => Promise<string>;
   readMedia: (relativePath: string) => Promise<string>;
   writeNote: (relativePath: string, content: string) => Promise<{ success: boolean }>;

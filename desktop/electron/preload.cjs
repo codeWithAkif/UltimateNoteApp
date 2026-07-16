@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electron', {
   getNotesPath: () => ipcRenderer.invoke('get-notes-path'),
   listFiles: () => ipcRenderer.invoke('list-files'),
+  listMediaFiles: () => ipcRenderer.invoke('list-media-files'),
   readNote: (relativePath) => ipcRenderer.invoke('read-note', relativePath),
   readMedia: (relativePath) => ipcRenderer.invoke('read-media', relativePath),
   writeNote: (relativePath, content) => ipcRenderer.invoke('write-note', { relativePath, content }),

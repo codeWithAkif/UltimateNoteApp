@@ -2,11 +2,26 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 export type SyncStatus = 'offline' | 'syncing' | 'synced' | 'error';
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Hem yerel hem uzak taraf, son bilinen ortak sürümden beri değişmişse ("gerçek" çakışma)
+// önceden sessizce zaman damgasına göre otomatik seçim yapılıp yerel dosya .backup olarak
+// yedekleniyordu. Artık aynı otomatik seçim/yedekleme YİNE yapılır (veri kaybı riski yok)
+// ama çakışma ayrıca bu listede toplanıp arayüze bildirilir — kullanıcı isterse tek tıkla
+// diğer sürümü seçebilir.
+export interface SyncConflict {
+  path: string;
+  localContent: string;
+  remoteContent: string;
+  remoteUpdatedAt: string;
+  autoChosenSide: 'local' | 'remote';
+}
+
 let supabase: SupabaseClient | null = null;
 let currentVault = 'default';
 let localPlatform: any = null;
 let onRemoteChangeCallback: (() => void) | null = null;
 let onStatusChangeCallback: ((status: SyncStatus, error?: string | null) => void) | null = null;
+let onConflictsCallback: ((conflicts: SyncConflict[]) => void) | null = null;
 let realtimeChannel: any = null;
 
 const uploadDebounceTimers: Record<string, any> = {};
@@ -74,13 +89,147 @@ const removeSyncStamp = (path: string) => {
   localStorage.setItem(getSyncStampsKey(), JSON.stringify(stamps));
 };
 
+// ============================================================================
+// MEDYA (resim/ses) SENKRONİZASYONU
+// ============================================================================
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Notlar tablosu yalnızca .md/.excalidraw/.drawio METNİNİ tutar — notlara eklenen resim/ses
+// dosyaları önceden hiç senkronize edilmiyordu (bir cihazda eklenen medya diğer cihazda
+// bozuk link olarak kalıyordu). Bu bölüm, DEFAULT_NOTES_DIR altındaki medya dosyalarını
+// bir Supabase Storage bucket'ına ("media") yükler/indirir. Depolama yolu basitlik için
+// düzleştirilmiştir: `${vault}/${encodeURIComponent(relativePath)}` — böylece iç içe
+// klasörlerde bile TEK bir list() çağrısıyla tüm kasa medyası listelenebilir (Storage'ın
+// klasörleri özyinelemeli listelemeyen list() API'siyle uğraşmaya gerek kalmaz).
+// KURULUM GEREKSİNİMİ: Supabase projenizde "media" adında bir Storage bucket'ı (ve
+// yükleme/indirme/silme için uygun RLS politikaları) olması gerekir; yoksa bu adım
+// sessizce loglanıp atlanır, not senkronu etkilenmez.
+const MEDIA_BUCKET = 'media';
+
+const getMediaStampsKey = (): string => {
+  if (!supabase) return 'sync_media_stamps_default';
+  const url = (supabase as any).supabaseUrl || '';
+  return `sync_media_stamps_${getHash(url)}_${currentVault}`;
+};
+
+const getMediaStamps = (): Record<string, { size: number; mtimeMs: number }> => {
+  try {
+    return JSON.parse(localStorage.getItem(getMediaStampsKey()) || '{}');
+  } catch (e) {
+    return {};
+  }
+};
+
+const mediaStoragePath = (relativePath: string): string => `${currentVault}/${encodeURIComponent(relativePath)}`;
+
+const dataUrlToBlob = (dataUrl: string): Blob => {
+  const [header, base64] = dataUrl.split(',');
+  const mimeMatch = header.match(/data:(.*?);base64/);
+  const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+  const binary = atob(base64 || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+};
+
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result as string);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(blob);
+});
+
+// Not senkronunu bekletmemek için startSync() sonunda ÇAĞRILIR AMA AWAIT EDİLMEZ
+// (arka planda ilerler); hataları kendi içinde yakalar, ana senkronu asla bozmaz.
+const syncMediaFiles = async () => {
+  if (!supabase || !localPlatform || typeof localPlatform.listMediaFiles !== 'function') return;
+
+  try {
+    const localFiles: Array<{ path: string; size?: number; updatedAt: number }> = await localPlatform.listMediaFiles();
+
+    const { data: remoteObjects, error: listErr } = await supabase.storage.from(MEDIA_BUCKET).list(currentVault, { limit: 1000 });
+    if (listErr) {
+      console.warn(`[Supabase Sync] Medya bucket'ı ("${MEDIA_BUCKET}") listelenemedi — bucket henüz oluşturulmamış olabilir. Not senkronu bundan etkilenmez. Detay:`, listErr.message);
+      return;
+    }
+
+    const remoteMap: Record<string, any> = {};
+    (remoteObjects || []).forEach(obj => {
+      if (!obj.id) return; // id:null olan girdiler sahte "klasör" işaretçileridir, atlanır.
+      try {
+        remoteMap[decodeURIComponent(obj.name)] = obj;
+      } catch (e) {
+        // Bozuk kodlanmış isim — yoksay.
+      }
+    });
+
+    const localMap: Record<string, boolean> = {};
+    localFiles.forEach(f => { localMap[f.path] = true; });
+
+    const stamps = getMediaStamps();
+    const newStamps: Record<string, { size: number; mtimeMs: number }> = { ...stamps };
+    let changed = false;
+
+    // A. Yerelde yeni/değişmiş medyaları yükle
+    for (const f of localFiles) {
+      const stamp = stamps[f.path];
+      const localChanged = !stamp || stamp.size !== (f.size || 0) || stamp.mtimeMs !== f.updatedAt;
+      if (!localChanged && remoteMap[f.path]) continue;
+
+      try {
+        const dataUrl = await localPlatform.readMedia(f.path);
+        if (!dataUrl) continue;
+        const blob = dataUrlToBlob(dataUrl);
+        const { error: upErr } = await supabase.storage
+          .from(MEDIA_BUCKET)
+          .upload(mediaStoragePath(f.path), blob, { upsert: true, contentType: blob.type || undefined });
+        if (upErr) {
+          console.error(`[Supabase Sync] Medya yüklenemedi: ${f.path}`, upErr.message);
+          continue;
+        }
+        newStamps[f.path] = { size: f.size || 0, mtimeMs: f.updatedAt };
+        changed = true;
+        console.log(`[Supabase Sync] Medya yüklendi: ${f.path}`);
+      } catch (err) {
+        console.error(`[Supabase Sync] Medya yükleme hatası: ${f.path}`, err);
+      }
+    }
+
+    // B. Yerelde eksik olan uzak medyaları indir
+    for (const remotePath in remoteMap) {
+      if (localMap[remotePath]) continue;
+      try {
+        const { data: blob, error: dlErr } = await supabase.storage.from(MEDIA_BUCKET).download(mediaStoragePath(remotePath));
+        if (dlErr || !blob) {
+          console.error(`[Supabase Sync] Medya indirilemedi: ${remotePath}`, dlErr?.message);
+          continue;
+        }
+        const dataUrl = await blobToDataUrl(blob);
+        await localPlatform.writeNote(remotePath, dataUrl);
+        newStamps[remotePath] = { size: blob.size, mtimeMs: Date.now() };
+        changed = true;
+        console.log(`[Supabase Sync] Medya indirildi: ${remotePath}`);
+      } catch (err) {
+        console.error(`[Supabase Sync] Medya indirme hatası: ${remotePath}`, err);
+      }
+    }
+
+    if (changed) {
+      localStorage.setItem(getMediaStampsKey(), JSON.stringify(newStamps));
+      if (onRemoteChangeCallback) onRemoteChangeCallback();
+    }
+  } catch (err) {
+    console.error('[Supabase Sync] Medya senkronu başarısız:', err);
+  }
+};
+
 export const initSupabase = (
   url: string,
   key: string,
   vault: string,
   platform: any,
   onRemoteChange: () => void,
-  onStatusChange: (status: SyncStatus, error?: string | null) => void
+  onStatusChange: (status: SyncStatus, error?: string | null) => void,
+  onConflicts?: (conflicts: SyncConflict[]) => void
 ) => {
   if (realtimeChannel) {
     if (supabase) {
@@ -118,7 +267,8 @@ export const initSupabase = (
     localPlatform = platform;
     onRemoteChangeCallback = onRemoteChange;
     onStatusChangeCallback = onStatusChange;
-    
+    onConflictsCallback = onConflicts || null;
+
     onStatusChange('syncing', null);
     startSync();
   } catch (err: any) {
@@ -133,6 +283,7 @@ const startSync = async () => {
   try {
     onStatusChangeCallback('syncing', null);
     console.log('[Supabase Sync] Reconciling notes...');
+    const conflictsThisRun: SyncConflict[] = [];
 
     // 1. Fetch remote note METADATA only (path + damga + silinme durumu).
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -297,7 +448,9 @@ const startSync = async () => {
             localTime = localTime * 1000;
           }
 
-          if (localTime > 0 && localTime > remoteTime + 2000) {
+          const autoChosenSide: 'local' | 'remote' = (localTime > 0 && localTime > remoteTime + 2000) ? 'local' : 'remote';
+
+          if (autoChosenSide === 'local') {
             console.log(`[Supabase Sync] Conflict resolved (local newer): ${item.path}, uploading...`);
             const sentStamp = await uploadNoteDirect(item.path, item.localContent);
             newSyncHashes[item.path] = item.localHash;
@@ -311,6 +464,17 @@ const startSync = async () => {
             }
             await localPlatform.writeNote(item.path, normalizedRemoteContent);
           }
+
+          // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          // Otomatik seçim yukarıda zaten uygulandı (veri kaybı yok, .backup dosyası mevcut) —
+          // burada yalnızca kullanıcının sonradan tersini seçebilmesi için çakışmayı kaydediyoruz.
+          conflictsThisRun.push({
+            path: item.path,
+            localContent: item.localContent,
+            remoteContent: normalizedRemoteContent,
+            remoteUpdatedAt: remoteNote.updated_at,
+            autoChosenSide
+          });
         }
       }
     }
@@ -337,6 +501,13 @@ const startSync = async () => {
     if (onRemoteChangeCallback) {
       onRemoteChangeCallback();
     }
+
+    if (conflictsThisRun.length > 0 && onConflictsCallback) {
+      onConflictsCallback(conflictsThisRun);
+    }
+
+    // Medya senkronu not senkronunu bekletmeden arka planda çalışır (bkz. yukarıdaki tanım).
+    syncMediaFiles();
 
     // 4. Set up Realtime WebSockets Channel
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -471,6 +642,32 @@ const uploadNoteDirect = async (path: string, content: string): Promise<string |
     setTimeout(() => {
       delete isUploadingPaths[path];
     }, 1000);
+  }
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Kullanıcı, çakışma bildirimindeki otomatik seçimin TERSİNİ tercih ederse çağrılır.
+// 'local': yerel (backup'taki) içeriği tekrar buluta yükler ve yerel dosyaya da yazar.
+// 'remote': uzak içeriği yerel dosyaya geri yazar — otomatik seçim yerel olmuşsa bunu geri alır.
+// Her iki durumda da veri kaybı yoktur; orijinal yerel içerik zaten .backup dosyasında durur.
+export const resolveConflict = async (
+  path: string,
+  side: 'local' | 'remote',
+  localContent: string,
+  remoteContent: string,
+  remoteUpdatedAt: string
+): Promise<void> => {
+  if (!localPlatform) return;
+  if (side === 'local') {
+    await localPlatform.writeNote(path, localContent);
+    await uploadNoteDirect(path, localContent);
+  } else {
+    await localPlatform.writeNote(path, remoteContent);
+    updateSyncHash(path, getHash(remoteContent));
+    updateSyncStamp(path, remoteUpdatedAt);
+  }
+  if (onRemoteChangeCallback) {
+    onRemoteChangeCallback();
   }
 };
 

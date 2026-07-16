@@ -3034,6 +3034,183 @@ export default function NotesView({
     }
   }, [editorContent, activeNotePath, notes]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Obsidian tarzı "Ctrl + üzerine gel" not önizlemesi: [[Wiki Bağlantısı]] üzerine
+  // Ctrl (veya Cmd, Mac) tuşu basılıyken gelince, hedef notun içeriğini fare yanında
+  // küçük bir kartta gösterir — nota gitmeden hızlıca göz atmayı sağlar. Ctrl tuşu
+  // fare zaten bağlantının üzerindeyken sonradan basılırsa da çalışması için Ctrl
+  // durumu ve "üzerinde gelinen bağlantı" durumu ayrı ayrı izlenip birleştirilir.
+  const [ctrlHeld, setCtrlHeld] = useState(false);
+  const [hoveredWikiLink, setHoveredWikiLink] = useState<{ targetName: string; exists: boolean; x: number; y: number } | null>(null);
+  const [linkPreview, setLinkPreview] = useState<{ targetName: string; exists: boolean; x: number; y: number; content: string; loading: boolean } | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') setCtrlHeld(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') setCtrlHeld(false);
+    };
+    const handleBlur = () => setCtrlHeld(false);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: Önceden popup yalnızca Ctrl basılıyken açık kalıyordu. Ancak tarayıcıda/
+  // Electron'da Ctrl+Fare Tekerleği, sayfa YAKINLAŞTIRMA (zoom) kısayolu olduğu için kullanıcı
+  // popup içinde kaydırmaya çalıştığında (Ctrl hâlâ basılıyken) kaydırma popup'a değil zoom'a
+  // gidiyor, "içeride scroll yapamıyorum" hissi yaratıyordu. Çözüm: Ctrl+üzerine gelme yalnızca
+  // popup'ı İLK AÇMAK için gerekli; bir kez açıldıktan sonra fare link veya popup'ın üzerindeyken
+  // (Ctrl bırakılsa bile) açık kalır — böylece kullanıcı Ctrl'ü bırakıp normal fare tekerleğiyle
+  // rahatça kaydırabilir. Yalnızca fare hem bağlantıdan hem popup'tan tamamen ayrılınca kapanır.
+  const shownForTargetRef = useRef<string | null>(null);
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bağlantı ile popup arasında birkaç piksellik boşluk olduğu için fare o boşluktan
+  // geçerken anlık "mouseleave" popup'ı erken kapatabiliyordu. Kapatmayı küçük bir
+  // gecikmeyle planlayıp, fare bağlantıya ya da popup'a tekrar girerse iptal ediyoruz.
+  const hidePreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHideWikiPreview = () => {
+    if (hidePreviewTimerRef.current) {
+      clearTimeout(hidePreviewTimerRef.current);
+      hidePreviewTimerRef.current = null;
+    }
+  };
+  const scheduleHideWikiPreview = () => {
+    cancelHideWikiPreview();
+    hidePreviewTimerRef.current = setTimeout(() => {
+      setHoveredWikiLink(null);
+    }, 200);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: React'in JSX onWheel prop'u tarayıcı performansı için varsayılan
+  // olarak "passive" dinleyici olarak eklenir — bu modda e.preventDefault() ÇALIŞMAZ
+  // (sessizce yoksayılır). Ctrl+Fare Tekerleği tarayıcıda/Electron'da sayfa yakınlaştırma
+  // (zoom) kısayolu olduğundan, popup içinde JSX onWheel ile preventDefault denemek zoom'u
+  // engelleyemiyordu. Çözüm: native (passive:false) bir "wheel" dinleyicisi ekleyip hem
+  // varsayılan davranışı (zoom) engelliyor hem de kaydırmayı popup içinde elle uyguluyoruz.
+  const linkPreviewElRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = linkPreviewElRef.current;
+    if (!el || !linkPreview) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      el.scrollTop += e.deltaY;
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [linkPreview !== null]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Önizleme kartında ham markdown metni yerine BASİT bir biçimlendirilmiş görünüm
+  // (başlık/madde/checklist/kalın/italik/kod) gösterir — tam editör satır render'ı
+  // (renderSingleLine) bu notun state'ine bağlı olduğundan burada yeniden kullanılamaz.
+  const renderInlinePreviewMd = (text: string): React.ReactNode => {
+    const parts = text.split(/(\*\*.*?\*\*|`.*?`|\*.*?\*)/g).filter(p => p !== '');
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**') && part.length > 3) {
+        return <strong key={i}>{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
+        return <code key={i} style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 4px', borderRadius: '3px', fontSize: '11px' }}>{part.slice(1, -1)}</code>;
+      }
+      if (part.startsWith('*') && part.endsWith('*') && part.length > 1) {
+        return <em key={i}>{part.slice(1, -1)}</em>;
+      }
+      return part;
+    });
+  };
+
+  const renderPreviewLine = (line: string, idx: number): React.ReactNode => {
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      return (
+        <div key={idx} style={{ fontWeight: 700, fontSize: level === 1 ? '14px' : level === 2 ? '13px' : '12.5px', margin: '6px 0 3px' }}>
+          {renderInlinePreviewMd(heading[2])}
+        </div>
+      );
+    }
+    const checklist = getChecklistInfo(line);
+    if (checklist) {
+      const checked = checklist.status.toLowerCase() === 'x';
+      return (
+        <div key={idx} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', margin: '2px 0' }}>
+          <span style={{ opacity: 0.7 }}>{checked ? '☑' : '☐'}</span>
+          <span style={{ textDecoration: checked ? 'line-through' : 'none', opacity: checked ? 0.6 : 1 }}>{renderInlinePreviewMd(checklist.content)}</span>
+        </div>
+      );
+    }
+    const bullet = getBulletInfo(line);
+    if (bullet) {
+      return (
+        <div key={idx} style={{ display: 'flex', gap: '6px', margin: '2px 0' }}>
+          <span style={{ opacity: 0.6 }}>•</span>
+          <span>{renderInlinePreviewMd(bullet.content)}</span>
+        </div>
+      );
+    }
+    const ordered = getOrderedListInfo(line);
+    if (ordered) {
+      return (
+        <div key={idx} style={{ display: 'flex', gap: '6px', margin: '2px 0' }}>
+          <span style={{ opacity: 0.6 }}>{ordered.number}.</span>
+          <span>{renderInlinePreviewMd(ordered.content)}</span>
+        </div>
+      );
+    }
+    if (line.trim() === '') return <div key={idx} style={{ height: '6px' }} />;
+    return <div key={idx} style={{ margin: '2px 0' }}>{renderInlinePreviewMd(line)}</div>;
+  };
+
+  useEffect(() => {
+    if (!hoveredWikiLink) {
+      shownForTargetRef.current = null;
+      setLinkPreview(null);
+      return;
+    }
+
+    const alreadyShownForThis = shownForTargetRef.current === hoveredWikiLink.targetName;
+    if (!ctrlHeld && !alreadyShownForThis) {
+      // Ctrl basılı değil ve bu bağlantı için henüz açılmamış — bekle, gösterme.
+      return;
+    }
+    if (alreadyShownForThis) {
+      // Zaten açık/yükleniyor — Ctrl bırakılıp tekrar basılsa bile gereksiz yeniden yüklemeyi önle.
+      return;
+    }
+
+    shownForTargetRef.current = hoveredWikiLink.targetName;
+    let cancelled = false;
+    const { targetName, exists, x, y } = hoveredWikiLink;
+    setLinkPreview({ targetName, exists, x, y, content: '', loading: true });
+    (async () => {
+      try {
+        let content = '';
+        if (exists) {
+          const targetNote = notes.find(n => n.name.toLowerCase() === targetName.toLowerCase());
+          content = targetNote ? await readNoteContent(targetNote.path) : '';
+        }
+        if (!cancelled) {
+          setLinkPreview(prev => (prev && prev.targetName === targetName) ? { ...prev, content, loading: false } : prev);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLinkPreview(prev => (prev && prev.targetName === targetName) ? { ...prev, content: '_Not yüklenemedi._', loading: false } : prev);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ctrlHeld, hoveredWikiLink, notes, readNoteContent]);
+
   // Wiki-link autocomplete states
   const [showWikiSuggestions, setShowWikiSuggestions] = useState(false);
   const [wikiSearch, setWikiSearch] = useState('');
@@ -6005,7 +6182,20 @@ export default function NotesView({
               e.stopPropagation();
               handleWikiLinkClick(targetName, exists);
             }}
-            title={exists ? `"${targetName}" notunu aç` : `"${targetName}" notunu oluştur ve aç`}
+            onMouseEnter={(e) => {
+              cancelHideWikiPreview();
+              const r = e.currentTarget.getBoundingClientRect();
+              setHoveredWikiLink({ targetName, exists, x: r.left, y: r.bottom + 2 });
+            }}
+            onMouseLeave={scheduleHideWikiPreview}
+            onContextMenu={(e) => {
+              if (!exists || !targetNote) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setHoveredWikiLink(null);
+              onNoteContextMenu?.(e, targetNote.path);
+            }}
+            title={exists ? `"${targetName}" notunu aç (önizleme için Ctrl + üzerine gel, sağ tık ile sekme/bölme seçenekleri için)` : `"${targetName}" notunu oluştur ve aç`}
           >
             {displayLabel}
           </span>
@@ -7368,10 +7558,27 @@ export default function NotesView({
     setIsDragging(false);
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Şablon içinde {{tarih}}, {{saat}}, {{tarihsaat}}, {{başlık}} yer tutucularını, notun
+  // oluşturulduğu ana ait gerçek değerlerle değiştirir. Böylece kullanıcı kendi şablonlarını
+  // (.templates klasöründe) bu değişkenlerle yazabilir ve her yeni not otomatik doldurulur.
+  const applyTemplateVariables = (content: string, title: string): string => {
+    const now = new Date();
+    const tarih = now.toLocaleDateString('tr-TR');
+    const saat = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    const tarihsaat = `${tarih} ${saat}`;
+    return content
+      .replace(/\{\{\s*tarihsaat\s*\}\}/gi, tarihsaat)
+      .replace(/\{\{\s*tarih\s*\}\}/gi, tarih)
+      .replace(/\{\{\s*saat\s*\}\}/gi, saat)
+      .replace(/\{\{\s*başlık\s*\}\}/gi, title)
+      .replace(/\{\{\s*baslik\s*\}\}/gi, title);
+  };
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newNoteName.trim()) return;
-    
+
     let initialContent = '';
     if (creatingType === 'rfc') {
       if (selectedTemplatePath !== 'default-rfc') {
@@ -7412,8 +7619,9 @@ export default function NotesView({
 ## Notlar & Karalamalar
 `;
       }
+      initialContent = applyTemplateVariables(initialContent, newNoteName.trim());
     }
-    
+
     await onCreateNote(newNoteName.trim(), selectedFolder, creatingType === 'drawio' ? 'drawio' : creatingType === 'excalidraw', creatingType === 'rfc' ? initialContent : undefined);
     setNewNoteName('');
     setIsCreating(false);
@@ -9970,6 +10178,60 @@ export default function NotesView({
             <span style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px', fontWeight: 'bold' }}>
               {currentWpm} WPM
             </span>
+          )}
+        </div>
+      )}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Obsidian tarzı Ctrl+hover not önizleme kartı. Fareyi popup'ın üzerine taşıyıp
+          içeriği kaydırarak okuyabilmek için onMouseEnter/Leave ile hoveredWikiLink'i
+          canlı tutuyoruz — aksi halde bağlantıdan popup'a geçerken kart hemen kapanırdı. */}
+      {linkPreview && (
+        <div
+          ref={linkPreviewElRef}
+          onMouseEnter={cancelHideWikiPreview}
+          onMouseLeave={scheduleHideWikiPreview}
+          style={{
+            position: 'fixed',
+            top: `${Math.min(linkPreview.y, window.innerHeight - 260)}px`,
+            left: `${Math.min(linkPreview.x, window.innerWidth - 340)}px`,
+            width: '320px',
+            maxHeight: '260px',
+            overflowY: 'auto',
+            overscrollBehavior: 'contain',
+            zIndex: 10001,
+            background: 'rgba(20, 20, 25, 0.97)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '10px',
+            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.55)',
+            backdropFilter: 'blur(14px)',
+            padding: '12px 14px',
+            animation: 'fadeIn 0.15s ease'
+          }}
+        >
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-color)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Link2 size={12} />
+            {linkPreview.targetName}
+          </div>
+          {!linkPreview.exists ? (
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0, fontStyle: 'italic' }}>
+              Bu not henüz oluşturulmadı.
+            </p>
+          ) : linkPreview.loading ? (
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>Yükleniyor…</p>
+          ) : (
+            <div style={{
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              wordBreak: 'break-word',
+              lineHeight: 1.5
+            }}>
+              {linkPreview.content.trim() === '' ? (
+                <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>Not boş.</span>
+              ) : (
+                linkPreview.content.split('\n').slice(0, 60).map((line, idx) => renderPreviewLine(line, idx))
+              )}
+            </div>
           )}
         </div>
       )}
