@@ -4,7 +4,7 @@ import { Folder, FileText, CheckSquare, Hash, Zap, Send, Calendar, Clock, X } fr
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
 }
 
 interface NoteFactoryViewProps {

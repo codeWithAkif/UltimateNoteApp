@@ -119,6 +119,32 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Renderer süreci (uygulama içeriğini çizen alt süreç) bellek yetersizliği
+  // veya başka bir nedenle çökerse, pencere çerçevesi (işletim sistemi
+  // tarafından çizildiği için) ayakta kalır ama içerik beyaz/boş kalır ve
+  // hiçbir işleve yanıt vermez — kullanıcı yalnızca kapatma düğmesini
+  // kullanabilir. Bu olayı yakalayıp pencereyi otomatik olarak yeniden
+  // yüklüyoruz ki uygulama kalıcı olarak beyaz ekranda takılı kalmasın.
+  // Neden (details.reason: 'oom', 'crashed', 'killed' vb.) loglanır, böylece
+  // tekrar olursa kök neden teşhis edilebilir.
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('[Main] Renderer process gone:', details.reason, details);
+    logDebug(`Renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+    }
+  });
+
+  mainWindow.on('unresponsive', () => {
+    console.error('[Main] Window became unresponsive.');
+    logDebug('Window became unresponsive.');
+  });
+
+  mainWindow.on('responsive', () => {
+    console.log('[Main] Window became responsive again.');
+  });
 }
 
 const getAudioMimeType = (filePath) => {
@@ -306,8 +332,18 @@ ipcMain.handle('list-files', async () => {
     const listAllFiles = (dir, fileList = []) => {
       const files = fs.readdirSync(dir);
       files.forEach(file => {
-        if (file.startsWith('.')) {
-          return; // Ignore system/hidden files and directories like .git
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // BUG DÜZELTMESİ: Önceden "." ile başlayan HER ŞEY (dosya/klasör) atlanıyordu.
+        // Bu, uygulamanın kendi varsayılan şablon klasörünü (".templates") de görünmez
+        // yapıyordu — App.tsx'teki "şablon klasörü boşsa varsayılan RFC şablonunu oluştur"
+        // efekti dosyayı hiç göremediği için onu SONSUZA KADAR yeniden oluşturup diske
+        // yazıyor, bu da her seferinde Supabase'e yükleme tetikleyip "Eşitleniyor..."
+        // durumunun sürekli yanıp sönmesine ve arka planda bitmeyen CPU/disk/ağ
+        // trafiğine (ve uzun vadede performans sorunlarına) yol açıyordu. Yalnızca
+        // gerçek sistem klasörü olan ".git" gizlenir; diğer nokta ile başlayan
+        // klasörler (".templates" gibi) uygulamanın kendi kullanımı için meşrudur.
+        if (file === '.git') {
+          return;
         }
         const filePath = path.join(dir, file);
         const stat = fs.statSync(filePath);
@@ -322,12 +358,14 @@ ipcMain.handle('list-files', async () => {
             updatedAt: stat.mtimeMs
           });
           listAllFiles(filePath, fileList);
-        } else if (file.endsWith('.md') || file.endsWith('.excalidraw')) {
+        } else if (file.endsWith('.md') || file.endsWith('.excalidraw') || file.endsWith('.drawio')) {
+          // .drawio: draw.io (diagrams.net) diyagram dosyaları da not listesine dahil edilir.
           const isExcalidraw = file.endsWith('.excalidraw');
+          const isDrawio = file.endsWith('.drawio');
           fileList.push({
-            name: file.replace(/\.(md|excalidraw)$/, ''),
+            name: file.replace(/\.(md|excalidraw|drawio)$/, ''),
             path: relativePath,
-            type: isExcalidraw ? 'excalidraw' : 'note',
+            type: isExcalidraw ? 'excalidraw' : (isDrawio ? 'drawio' : 'note'),
             createdAt: stat.birthtimeMs,
             updatedAt: stat.mtimeMs
           });

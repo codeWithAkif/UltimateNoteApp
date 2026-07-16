@@ -4,7 +4,7 @@ import { FlaskConical, Plus, Trash2, Search, Zap, FileText, Sparkles, Maximize2 
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
   createdAt: number;
   updatedAt: number;
 }

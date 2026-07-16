@@ -5,7 +5,7 @@ import { Preferences } from '@capacitor/preferences';
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
 }
 
 interface NoteMentorViewProps {

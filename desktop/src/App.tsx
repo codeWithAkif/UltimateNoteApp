@@ -62,7 +62,7 @@ const DEFAULT_SHORTCUTS: Record<string, { label: string; shortcut: ShortcutKey }
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
   createdAt: number;
   updatedAt: number;
 }
@@ -1123,8 +1123,26 @@ export default function App() {
     localStorage.setItem('active_tab', activeTab);
   }, [activeTab]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: Aşağıdaki efekt eskiden [activeNotePath, lastClipboardProcessed, notes]'a
+  // bağımlıydı. notes, her loadAllData() çağrısında (ör. handleFocusOrResume içinde) yeni bir
+  // referans olarak yeniden oluşturuluyordu; bu da efektin listener'ları söküp yeniden kurmasına
+  // VE her seferinde tekrar setTimeout(checkClipboard, 1500) planlamasına yol açıyordu. loadAllData
+  // -> notes değişir -> efekt yeniden çalışır -> checkClipboard tekrar zamanlanır -> (odaklanma/
+  // görünürlük olaylarıyla) tekrar loadAllData çağrılabilir şeklinde birbirini besleyen bir döngü
+  // oluşuyordu — saniyede onlarca kez "panoyu oku" hatası ve arka planda sürekli tam veri taraması
+  // demekti; bu hem "her 2 saniyede eşitleniyor" hissinin hem de uzun süre açık kalınca CPU/bellek
+  // tükenip uygulamanın beyaz ekranda çökmesinin kök nedeniydi. Çözüm: state'leri ref'te tutup
+  // efekti yalnızca bir kez (mount'ta) kurmak — listener'lar asla gereksiz yere yeniden kurulmaz.
+  const activeNotePathRef = useRef(activeNotePath);
+  useEffect(() => { activeNotePathRef.current = activeNotePath; }, [activeNotePath]);
+  const notesRef = useRef(notes);
+  useEffect(() => { notesRef.current = notes; }, [notes]);
+  const lastClipboardProcessedRef = useRef(lastClipboardProcessed);
+  useEffect(() => { lastClipboardProcessedRef.current = lastClipboardProcessed; }, [lastClipboardProcessed]);
+
   const checkClipboard = async () => {
-    const targetPath = activeNotePath || notes.find(n => n.type === 'note')?.path;
+    const targetPath = activeNotePathRef.current || notesRef.current.find(n => n.type === 'note')?.path;
     if (!targetPath) return;
 
     try {
@@ -1139,7 +1157,7 @@ export default function App() {
         text = (await navigator.clipboard.readText()).trim();
       }
 
-      if (text && text !== lastClipboardProcessed) {
+      if (text && text !== lastClipboardProcessedRef.current) {
         setClipboardText(text);
         setShowClipboardBanner(true);
       }
@@ -1200,7 +1218,7 @@ export default function App() {
       window.removeEventListener('copy', handleGlobalCopy);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeNotePath, lastClipboardProcessed, notes]);
+  }, []);
 
   const handlePasteClipboardToNote = async () => {
     const targetPath = activeNotePath || notes.find(n => n.type === 'note')?.path;
@@ -2006,6 +2024,22 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
   const hasCompletedInitialLoadRef = useRef(false);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // PERFORMANS: Her otomatik kaydetmede tüm çalışma alanını anında yeniden
+  // taramak (loadAllData), kullanıcı yazmaya devam ederken ana iş parçacığını
+  // kilitliyordu — "duraksadım, devam ettim, dondu" hissinin ana kaynağı.
+  // scheduleWorkspaceScan taramayı 5 sn erteler ve her yeni kayıtta sayacı
+  // sıfırlar: yazma seansı sürerken tam tarama HİÇ çalışmaz, kullanıcı
+  // gerçekten işini bitirip bıraktığında bir kez çalışır.
+  const pendingScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleWorkspaceScan = () => {
+    if (pendingScanTimerRef.current) clearTimeout(pendingScanTimerRef.current);
+    pendingScanTimerRef.current = setTimeout(() => {
+      pendingScanTimerRef.current = null;
+      loadAllData();
+    }, 5000);
+  };
+
   const loadAllData = async () => {
     let loadedNotes: NoteItem[] | null = null;
     if (!isBrowser) {
@@ -2581,8 +2615,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   };
 
   // 2. Create Note / Drawing / RFC Plan
-  async function handleCreateNote(name: string, folder: string | null, isExcalidraw: boolean = false, initialContent: string = '', switchActiveNote: boolean = true) {
-    const ext = isExcalidraw ? '.excalidraw' : '.md';
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // isExcalidraw parametresi geriye dönük uyumluluk için boolean kalır; 'drawio'
+  // değeri geçilirse draw.io (diagrams.net) diyagram dosyası (.drawio) oluşturulur.
+  async function handleCreateNote(name: string, folder: string | null, isExcalidraw: boolean | 'drawio' = false, initialContent: string = '', switchActiveNote: boolean = true) {
+    const isDrawio = isExcalidraw === 'drawio';
+    const ext = isDrawio ? '.drawio' : (isExcalidraw ? '.excalidraw' : '.md');
     const filename = `${name.replace(/\s+/g, '_')}${ext}`;
     const relativePath = folder ? `${folder}/${filename}` : filename;
 
@@ -2600,7 +2638,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
     if (!isBrowser) {
       let header = '';
-      if (isExcalidraw) {
+      if (isDrawio) {
+        // Boş draw.io diyagramı: embed editörü boş XML ile açılır, ilk kayıtta doldurur.
+        header = '';
+      } else if (isExcalidraw) {
         header = excalidrawEmptyContent;
       } else if (initialContent) {
         header = initialContent;
@@ -2618,13 +2659,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       const newNote: NoteItem = {
         name,
         path: relativePath,
-        type: isExcalidraw ? 'excalidraw' : 'note',
+        type: isDrawio ? 'drawio' : (isExcalidraw ? 'excalidraw' : 'note'),
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
       const updated = [...notes, newNote];
       mockSaveNotes(updated);
-      const content = isExcalidraw ? excalidrawEmptyContent : (initialContent || `# ${name}\n\n`);
+      const content = isDrawio ? '' : (isExcalidraw ? excalidrawEmptyContent : (initialContent || `# ${name}\n\n`));
       localStorage.setItem(`mock_note_${relativePath}`, content);
       if (switchActiveNote) {
         handleSetActiveNotePath(relativePath);
@@ -2735,8 +2776,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         setTimelineItems(updatedTimeline);
         await saveMetadata(updatedTimeline, recentInputs, tags);
       }
-      
-      await loadAllData();
+
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // Tam tarama yerine: kaydedilen notun içeriğini hedefli güncelle (sürüm
+      // geçmişi diff'i ve bu nota bağlı görünümler için yeterli) ve tam
+      // çalışma alanı taramasını ertelenmiş/debounce'lu olarak planla.
+      setFileContents(prev => ({ ...prev, [path]: content }));
+      scheduleWorkspaceScan();
     } else {
       // Web Mock
       localStorage.setItem(`mock_note_${path}`, content);
@@ -2753,7 +2799,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
   // 4. Delete Path
   const handleDeletePath = async (path: string) => {
-    const isFile = path.endsWith('.md') || path.endsWith('.excalidraw');
+    const isFile = path.endsWith('.md') || path.endsWith('.excalidraw') || path.endsWith('.drawio');
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
     // Silinen dosyayı veya klasör altındaki dosyaları açık sekmelerden (panes) temizliyoruz.
     // Eğer silinen not aktif sekmedeyse, aktif notu sonraki uygun sekmeye geçiriyoruz veya null yapıyoruz.
@@ -2811,13 +2857,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     await updatePinnedWidgets(updatedLists, newActive);
 
     if (!isBrowser) {
-      const isFile = path.endsWith('.md') || path.endsWith('.excalidraw');
+      const isFile = path.endsWith('.md') || path.endsWith('.excalidraw') || path.endsWith('.drawio');
       if (!isFile) {
         // Folder deletion: soft-delete all containing notes/drawings in remote database
         try {
           const allFiles = await platform.listFiles();
           for (const file of allFiles) {
-            if ((file.type === 'note' || file.type === 'excalidraw') && file.path.startsWith(path + '/')) {
+            if ((file.type === 'note' || file.type === 'excalidraw' || file.type === 'drawio') && file.path.startsWith(path + '/')) {
               await handleLocalDelete(file.path);
             }
           }
@@ -2883,7 +2929,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     try {
       const res = await platform.renamePath(oldPath, newPath);
       if (res.success) {
-        const isFile = oldPath.endsWith('.md') || oldPath.endsWith('.excalidraw');
+        const isFile = oldPath.endsWith('.md') || oldPath.endsWith('.excalidraw') || oldPath.endsWith('.drawio');
 
         // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
         // Yarış durumunu engellemek için aktif not yolunu Supabase işlemlerinden hemen önce güncelliyoruz.
@@ -2968,7 +3014,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             // For folders, we soft-delete all remote notes and drawings inside oldPath and upsert under newPath
             const allFiles = await platform.listFiles();
             for (const file of allFiles) {
-              if ((file.type === 'note' || file.type === 'excalidraw') && file.path.startsWith(newPath + '/')) {
+              if ((file.type === 'note' || file.type === 'excalidraw' || file.type === 'drawio') && file.path.startsWith(newPath + '/')) {
                 const oldNotePath = oldPath + file.path.substring(newPath.length);
                 await handleLocalDelete(oldNotePath);
                 const content = await platform.readNote(file.path);

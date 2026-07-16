@@ -8,7 +8,7 @@ import {
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
   updatedAt: number;
 }
 

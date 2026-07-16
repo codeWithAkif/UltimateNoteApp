@@ -6,7 +6,7 @@ import { Browser } from '@capacitor/browser';
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
   createdAt: number;
   updatedAt: number;
 }

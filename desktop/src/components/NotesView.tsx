@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { 
   Plus, Trash2, FileText, Folder, ArrowLeft, Clock, Calendar, ChevronDown, ChevronUp, Star, 
   RefreshCw, EyeOff, CheckSquare, List, ListOrdered, Bold, Italic, Code, ChevronRight, Eye, 
@@ -6,7 +7,7 @@ import {
   RotateCcw, Volume2, Mic, Square, Check, Copy, Table, HelpCircle, Activity, Heart, Sparkles, 
   Pin, Music, X, Globe, PenTool, Database, Inbox,
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
-  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History
+  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch
 } from 'lucide-react';
 import { platform, isElectron, isBrowser } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
@@ -44,7 +45,7 @@ const addDebugLog = (msg: string) => {
 interface NoteItem {
   name: string;
   path: string;
-  type: 'note' | 'folder' | 'excalidraw';
+  type: 'note' | 'folder' | 'excalidraw' | 'drawio';
   createdAt: number;
   updatedAt: number;
 }
@@ -58,7 +59,7 @@ interface NotesViewProps {
   setActiveNotePath: (path: string | null) => void;
   onSaveNote: (path: string, content: string) => Promise<void>;
   onDeletePath: (path: string) => Promise<void>;
-  onCreateNote: (name: string, folder: string | null, isExcalidraw?: boolean, initialContent?: string, switchActiveNote?: boolean) => Promise<void>;
+  onCreateNote: (name: string, folder: string | null, isExcalidraw?: boolean | 'drawio', initialContent?: string, switchActiveNote?: boolean) => Promise<void>;
   templatesFolder: string;
   mindmapLayouts: Record<string, { coords: any; customs: any[] }>;
   onSaveMindmapLayout: (path: string, coords: any, customs: any[]) => Promise<void>;
@@ -147,7 +148,6 @@ const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({
       className={className}
       placeholder={placeholder}
       rows={1}
-      autoFocus={autoFocus}
       style={{
         resize: 'none',
         overflow: 'hidden',
@@ -173,6 +173,152 @@ const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Markdown notlarının içine gömülen çizimlerin (Excalidraw) satır içi (inline) olarak
 // görüntülenebilmesini ve doğrudan notun içinden düzenlenebilmesini sağlayan alt bileşen.
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// draw.io (diagrams.net) tam ekran diyagram editörü. Resmî embed protokolünü
+// kullanır: iframe https://embed.diagrams.net adresinden yüklenir ve JSON
+// string'leri postMessage ile karşılıklı konuşulur — 'init' gelince XML
+// yüklenir, kullanıcı çizdikçe 'autosave' olayındaki XML debounce ile kasadaki
+// .drawio dosyasına yazılır. Excalidraw'daki akışın (yükle → çiz → otomatik
+// kaydet → çıkışta flush) birebir karşılığıdır. İnternet gerektirir; editör
+// makul sürede hazır olmazsa kullanıcıya çevrimdışı uyarısı gösterilir.
+const DRAWIO_EMBED_ORIGIN = 'https://embed.diagrams.net';
+
+interface DrawioFullEditorProps {
+  notePath: string;
+  readNoteContent: (path: string) => Promise<string>;
+  onSaveNote: (path: string, content: string) => Promise<void>;
+}
+
+const DrawioFullEditor: React.FC<DrawioFullEditorProps> = ({ notePath, readNoteContent, onSaveNote }) => {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [isReady, setIsReady] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
+  const lastSavedXmlRef = useRef<string>('');
+  const isDirtyRef = useRef<boolean>(false);
+
+  const isLightTheme = typeof document !== 'undefined' && document.documentElement.classList.contains('light-theme');
+  const embedUrl = `${DRAWIO_EMBED_ORIGIN}/?embed=1&proto=json&spin=1&libraries=1&noSaveBtn=1&noExitBtn=1&saveAndExit=0${isLightTheme ? '' : '&dark=1'}`;
+
+  useEffect(() => {
+    let saveTimeout: ReturnType<typeof setTimeout> | undefined;
+    let readyTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    const persistXml = (xml: string, immediate: boolean) => {
+      if (typeof xml !== 'string' || xml === lastSavedXmlRef.current) return;
+      lastSavedXmlRef.current = xml;
+      isDirtyRef.current = true;
+      clearTimeout(saveTimeout);
+      const doSave = async () => {
+        try {
+          await onSaveNote(notePath, xml);
+          isDirtyRef.current = false;
+        } catch (err) {
+          console.error('[Drawio] Kaydetme hatası:', err);
+        }
+      };
+      if (immediate) {
+        doSave();
+      } else {
+        saveTimeout = setTimeout(doSave, 800);
+      }
+    };
+
+    const handleMessage = async (e: MessageEvent) => {
+      if (e.origin !== DRAWIO_EMBED_ORIGIN) return;
+      if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
+      if (typeof e.data !== 'string' || !e.data.length) return;
+
+      let msg: any;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+
+      if (msg.event === 'init') {
+        clearTimeout(readyTimeout);
+        try {
+          const xml = await readNoteContent(notePath);
+          lastSavedXmlRef.current = xml || '';
+          iframeRef.current?.contentWindow?.postMessage(
+            JSON.stringify({ action: 'load', autosave: 1, xml: xml || '' }),
+            DRAWIO_EMBED_ORIGIN
+          );
+          setIsReady(true);
+          setLoadTimedOut(false);
+        } catch (err) {
+          console.error('[Drawio] Diyagram yüklenemedi:', err);
+        }
+      } else if (msg.event === 'autosave') {
+        persistXml(msg.xml, false);
+      } else if (msg.event === 'save') {
+        persistXml(msg.xml, true);
+        // Editöre "değişiklikler kaydedildi" durumunu bildir (kirli bayrağını temizler).
+        iframeRef.current?.contentWindow?.postMessage(
+          JSON.stringify({ action: 'status', message: '', modified: false }),
+          DRAWIO_EMBED_ORIGIN
+        );
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    // Editör 12 sn içinde hazır olmazsa büyük ihtimalle internet yok.
+    readyTimeout = setTimeout(() => setLoadTimedOut(true), 12000);
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      clearTimeout(saveTimeout);
+      clearTimeout(readyTimeout);
+      // Bekleyen (debounce'lanmış) son değişiklikleri kaybetmemek için çıkışta anında yaz.
+      if (isDirtyRef.current && lastSavedXmlRef.current) {
+        onSaveNote(notePath, lastSavedXmlRef.current).catch(err => {
+          console.error('[Drawio] Çıkışta kaydetme hatası:', err);
+        });
+      }
+    };
+  }, [notePath, readNoteContent, onSaveNote]);
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: '8px', margin: '0 8px 8px 8px', border: '1px solid rgba(242, 148, 0, 0.25)', background: 'var(--bg-tertiary)', position: 'relative' }}>
+      <iframe
+        key={notePath}
+        ref={iframeRef}
+        src={embedUrl}
+        style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+        title="draw.io Diyagram Editörü"
+      />
+      {!isReady && (
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '10px',
+          background: 'var(--bg-tertiary)',
+          color: 'var(--text-secondary)',
+          fontSize: '13px',
+          textAlign: 'center',
+          padding: '20px'
+        }}>
+          {loadTimedOut ? (
+            <>
+              <AlertTriangle size={22} style={{ color: '#f59e0b' }} />
+              <span>Diyagram editörü yüklenemedi.</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                draw.io editörü internet bağlantısı gerektirir. Bağlantınızı kontrol edip notu yeniden açın.
+              </span>
+            </>
+          ) : (
+            <span>Diyagram editörü yükleniyor…</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface InlineExcalidrawEditorProps {
   notePath: string;
   noteName: string;
@@ -1871,7 +2017,98 @@ const MermaidViewer: React.FC<{ code: string }> = ({ code }) => {
         borderRadius: '6px',
         overflowX: 'auto'
       }} 
-      dangerouslySetInnerHTML={{ __html: svg }} 
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// PERFORMANS: renderSingleLine() ~1500 satırlık, notun HER satırı için her
+// render'da (yani her tuş vuruşunda) yeniden çalışan devasa bir fonksiyondu —
+// büyük notlarda yazma deneyimini yavaşlatan asıl mimari darboğaz buydu.
+// İçini yeniden yazmak (1500 satır, onlarca iç içe özel duruma sahip) çok
+// yüksek riskli olacağından, çağrı noktasını dokunmadan React.memo ile
+// sarıyoruz: bu bileşen yalnızca "cacheKey" değiştiğinde gerçekten yeniden
+// render olur (özel karşılaştırma fonksiyonu sayesinde `renderFn`'in her
+// seferinde yeni bir closure olması önemsizleşir). Böylece bir satırı
+// düzenlerken, DEĞİŞMEYEN yüzlerce/binlerce diğer satır React tarafından
+// atlanır — renderSingleLine'ın gövdesi onlar için hiç çalışmaz.
+const EditorLine = React.memo(
+  function EditorLine({ renderFn }: { cacheKey: string; renderFn: () => React.ReactNode }) {
+    return <>{renderFn()}</>;
+  },
+  (prevProps, nextProps) => prevProps.cacheKey === nextProps.cacheKey
+);
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// SANALLAŞTIRMA (Virtualization): Obsidian/Notion hızının asıl sırrı, notun
+// TAMAMINI değil yalnızca ekranda görünen (ve yakınındaki) satırları gerçek
+// DOM'a koymalarıdır. VirtBlock, bir satır bloğunu (tek satır, tablo veya
+// sütun grubu) sarar: blok görünür alandaysa (IntersectionObserver, ±1200px
+// ön-yükleme payıyla) gerçek içeriğini render eder; değilse yalnızca ölçülmüş
+// (veya tahmini) yüksekliğe sahip boş bir yer tutucu div bırakır. Böylece
+// 1000 satırlık bir not açıldığında yalnızca ~40-60 satırın pahalı render'ı
+// çalışır; kaydırdıkça bloklar görünür alana yaklaşırken sessizce mount edilir.
+type VirtBlockProps = {
+  forced: boolean;
+  initialVisible: boolean;
+  estHeight: number;
+  cacheKey: string;
+  heightCache: Map<string, number>;
+  getObserver: () => IntersectionObserver;
+  registry: Map<Element, (visible: boolean, height: number) => void>;
+  children: () => React.ReactNode;
+};
+
+const VirtBlock = ({ forced, initialVisible, estHeight, cacheKey, heightCache, getObserver, registry, children }: VirtBlockProps) => {
+  const [visible, setVisible] = useState(initialVisible);
+  const elRef = useRef<HTMLDivElement | null>(null);
+  // Observer callback'inin her zaman güncel duruma erişebilmesi için ref'te tutulur.
+  const stateRef = useRef({ visible, cacheKey });
+  stateRef.current = { visible, cacheKey };
+
+  const refCb = useCallback((el: HTMLDivElement | null) => {
+    const prev = elRef.current;
+    if (prev && prev !== el) {
+      try { getObserver().unobserve(prev); } catch { /* yoksay */ }
+      registry.delete(prev);
+    }
+    elRef.current = el;
+    if (el) {
+      registry.set(el, (v, h) => {
+        const s = stateRef.current;
+        // Görünür alandan çıkarken gerçek yüksekliği önbelleğe al — yer tutucu
+        // bu değeri kullanır, böylece kaydırma çubuğu zıplamaz.
+        if (!v && s.visible && h > 0) heightCache.set(s.cacheKey, h);
+        setVisible(prevV => (prevV === v ? prevV : v));
+      });
+      getObserver().observe(el);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // İlk mount'ta, IntersectionObserver'ın asenkron ilk raporunu beklemeden
+  // (bir karelik boşluk titremesini önlemek için) senkron geometri kontrolü.
+  useLayoutEffect(() => {
+    if (stateRef.current.visible) return;
+    const el = elRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    if (r.bottom > -1200 && r.top < vh + 1200) setVisible(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // flexShrink: 0 şart — .live-editor-lines bir flex sütunu olduğundan,
+  // sabit yükseklikli boş yer tutucular aksi halde 0'a ezilir.
+  if (forced || visible) {
+    return <div ref={refCb} className="virt-block" style={{ flexShrink: 0 }}>{children()}</div>;
+  }
+  return (
+    <div
+      ref={refCb}
+      className="virt-block virt-block-spacer"
+      style={{ height: Math.max(8, heightCache.get(cacheKey) ?? estHeight), flexShrink: 0 }}
     />
   );
 };
@@ -1913,7 +2150,7 @@ export default function NotesView({
   });
   const [newNoteName, setNewNoteName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-  const [creatingType, setCreatingType] = useState<'note' | 'excalidraw' | 'rfc'>('note');
+  const [creatingType, setCreatingType] = useState<'note' | 'excalidraw' | 'rfc' | 'drawio'>('note');
   
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Seçilen şablonun dosya yolunu ve mevcut şablon listesini filtreleyen state/memo.
@@ -2728,7 +2965,7 @@ export default function NotesView({
   // Excalidraw Message Handler - simplified, no e.source check (Electron iframe quirk)
   useEffect(() => {
     const activeNote = notes.find(n => n.path === activeNotePath);
-    if (!activeNote || activeNote.type !== 'excalidraw') return;
+    if (!activeNote || activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio') return;
 
     const handleMessage = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== 'object') return;
@@ -2962,12 +3199,101 @@ export default function NotesView({
     return null;
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Satır sanallaştırması (VirtBlock) altyapısı: ölçülen blok yükseklikleri
+  // önbelleği, element→callback kaydı ve paylaşılan tek IntersectionObserver.
+  // rootMargin 1200px: kullanıcı bir bloğa 1200px yaklaştığında blok gerçek
+  // içeriğiyle mount edilir — normal kaydırma hızında boşluk hiç görünmez.
+  const virtHeightCacheRef = useRef<Map<string, number>>(new Map());
+  const virtRegistryRef = useRef<Map<Element, (visible: boolean, height: number) => void>>(new Map());
+  const virtObserverRef = useRef<IntersectionObserver | null>(null);
+  // Satıra atlama (başlık ağacı, dipnot, arama) hedefi henüz mount edilmemişse
+  // o satırı zorla mount etmek için "sabitlenen" satırlar.
+  const virtPinnedRef = useRef<Set<number>>(new Set());
+  const [, setVirtPinVersion] = useState(0);
+
+  const getVirtObserver = useCallback(() => {
+    if (!virtObserverRef.current) {
+      virtObserverRef.current = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const handler = virtRegistryRef.current.get(entry.target);
+          if (handler) handler(entry.isIntersecting, entry.boundingClientRect.height);
+        }
+      }, { rootMargin: '1200px 0px 1200px 0px' });
+    }
+    return virtObserverRef.current;
+  }, []);
+
+  useEffect(() => () => { virtObserverRef.current?.disconnect(); }, []);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // IntersectionObserver'a ek scroll-tabanlı YEDEK: bazı WebView/arka plan
+  // durumlarında IO bildirimleri gecikebilir veya askıya alınabilir. Kaydırma
+  // olduğunda (throttle ~120ms) kayıtlı tüm blokların konumunu elle kontrol
+  // edip aynı görünürlük callback'lerini çağırırız — IO çalışıyorsa bu kontrol
+  // zaten aynı sonucu üretir (setVisible aynı değerle çağrılınca render olmaz).
+  useEffect(() => {
+    let lastRun = 0;
+    let trailing: ReturnType<typeof setTimeout> | null = null;
+
+    const checkAll = () => {
+      const vh = window.innerHeight || 800;
+      virtRegistryRef.current.forEach((handler, el) => {
+        const r = el.getBoundingClientRect();
+        const inRange = r.bottom > -1200 && r.top < vh + 1200;
+        handler(inRange, r.height);
+      });
+    };
+
+    const onScroll = () => {
+      const now = Date.now();
+      if (now - lastRun >= 120) {
+        lastRun = now;
+        checkAll();
+      } else if (!trailing) {
+        trailing = setTimeout(() => {
+          trailing = null;
+          lastRun = Date.now();
+          checkAll();
+        }, 140);
+      }
+    };
+
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener('scroll', onScroll, { capture: true } as EventListenerOptions);
+      if (trailing) clearTimeout(trailing);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Not değişince önceki nota ait sabitlemeler anlamını yitirir.
+    virtPinnedRef.current.clear();
+  }, [activeNotePath]);
+
   const scrollToElement = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.classList.add('glow-highlight');
       setTimeout(() => el.classList.remove('glow-highlight'), 2000);
+      return;
+    }
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Hedef satır sanallaştırma nedeniyle henüz DOM'da olmayabilir: satırı
+    // sabitle (zorla mount ettir), render sonrası tekrar dene.
+    const m = id.match(/^editor-line-(\d+)$/);
+    if (m) {
+      virtPinnedRef.current.add(parseInt(m[1], 10));
+      setVirtPinVersion(v => v + 1);
+      setTimeout(() => {
+        const el2 = document.getElementById(id);
+        if (el2) {
+          el2.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el2.classList.add('glow-highlight');
+          setTimeout(() => el2.classList.remove('glow-highlight'), 2000);
+        }
+      }, 80);
     }
   };
 
@@ -3529,7 +3855,7 @@ export default function NotesView({
 
   // Filter notes based on selected folder and selected tag
   const filteredNotes = notes.filter((item) => {
-    if (item.type !== 'note' && item.type !== 'excalidraw') return false;
+    if (item.type !== 'note' && item.type !== 'excalidraw' && item.type !== 'drawio') return false;
     
     if (selectedFolder) {
       const noteFolder = item.path.split('/').slice(0, -1).join('/');
@@ -3774,7 +4100,12 @@ export default function NotesView({
       } catch (error) {
         addDebugLog('Otomatik kaydetme hatası: ' + String(error));
       }
-    }, 1000); // 1 second of typing inactivity
+    }, 2500); // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // 2.5 sn yazma sessizliği sonrası otomatik kaydet. 1 sn'lik önceki değer,
+    // kullanıcının doğal düşünme molalarında bile kayıt zincirini (disk yazma +
+    // sürüm geçmişi + senkron) tetikleyip yazmaya dönüşte takılma yaratıyordu.
+    // Not değiştirme/kapatma anında ayrıca anında flush eden Effect B var —
+    // veri kaybı riski yok.
 
     return () => clearTimeout(timer);
   }, [editorContent, activeNotePath]);
@@ -3799,7 +4130,17 @@ export default function NotesView({
   }, [activeNotePath]);
 
   // Focus and Caret restore hook
-  useEffect(() => {
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: Bu efekt önceden useEffect'ti — DOM commit edildikten SONRA,
+  // tarayıcı boyamadan önce ama asenkron olarak (bir sonraki tick'e yakın) çalışır.
+  // Backspace tuşuna basılı tutup hızlı art arda satır birleştirirken (OS'in tuş
+  // tekrarı ~30-50ms aralıkla yeni keydown olayları üretir), yeni bir keydown, bu
+  // efekt henüz doğru textarea'ya focus/imleç konumunu uygulamadan ARAYA girebiliyordu
+  // — o anda hedef textarea'nın imleci tarayıcının varsayılanı olan 0. konumdaydı,
+  // bu da "imleç satırın başına atlıyor" hatasına yol açıyordu. useLayoutEffect, DOM
+  // commit edilir edilmez SENKRON çalışır (boyamadan ve sıradaki olay işlenmeden
+  // önce) — bu yarış penceresini kapatır.
+  useLayoutEffect(() => {
     if (focusedLineIdx !== null) {
       const focusTextarea = () => {
         const el = lineRefs.current[focusedLineIdx];
@@ -3808,7 +4149,15 @@ export default function NotesView({
             el.focus();
           }
           if (caretPos && caretPos.lineIdx === focusedLineIdx) {
-            el.setSelectionRange(caretPos.charIdx, caretPos.charIdx);
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Kullanıcının AKTİF BİR SEÇİMİ varsa (start !== end) imleci asla
+            // programatik taşıma — yoksa her seçim denemesi anında tek noktaya
+            // çöker ve metin seçmek imkânsız hale gelir. Ayrıca imleç zaten
+            // hedef konumdaysa gereksiz setSelectionRange çağrısı yapma.
+            if (el.selectionStart !== el.selectionEnd) return;
+            if (el.selectionStart !== caretPos.charIdx) {
+              el.setSelectionRange(caretPos.charIdx, caretPos.charIdx);
+            }
           }
         }
       };
@@ -3818,7 +4167,14 @@ export default function NotesView({
       const timer = setTimeout(focusTextarea, 20);
       return () => clearTimeout(timer);
     }
-  }, [focusedLineIdx]);
+    // caretPos bilerek bağımlılıklara eklendi: bir satırın türü yazarken değişince
+    // (ör. "-" "-" "-" yazıp paragraftan yatay çizgiye dönüşünce, ya da "- " yazıp
+    // paragraftan madde işaretine dönüşünce) React o satır için FARKLI bir JSX dalına
+    // geçer ve textarea'yı yeniden bağlar (yeni DOM düğümü). O yeni düğümdeki
+    // `autoFocus` imleci varsayılan olarak 0'a atar. focusedLineIdx DEĞİŞMEDİĞİ için
+    // bu efekt önceden tekrar tetiklenmiyordu; caretPos her tuş vuruşunda güncellendiği
+    // için artık bu durumda da doğru imleç konumu hemen yeniden uygulanıyor.
+  }, [focusedLineIdx, caretPos]);
 
   // Helper functions for parsing list/checklist structures
   const getChecklistInfo = (text: string) => {
@@ -4518,6 +4874,11 @@ export default function NotesView({
                   if (targetEl) {
                     targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     setTimeout(() => handleLineFocus(h.lineIndex), 300);
+                  } else {
+                    // Sanallaştırma nedeniyle hedef satır henüz mount edilmemiş
+                    // olabilir — scrollToElement sabitleyip yeniden dener.
+                    scrollToElement(`editor-line-${h.lineIndex}`);
+                    setTimeout(() => handleLineFocus(h.lineIndex), 400);
                   }
                 }}
                 style={{
@@ -6476,45 +6837,65 @@ export default function NotesView({
       return;
     }
 
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // BUG DÜZELTMESİ: Backspace tuşu basılı tutulup HIZLI art arda satır birleştirirken/
+    // önek (- [ ], -, 1. vb.) kaldırırken imlecin yanlış yere (çoğunlukla satır başına)
+    // atladığı bildirildi. Kök neden: React, aynı JS görevi içinde art arda gelen birden
+    // fazla native keydown olayını (OS'in tuş tekrarı çok hızlı ürettiğinde) TEK bir
+    // render'da toplu işleyebilir (React 18 otomatik batching). Bu durumda 2. tuş vuruşu,
+    // 1. vuruşun state güncellemesi henüz DOM'a/closure'a yansımadan ESKİ (stale) `lines`/
+    // `idx` üzerinden çalışıp yanlış bir sonuç üretebiliyordu. flushSync, her tuş vuruşunun
+    // state güncellemesini VE bağlı DOM commit'ini (yeni textarea'nın mount'u + yukarıdaki
+    // "Focus and Caret restore" useLayoutEffect'in çalışması dahil) fonksiyon geri dönmeden
+    // ÖNCE, senkron olarak tamamlar — böylece bir sonraki (kuyruktaki) native keydown olayı
+    // ancak DOM tamamen güncel ve imleç doğru konumdayken işlenmeye başlar.
     // BACKSPACE at cursor 0: Convert prefixes or join lines
     if (e.key === 'Backspace' && caret === 0 && textarea.selectionStart === textarea.selectionEnd) {
       const isChecklist = getChecklistInfo(fullLine);
       if (isChecklist) {
         e.preventDefault();
-        const newLines = [...lines];
-        newLines[idx] = isChecklist.content;
-        setEditorContent(newLines.join('\n'));
-        setCaretPos({ lineIdx: idx, charIdx: 0 });
+        flushSync(() => {
+          const newLines = [...lines];
+          newLines[idx] = isChecklist.content;
+          setEditorContent(newLines.join('\n'));
+          setCaretPos({ lineIdx: idx, charIdx: 0 });
+        });
         return;
       }
 
       const isBullet = getBulletInfo(fullLine);
       if (isBullet) {
         e.preventDefault();
-        const newLines = [...lines];
-        newLines[idx] = isBullet.content;
-        setEditorContent(newLines.join('\n'));
-        setCaretPos({ lineIdx: idx, charIdx: 0 });
+        flushSync(() => {
+          const newLines = [...lines];
+          newLines[idx] = isBullet.content;
+          setEditorContent(newLines.join('\n'));
+          setCaretPos({ lineIdx: idx, charIdx: 0 });
+        });
         return;
       }
 
       const isOrdered = getOrderedListInfo(fullLine);
       if (isOrdered) {
         e.preventDefault();
-        const newLines = [...lines];
-        newLines[idx] = isOrdered.content;
-        setEditorContent(newLines.join('\n'));
-        setCaretPos({ lineIdx: idx, charIdx: 0 });
+        flushSync(() => {
+          const newLines = [...lines];
+          newLines[idx] = isOrdered.content;
+          setEditorContent(newLines.join('\n'));
+          setCaretPos({ lineIdx: idx, charIdx: 0 });
+        });
         return;
       }
 
       const isHeading = fullLine.match(/^(#{1,6}\s+)(.*)$/);
       if (isHeading) {
         e.preventDefault();
-        const newLines = [...lines];
-        newLines[idx] = isHeading[2];
-        setEditorContent(newLines.join('\n'));
-        setCaretPos({ lineIdx: idx, charIdx: 0 });
+        flushSync(() => {
+          const newLines = [...lines];
+          newLines[idx] = isHeading[2];
+          setEditorContent(newLines.join('\n'));
+          setCaretPos({ lineIdx: idx, charIdx: 0 });
+        });
         return;
       }
 
@@ -6522,40 +6903,61 @@ export default function NotesView({
       if (idx > 0) {
         e.preventDefault();
         const prevLine = lines[idx - 1];
-        const newLines = [...lines];
-        
-        newLines[idx - 1] = prevLine + val;
-        newLines.splice(idx, 1);
-        
-        setEditorContent(newLines.join('\n'));
-        setFocusedLineIdx(idx - 1);
-        
         const prevInfo = getChecklistInfo(prevLine) || getBulletInfo(prevLine) || getOrderedListInfo(prevLine);
         const prevLength = prevInfo ? prevInfo.content.length : prevLine.length;
-        setCaretPos({ lineIdx: idx - 1, charIdx: prevLength });
+
+        flushSync(() => {
+          const newLines = [...lines];
+          newLines[idx - 1] = prevLine + val;
+          newLines.splice(idx, 1);
+
+          setEditorContent(newLines.join('\n'));
+          setFocusedLineIdx(idx - 1);
+          setCaretPos({ lineIdx: idx - 1, charIdx: prevLength });
+        });
       }
       return;
     }
 
-    // ARROW UP
-    if (e.key === 'ArrowUp' && caret === 0) {
-      if (idx > 0) {
-        e.preventDefault();
-        setFocusedLineIdx(idx - 1);
-        const prevLineText = lines[idx - 1];
-        const prevInfo = getChecklistInfo(prevLineText) || getBulletInfo(prevLineText) || getOrderedListInfo(prevLineText);
-        const prevLength = prevInfo ? prevInfo.content.length : prevLineText.length;
-        setCaretPos({ lineIdx: idx - 1, charIdx: prevLength });
-      }
-      return;
-    }
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // BUG DÜZELTMESİ: Eskiden ArrowUp yalnızca caret===0 iken, ArrowDown yalnızca
+    // caret===val.length iken devreye giriyordu — yani yatay imleç konumu ne olursa
+    // olsun bir üst/alt satıra HER ZAMAN satır sonuna/başına atlıyordu, ve satırın
+    // ortasındaysanız ilk tuş basışı native (tarayıcı) davranışını tetikleyip imleci
+    // O SATIR İÇİNDE konum 0'a/sonuna götürüyordu — kullanıcının "iki kez basmam
+    // gerekiyor ve imleç hep satır sonuna gidiyor" şikayetinin kaynağı buydu.
+    // Satırlar otomatik büyüyen (word-wrap) textarea'lar olduğundan (adjustHeight),
+    // uzun bir paragraf birden fazla görsel satıra sarabilir — bu yüzden yalnızca
+    // imleç textarea'nın GÖRSEL OLARAK ilk satırındaysa (ArrowUp) / son satırındaysa
+    // (ArrowDown) mantıksal satır değiştiriyoruz; aksi halde native davranış sarılmış
+    // metin içinde satır değiştirir. Hedef satıra geçerken aynı karakter sütununu
+    // (satır uzunluğuna kırpılmış) koruyoruz ki imleç "alttakinin hizasında" çıksın.
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const isSameRow = (a: number, b: number) => Math.abs(a - b) < 2;
+      const caretTop = getCaretCoordinates(textarea, caret).top;
 
-    // ARROW DOWN
-    if (e.key === 'ArrowDown' && caret === val.length) {
-      if (idx < lines.length - 1) {
+      if (e.key === 'ArrowUp') {
+        const firstRowTop = getCaretCoordinates(textarea, 0).top;
+        if (isSameRow(caretTop, firstRowTop) && idx > 0) {
+          e.preventDefault();
+          const prevLineText = lines[idx - 1];
+          const prevInfo = getChecklistInfo(prevLineText) || getBulletInfo(prevLineText) || getOrderedListInfo(prevLineText);
+          const prevContent = prevInfo ? prevInfo.content : prevLineText;
+          setFocusedLineIdx(idx - 1);
+          setCaretPos({ lineIdx: idx - 1, charIdx: Math.min(caret, prevContent.length) });
+        }
+        return;
+      }
+
+      // ArrowDown
+      const lastRowTop = getCaretCoordinates(textarea, val.length).top;
+      if (isSameRow(caretTop, lastRowTop) && idx < lines.length - 1) {
         e.preventDefault();
+        const nextLineText = lines[idx + 1];
+        const nextInfo = getChecklistInfo(nextLineText) || getBulletInfo(nextLineText) || getOrderedListInfo(nextLineText);
+        const nextContent = nextInfo ? nextInfo.content : nextLineText;
         setFocusedLineIdx(idx + 1);
-        setCaretPos({ lineIdx: idx + 1, charIdx: 0 });
+        setCaretPos({ lineIdx: idx + 1, charIdx: Math.min(caret, nextContent.length) });
       }
       return;
     }
@@ -7012,7 +7414,7 @@ export default function NotesView({
       }
     }
     
-    await onCreateNote(newNoteName.trim(), selectedFolder, creatingType === 'excalidraw', creatingType === 'rfc' ? initialContent : undefined);
+    await onCreateNote(newNoteName.trim(), selectedFolder, creatingType === 'drawio' ? 'drawio' : creatingType === 'excalidraw', creatingType === 'rfc' ? initialContent : undefined);
     setNewNoteName('');
     setIsCreating(false);
   };
@@ -7261,6 +7663,9 @@ export default function NotesView({
                 <button type="button" onClick={() => setCreatingType('rfc')} style={{ flex: 1, padding: '4px 4px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border-color)', background: creatingType === 'rfc' ? 'rgba(16, 185, 129, 0.9)' : 'transparent', color: creatingType === 'rfc' ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
                   <Layout size={10} /> Şablon
                 </button>
+                <button type="button" onClick={() => setCreatingType('drawio')} title="draw.io diyagramı (internet gerektirir)" style={{ flex: 1, padding: '4px 4px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border-color)', background: creatingType === 'drawio' ? 'rgba(242, 148, 0, 0.9)' : 'transparent', color: creatingType === 'drawio' ? '#fff' : 'var(--text-secondary)', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
+                  <GitBranch size={10} /> Diyagram
+                </button>
               </div>
 
               {creatingType === 'rfc' && (
@@ -7296,7 +7701,7 @@ export default function NotesView({
 
               <input
                 type="text"
-                placeholder={creatingType === 'excalidraw' ? "Çizim adı..." : (creatingType === 'rfc' ? "Proje/Plan adı..." : "Not adı...")}
+                placeholder={creatingType === 'excalidraw' ? "Çizim adı..." : (creatingType === 'drawio' ? "Diyagram adı..." : (creatingType === 'rfc' ? "Proje/Plan adı..." : "Not adı..."))}
                 value={newNoteName}
                 onChange={(e) => setNewNoteName(e.target.value)}
                 autoFocus
@@ -7321,7 +7726,7 @@ export default function NotesView({
                   onContextMenu={(e) => onNoteContextMenu?.(e, note.path)}
                 >
                   <div className="note-item-icon">
-                    {note.type === 'excalidraw' ? <PenTool size={16} style={{ color: 'rgb(139, 92, 246)' }} /> : <FileText size={16} />}
+                    {note.type === 'excalidraw' ? <PenTool size={16} style={{ color: 'rgb(139, 92, 246)' }} /> : note.type === 'drawio' ? <GitBranch size={16} style={{ color: 'rgb(242, 148, 0)' }} /> : <FileText size={16} />}
                   </div>
                   <div className="note-item-info" style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
                     <span className="note-item-title" style={{ fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{note.name}</span>
@@ -7363,9 +7768,10 @@ export default function NotesView({
                 <ArrowLeft size={18} />
               </button>
               <div className="active-note-meta">
-                {activeNote.type === 'excalidraw' ? <PenTool size={18} style={{ color: 'rgb(139, 92, 246)' }} /> : <FileText size={18} />}
+                {activeNote.type === 'excalidraw' ? <PenTool size={18} style={{ color: 'rgb(139, 92, 246)' }} /> : activeNote.type === 'drawio' ? <GitBranch size={18} style={{ color: 'rgb(242, 148, 0)' }} /> : <FileText size={18} />}
                 <h3>{activeNote.name}</h3>
                 {activeNote.type === 'excalidraw' && <span className="folder-indicator" style={{ background: 'rgba(139, 92, 246, 0.15)', color: 'rgb(139, 92, 246)' }}>Excalidraw</span>}
+                {activeNote.type === 'drawio' && <span className="folder-indicator" style={{ background: 'rgba(242, 148, 0, 0.15)', color: 'rgb(242, 148, 0)' }}>draw.io</span>}
                 {selectedFolder && (() => {
                   const custom = folderCustomizations[selectedFolder] || {};
                   const customColor = custom.color;
@@ -7391,7 +7797,7 @@ export default function NotesView({
               </div>
               
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                {activeNotePath && activeNote.type !== 'excalidraw' && (
+                {activeNotePath && activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <>
                     {/* Zen Focus Mode Toggle */}
                     <button
@@ -7457,7 +7863,7 @@ export default function NotesView({
                     <Info size={14} />
                   </button>
                 )}
-                {activeNotePath && activeNote.type !== 'excalidraw' && (
+                {activeNotePath && activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
                     className="toolbar-btn history-btn"
@@ -7490,7 +7896,7 @@ export default function NotesView({
                       };
                     });
 
-                  if (!activeNotePath || activeNote.type === 'excalidraw' || !isHarcamaNote) return null;
+                  if (!activeNotePath || activeNote.type === 'excalidraw' || activeNote.type === 'drawio' || !isHarcamaNote) return null;
 
                   return (
                     <button
@@ -7525,7 +7931,7 @@ export default function NotesView({
                   );
                 })()}
 
-                {activeNote.type !== 'excalidraw' && (
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
                     className={`toolbar-btn widget-pin-btn ${pinnedWidgetLists.includes(activeNotePath) ? 'active' : ''}`}
@@ -7547,7 +7953,7 @@ export default function NotesView({
                   </button>
                 )}
 
-                {activeNote.type !== 'excalidraw' && (
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
                     className={`toolbar-btn dictation-toggle-btn ${isDictating ? 'active animate-pulse-glow' : ''}`}
@@ -7563,7 +7969,7 @@ export default function NotesView({
                   </button>
                 )}
 
-                {activeNote.type !== 'excalidraw' && (
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
                     className={`toolbar-btn source-toggle-btn ${isSourceMode ? 'active' : ''}`}
@@ -7581,7 +7987,7 @@ export default function NotesView({
                   </button>
                 )}
 
-                {activeNote.type !== 'excalidraw' && (
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
                     className={`toolbar-btn mindmap-toggle-btn ${isMindmapMode ? 'active' : ''}`}
@@ -7652,6 +8058,14 @@ export default function NotesView({
                   title="Excalidraw Drawing Editor"
                 />
               </div>
+            ) : activeNote.type === 'drawio' && activeNotePath ? (
+              /* draw.io Diyagram Editörü */
+              <DrawioFullEditor
+                key={activeNotePath}
+                notePath={activeNotePath}
+                readNoteContent={readNoteContent}
+                onSaveNote={onSaveNote}
+              />
             ) : (
               <>
                 {isMindmapMode ? (
@@ -7854,13 +8268,76 @@ export default function NotesView({
                       return undefined;
                     };
 
+                    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                    // Bir satırın EditorLine önbelleğinden yararlanıp
+                    // yararlanamayacağını belirler. Odaklanılan satır (aktif
+                    // yazma/imleç burada olduğu için) HER ZAMAN taze render
+                    // edilir. Ayrıca satıra özel geçici widget durumu
+                    // (zamanlayıcı, çizim, ses kaydı, makbuz fiyatı, başlık
+                    // katlama, açık görev detayı, sürükleme hedefi, seçim
+                    // araç çubuğu) varsa o satır da "sıradan" sayılmaz ve
+                    // her zaman doğrudan render edilir — bu durumlar nadir
+                    // olduğundan performans kaybı ihmal edilebilir düzeydedir,
+                    // ama önbellek anahtarına dahil etmeyi unutma riskini
+                    // (bayat/eski görünüm hatası) tamamen ortadan kaldırır.
+                    const isPlainLine = (idx: number): boolean => {
+                      if (idx === focusedLineIdx) return false;
+                      if (activeTimers[idx] !== undefined) return false;
+                      if (sketchingLines[idx] !== undefined) return false;
+                      if (voiceRecorderLines[idx] !== undefined) return false;
+                      if (dismissedAlarms[idx] !== undefined) return false;
+                      if (flowEditModes[idx] !== undefined) return false;
+                      if (receiptItemPrices[idx] !== undefined) return false;
+                      if (collapsedHeadings[idx] !== undefined) return false;
+                      if (expandedTaskIdx === idx) return false;
+                      if (dragOverIdx && dragOverIdx.idx === idx) return false;
+                      if (selectionInfo && selectionInfo.lineIdx === idx) return false;
+                      return true;
+                    };
+
                     const renderLinesWithColumns = () => {
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
     // Satırları <<<row>>> ve <<<col>>> etiketlerine göre gruplayarak yan yana flex grid kolonlar halinde render eder.
     const result: React.ReactNode[] = [];
     const skippedLines = getSkippedLineIndices();
     const hiddenLines = getHiddenLineIndices();
-    
+
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Kısa notlarda sanallaştırma ek yükü gereksiz — mevcut davranış aynen korunur.
+    // Uzun notlarda her blok VirtBlock ile sarılır: görünür alan dışındaki bloklar
+    // yalnızca yükseklik tutan boş bir div olur, pahalı render hiç çalışmaz.
+    const VIRT_MIN_LINES = 80;
+    const virtualizeLines = lines.length >= VIRT_MIN_LINES;
+
+    const pushBlock = (key: React.Key, startL: number, endL: number, renderFn: () => React.ReactNode) => {
+      if (!virtualizeLines) {
+        result.push(renderFn());
+        return;
+      }
+      // Odaklanılan, seçili, zamanlayıcılı vb. "sıradan olmayan" satır içeren
+      // bloklar ile satıra-atlama için sabitlenen satırlar her zaman mount edilir.
+      let forced = false;
+      for (let k = startL; k <= endL && !forced; k++) {
+        if (!isPlainLine(k) || virtPinnedRef.current.has(k)) forced = true;
+      }
+      const lineCount = Math.max(1, endL - startL + 1);
+      const hKey = `${lineCount}|${(lines[startL] ?? '').slice(0, 60)}`;
+      result.push(
+        <VirtBlock
+          key={`vb-${key}`}
+          forced={forced}
+          initialVisible={startL < 60}
+          estHeight={lineCount * 30}
+          cacheKey={hKey}
+          heightCache={virtHeightCacheRef.current}
+          getObserver={getVirtObserver}
+          registry={virtRegistryRef.current}
+        >
+          {renderFn}
+        </VirtBlock>
+      );
+    };
+
     let i = 0;
     while (i < lines.length) {
       if (hiddenLines.has(i) || skippedLines.has(i)) {
@@ -7895,16 +8372,21 @@ export default function NotesView({
           j++;
         }
         
-        result.push(
-          <div key={`row-${i}`} className="row-container" onClick={(e) => e.stopPropagation()}>
-            {rowChildren.colLines.map((colGroup, colIdx) => (
-              <div key={`col-${i}-${colIdx}`} className="col-container">
-                {colGroup.map(lineIdx => renderSingleLine(lineIdx))}
-              </div>
-            ))}
-          </div>
-        );
-        
+        {
+          // `i` döngüde mutasyona uğrayan paylaşılan değişken — closure için sabite kopyala.
+          const rowStart = i;
+          const rowEnd = Math.min(j, lines.length - 1);
+          pushBlock(`row-${rowStart}`, rowStart, rowEnd, () => (
+            <div key={`row-${rowStart}`} className="row-container" onClick={(e) => e.stopPropagation()}>
+              {rowChildren.colLines.map((colGroup, colIdx) => (
+                <div key={`col-${rowStart}-${colIdx}`} className="col-container">
+                  {colGroup.map(lineIdx => renderSingleLine(lineIdx))}
+                </div>
+              ))}
+            </div>
+          ));
+        }
+
         i = j + 1;
       } else if (
         lineText.startsWith('|') &&
@@ -7930,10 +8412,12 @@ export default function NotesView({
         const isEditingThisTable = focusedLineIdx !== null && tableLineRange.includes(focusedLineIdx);
 
         if (isEditingThisTable) {
-          tableLineRange.forEach(lineIdx => result.push(renderSingleLine(lineIdx)));
+          tableLineRange.forEach(lineIdx => pushBlock(lineIdx, lineIdx, lineIdx, () => renderSingleLine(lineIdx)));
         } else {
-          result.push(
-            <div key={`mdtable-${i}`} className="md-table-wrapper" onClick={(e) => e.stopPropagation()}>
+          const tableStart = i;
+          const tableEnd = j - 1;
+          pushBlock(`mdtable-${tableStart}`, tableStart, tableEnd, () => (
+            <div key={`mdtable-${tableStart}`} className="md-table-wrapper" onClick={(e) => e.stopPropagation()}>
               <table className="md-table">
                 <thead>
                   <tr>
@@ -7956,12 +8440,28 @@ export default function NotesView({
                 </tbody>
               </table>
             </div>
-          );
+          ));
         }
 
         i = j;
       } else {
-        result.push(renderSingleLine(i));
+        {
+          const lineIdx = i;
+          if (isPlainLine(lineIdx)) {
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Önbellek anahtarına önceki/sonraki satırı da dahil ediyoruz —
+            // renderSingleLine bazı widget'larda (ör. görev altındaki girintili
+            // detay satırı) komşu satırlara bakabiliyor. Yalnızca kendi satırını
+            // anahtara koymak, komşu bir satır değiştiğinde bu satırın bayat
+            // kalmasına yol açabilirdi; ufak bir güvenlik payı ekliyoruz.
+            const cacheKey = `${lines[lineIdx - 1] ?? ''} ${lines[lineIdx]} ${lines[lineIdx + 1] ?? ''}`;
+            pushBlock(lineIdx, lineIdx, lineIdx, () => (
+              <EditorLine key={lineIdx} cacheKey={cacheKey} renderFn={() => renderSingleLine(lineIdx)} />
+            ));
+          } else {
+            pushBlock(lineIdx, lineIdx, lineIdx, () => renderSingleLine(lineIdx));
+          }
+        }
         i++;
       }
     }

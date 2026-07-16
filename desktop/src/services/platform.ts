@@ -11,7 +11,7 @@ export interface PlatformAPI {
   listFiles: () => Promise<Array<{
     name: string;
     path: string;
-    type: 'note' | 'folder' | 'excalidraw';
+    type: 'note' | 'folder' | 'excalidraw' | 'drawio';
     createdAt: number;
     updatedAt: number;
   }>>;
@@ -76,8 +76,13 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
 
     const fileList: any[] = [];
     for (const file of result.files) {
-      if (file.name.startsWith('.')) {
-        continue; // Ignore system/hidden files and directories like .git
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // BUG DÜZELTMESİ: "." ile başlayan HER ŞEY atlanıyordu; bu uygulamanın kendi
+      // varsayılan şablon klasörünü (".templates") de görünmez kılıp App.tsx'in onu
+      // sonsuz döngüde yeniden oluşturmasına yol açıyordu (bkz. main.cjs'teki eşleniği).
+      // Yalnızca gerçek sistem klasörü olan ".git" gizlenir.
+      if (file.name === '.git') {
+        continue;
       }
       const fileRelPath = dirRelPath ? `${dirRelPath}/${file.name}` : file.name;
       
@@ -104,12 +109,14 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
         });
         const subFiles = await listMobileFilesRecursively(fileRelPath);
         fileList.push(...subFiles);
-      } else if (file.name.endsWith('.md') || file.name.endsWith('.excalidraw')) {
+      } else if (file.name.endsWith('.md') || file.name.endsWith('.excalidraw') || file.name.endsWith('.drawio')) {
+        // .drawio: draw.io (diagrams.net) diyagram dosyaları da not listesine dahil edilir.
         const isExcalidraw = file.name.endsWith('.excalidraw');
+        const isDrawio = file.name.endsWith('.drawio');
         fileList.push({
-          name: file.name.replace(/\.(md|excalidraw)$/, ''),
+          name: file.name.replace(/\.(md|excalidraw|drawio)$/, ''),
           path: fileRelPath,
-          type: isExcalidraw ? 'excalidraw' : 'note',
+          type: isExcalidraw ? 'excalidraw' : (isDrawio ? 'drawio' : 'note'),
           createdAt: mtime,
           updatedAt: mtime
         });
