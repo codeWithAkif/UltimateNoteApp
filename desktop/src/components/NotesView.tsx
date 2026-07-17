@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { flushSync } from 'react-dom';
 import { 
-  Plus, Trash2, FileText, Folder, ArrowLeft, Clock, Calendar, ChevronDown, ChevronUp, Star, 
+  Plus, Trash2, FileText, Folder, ArrowLeft, Clock, Calendar, ChevronDown, ChevronUp, ChevronLeft, Star,
   RefreshCw, EyeOff, CheckSquare, List, ListOrdered, Bold, Italic, Code, ChevronRight, Eye, 
   BookOpen, Info, Lightbulb, AlertCircle, AlertTriangle, ShieldAlert, FileCode, Play, Pause, 
   RotateCcw, Volume2, Mic, Square, Check, Copy, Table, HelpCircle, Activity, Heart, Sparkles, 
@@ -2149,6 +2149,11 @@ export default function NotesView({
     return '';
   });
   const [newNoteName, setNewNoteName] = useState('');
+  // Not listesi sütunu: bir not açıldığında otomatik daralır, kullanıcı ok ile tekrar genişletebilir.
+  const [isFileListCollapsed, setIsFileListCollapsed] = useState<boolean>(!!activeNotePath);
+  useEffect(() => {
+    if (activeNotePath) setIsFileListCollapsed(true);
+  }, [activeNotePath]);
   const [isCreating, setIsCreating] = useState(false);
   const [creatingType, setCreatingType] = useState<'note' | 'excalidraw' | 'rfc' | 'drawio'>('note');
   
@@ -2484,7 +2489,12 @@ export default function NotesView({
       } else if (opt.id === 'web-link') {
         newLineText = prefixText + '[]()' + afterCaret;
       } else if (opt.id === 'image') {
-        newLineText = prefixText + '![caption]()' + afterCaret;
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // Boş bir markdown etiketi yazmak yerine gerçek dosya seçiciyi açar; seçilen dosya(lar)
+        // insertMediaFile üzerinden assets klasörüne kaydedilip otomatik olarak etikete dönüştürülür.
+        imageFileInputRef.current?.click();
+        setShowSlashMenu(false);
+        return;
       } else if (opt.id === 'flow' || opt.id === 'embed') {
         // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
         // Kullanıcı slash menüden Blok Gömme seçtiğinde otomatik metin eklemek yerine görsel seçim sihirbazını (modal) açar.
@@ -7252,138 +7262,84 @@ export default function NotesView({
     e.preventDefault();
   };
 
+  const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Resim/video dosyasını yerel assets klasörüne kaydedip markdown etiketi olarak editöre ekleyen
+  // ortak fonksiyon — paste, sürükle-bırak ve "dosyadan ekle" akışlarının hepsi bunu kullanır.
+  const insertMediaFile = async (file: File) => {
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    if (!isImage && !isVideo) return;
+
+    const timestamp = Date.now();
+    const uniqueSuffix = Math.random().toString(36).slice(2, 7);
+    const safeName = file.name
+      ? file.name.replace(/[^a-zA-Z0-9.-]/g, '_')
+      : `pasted_${isImage ? 'image' : 'video'}_${timestamp}.${isImage ? 'png' : 'mp4'}`;
+    const fileName = `${timestamp}_${uniqueSuffix}_${safeName}`;
+
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      await platform.writeNote(`assets/${fileName}`, dataUrl);
+
+      const mdTag = isVideo
+        ? `\n![video_${safeName}|center](assets/${fileName})\n`
+        : `\n![${safeName}|center](assets/${fileName})\n`;
+
+      setEditorContent(prev => {
+        if (focusedLineIdx !== null && focusedLineIdx < lines.length) {
+          const newLines = prev.split('\n');
+          newLines[focusedLineIdx] = newLines[focusedLineIdx] + mdTag;
+          return newLines.join('\n');
+        }
+        return prev + mdTag;
+      });
+    } catch (err) {
+      console.error(`Failed to save ${isImage ? 'image' : 'video'}`, err);
+    }
+  };
+
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      if (file.type.startsWith('image/')) {
-        const timestamp = Date.now();
-        const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const fileName = `${timestamp}_${safeName}`;
-        
-        try {
-          const reader = new FileReader();
-          reader.onload = async () => {
-            const dataUrl = reader.result as string;
-            await platform.writeNote(`assets/${fileName}`, dataUrl);
-            
-            const mdImage = `\n![${safeName}|center](assets/${fileName})\n`;
-            
-            setEditorContent(prev => {
-              if (focusedLineIdx !== null && focusedLineIdx < lines.length) {
-                const newLines = prev.split('\n');
-                newLines[focusedLineIdx] = newLines[focusedLineIdx] + mdImage;
-                return newLines.join('\n');
-              }
-              return prev + mdImage;
-            });
-          };
-          reader.readAsDataURL(file);
-        } catch (err) {
-          console.error("Failed to save dropped image", err);
-        }
-      } else if (file.type.startsWith('video/')) {
-        const timestamp = Date.now();
-        const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const fileName = `${timestamp}_${safeName}`;
-        
-        try {
-          const reader = new FileReader();
-          reader.onload = async () => {
-            const dataUrl = reader.result as string;
-            await platform.writeNote(`assets/${fileName}`, dataUrl);
-            
-            const mdVideo = `\n![video_${safeName}|center](assets/${fileName})\n`;
-            
-            setEditorContent(prev => {
-              if (focusedLineIdx !== null && focusedLineIdx < lines.length) {
-                const newLines = prev.split('\n');
-                newLines[focusedLineIdx] = newLines[focusedLineIdx] + mdVideo;
-                return newLines.join('\n');
-              }
-              return prev + mdVideo;
-            });
-          };
-          reader.readAsDataURL(file);
-        } catch (err) {
-          console.error("Failed to save dropped video", err);
-        }
-      }
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const file of files) {
+      await insertMediaFile(file);
     }
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Panodan kopyalanan resim veya video verilerini yakalayıp yerel assets klasörüne kaydeder ve
-    // markdown formatında varsayılan "center" (ortalanmış) hizalama parametresiyle editöre ekler.
-    const items = e.clipboardData.items;
-    
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.indexOf('image') !== -1) {
-        const file = item.getAsFile();
-        if (file) {
-          e.preventDefault();
-          const timestamp = Date.now();
-          const safeName = file.name ? file.name.replace(/[^a-zA-Z0-9.-]/g, '_') : `pasted_image_${timestamp}.png`;
-          const fileName = `${timestamp}_${safeName}`;
-          
-          try {
-            const reader = new FileReader();
-            reader.onload = async () => {
-              const dataUrl = reader.result as string;
-              await platform.writeNote(`assets/${fileName}`, dataUrl);
-              
-              const mdImage = `\n![${safeName}|center](assets/${fileName})\n`;
-              
-              setEditorContent(prev => {
-                if (focusedLineIdx !== null && focusedLineIdx < lines.length) {
-                  const newLines = prev.split('\n');
-                  newLines[focusedLineIdx] = newLines[focusedLineIdx] + mdImage;
-                  return newLines.join('\n');
-                }
-                return prev + mdImage;
-              });
-            };
-            reader.readAsDataURL(file);
-          } catch (err) {
-            console.error("Failed to save pasted image", err);
-          }
-        }
-        break;
-      } else if (item.type.indexOf('video') !== -1) {
-        const file = item.getAsFile();
-        if (file) {
-          e.preventDefault();
-          const timestamp = Date.now();
-          const safeName = file.name ? file.name.replace(/[^a-zA-Z0-9.-]/g, '_') : `pasted_video_${timestamp}.mp4`;
-          const fileName = `${timestamp}_${safeName}`;
-          
-          try {
-            const reader = new FileReader();
-            reader.onload = async () => {
-              const dataUrl = reader.result as string;
-              await platform.writeNote(`assets/${fileName}`, dataUrl);
-              
-              const mdVideo = `\n![video_${safeName}|center](assets/${fileName})\n`;
-              
-              setEditorContent(prev => {
-                if (focusedLineIdx !== null && focusedLineIdx < lines.length) {
-                  const newLines = prev.split('\n');
-                  newLines[focusedLineIdx] = newLines[focusedLineIdx] + mdVideo;
-                  return newLines.join('\n');
-                }
-                return prev + mdVideo;
-              });
-            };
-            reader.readAsDataURL(file);
-          } catch (err) {
-            console.error("Failed to save pasted video", err);
-          }
-        }
-        break;
-      }
+    // Panodan kopyalanan tüm resim/video verilerini (tek değil, birden fazla olabilir) yakalayıp
+    // yerel assets klasörüne kaydeder ve markdown formatında "center" hizalamayla editöre ekler.
+    const items = Array.from(e.clipboardData.items);
+    const mediaFiles = items
+      .filter(item => item.type.indexOf('image') !== -1 || item.type.indexOf('video') !== -1)
+      .map(item => item.getAsFile())
+      .filter((f): f is File => f !== null);
+
+    if (mediaFiles.length === 0) return;
+    e.preventDefault();
+    for (const file of mediaFiles) {
+      await insertMediaFile(file);
     }
+  };
+
+  // Slash menüsündeki "Resim" seçeneği için gizli dosya seçici referansı ve değişiklik yakalayıcı.
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
+  const handleImageFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    for (const file of files) {
+      await insertMediaFile(file);
+    }
+    e.target.value = '';
   };
 
   // Blok Taşıma ve Boyutlandırma State ve Event Handler'ları (Kural 5)
@@ -7827,22 +7783,39 @@ export default function NotesView({
         }
       `}} />
       {/* Sidebar List of Notes */}
-      {!hideSidebar && (
+      {!hideSidebar && isFileListCollapsed && (
+        <button
+          type="button"
+          className="notes-sidebar-collapsed-rail"
+          onClick={() => setIsFileListCollapsed(false)}
+          title="Not Listesini Genişlet"
+        >
+          <ChevronRight size={14} />
+        </button>
+      )}
+      {!hideSidebar && !isFileListCollapsed && (
         <div className={`notes-sidebar ${activeNotePath ? 'hidden-mobile' : ''}`}>
           <div className="sidebar-header">
+            {activeNotePath && (
+              <button
+                type="button"
+                className="btn-collapse-filelist"
+                onClick={() => setIsFileListCollapsed(true)}
+                title="Listeyi Daralt"
+              >
+                <ChevronLeft size={14} />
+              </button>
+            )}
             {(() => {
               if (selectedFolder) {
                 const custom = folderCustomizations[selectedFolder] || {};
                 const customColor = custom.color;
-                const customIconName = custom.icon || 'Folder';
-                const CustomFolderIcon = iconMap[customIconName] || Folder;
                 return (
                   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                   // Çok uzun klasör isimlerinin sidebar genişliğini aşarak sağdaki butonları taşırmasını
                   // ve sekmelerle üst üste binmesini engellemek için ellipsis (üç nokta) uyguluyoruz.
-                  <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: customColor || undefined, minWidth: 0, flex: 1 }}>
-                    <CustomFolderIcon size={18} style={{ color: customColor || undefined, flexShrink: 0 }} />
-                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>@{selectedFolder}</span>
+                  <h2 style={{ color: customColor || undefined, minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {selectedFolder}
                   </h2>
                 );
               }
@@ -7852,9 +7825,6 @@ export default function NotesView({
               <button className="btn-new-note" onClick={() => { setCreatingType('note'); setIsCreating(true); }}>
                 <Plus size={16} />
                 <span>Yeni Not</span>
-              </button>
-              <button className="btn-new-note" onClick={() => { setCreatingType('excalidraw'); setIsCreating(true); }} title="Yeni Excalidraw Çizimi" style={{ background: 'rgba(139, 92, 246, 0.15)', borderColor: 'rgba(139, 92, 246, 0.3)' }}>
-                <PenTool size={16} />
               </button>
             </div>
           </div>
@@ -8292,13 +8262,21 @@ export default function NotesView({
                     />
                   </div>
                 ) : (
-                  <div 
-                    className="live-editor-container" 
+                  <div
+                    className="live-editor-container"
                     onClick={!isSourceMode ? handleContainerClick : undefined}
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onPaste={handlePaste}
                   >
+                    <input
+                      ref={imageFileInputRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      multiple
+                      style={{ display: 'none' }}
+                      onChange={handleImageFileInputChange}
+                    />
                     {isSourceMode ? (
                       <textarea
                         className="source-mode-textarea"

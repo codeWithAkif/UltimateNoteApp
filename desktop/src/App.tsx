@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -28,11 +28,13 @@ import { Preferences } from '@capacitor/preferences';
 import { registerPlugin } from '@capacitor/core';
 
 const WidgetBridge = registerPlugin<any>('WidgetBridge');
-import { 
-  Plus, Folder, FileText, Trash2, Settings, 
-  Briefcase, Code, Heart, Star, BookOpen, Database, 
+import {
+  Plus, Folder, FileText, Trash2, Settings,
+  Briefcase, Code, Heart, Star, BookOpen, Database,
   Inbox, Calendar, Sparkles, Coffee, Rocket, Smile, HelpCircle,
-  Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2
+  Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
+  ArrowRight, Search, GripVertical,
+  Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -55,7 +57,40 @@ const DEFAULT_SHORTCUTS: Record<string, { label: string; shortcut: ShortcutKey }
   goQuickAdd: { label: 'Hızlı Giriş Paneline Git', shortcut: { key: 'q', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   goCalendar: { label: 'Takvim Planlayıcıya Git', shortcut: { key: 'c', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   goNotes: { label: 'Tüm Notlara Git', shortcut: { key: 'd', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
-  globalSearch: { label: 'Global Arama (OmniSearch)', shortcut: { key: 'f', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } }
+  globalSearch: { label: 'Global Arama (OmniSearch)', shortcut: { key: 'f', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  // Üst başlık çubuğuna taşınan gezinme öğeleri için hızlı açma kısayolları
+  nav_dashboard: { label: 'Gösterge Panelini Aç', shortcut: { key: 'g', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_inbox: { label: 'Gelen Kutusunu (Inbox) Aç', shortcut: { key: 'i', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_tasks: { label: 'Görev Havuzunu Aç', shortcut: { key: 't', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_timeline: { label: 'Zaman Akışını Aç', shortcut: { key: 'z', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_projects: { label: 'Proje Yönetimini Aç', shortcut: { key: 'p', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_finance: { label: 'Finansı Aç', shortcut: { key: 'm', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_db: { label: 'Depoyu (Veritabanı) Aç', shortcut: { key: 'v', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_srs: { label: 'Ezber Kartlarını (SRS) Aç', shortcut: { key: 'e', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_city: { label: 'Not Şehrini Aç', shortcut: { key: 'y', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_ambient: { label: 'Ortam Seslerini Aç', shortcut: { key: 'o', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_forge: { label: 'Sentez Tezgahını Aç', shortcut: { key: 's', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_mentor: { label: 'Not Mentörünü Aç', shortcut: { key: 'r', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_analytics: { label: 'Verimlilik Analizini Aç', shortcut: { key: 'l', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_music: { label: 'Müzik Kutusunu Aç', shortcut: { key: 'u', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } }
+};
+
+// Üst başlık çubuğu kısayolu -> ilgili sekme kimliği eşlemesi
+const NAV_SHORTCUT_TARGETS: Record<string, string> = {
+  nav_dashboard: 'dashboard',
+  nav_inbox: 'inbox',
+  nav_tasks: 'tasks',
+  nav_timeline: 'timeline',
+  nav_projects: 'projects',
+  nav_finance: 'finance',
+  nav_db: 'db',
+  nav_srs: 'srs',
+  nav_city: 'city',
+  nav_ambient: 'ambient',
+  nav_forge: 'forge',
+  nav_mentor: 'mentor',
+  nav_analytics: 'analytics',
+  nav_music: 'music'
 };
 
 // Type Definitions
@@ -447,6 +482,50 @@ export default function App() {
     setActiveNotePath(path);
   };
 
+  // Bir sekmeyi yan paneli (varsa yeniden kullanarak, yoksa oluşturarak) sağda açar
+  const handleOpenTabOnRight = (path: string, fromPaneIdx: number) => {
+    setPanes(prev => {
+      const targetIdx = fromPaneIdx + 1;
+      if (targetIdx >= prev.length) {
+        if (prev.length >= 3) return prev;
+        setActivePaneIdx(targetIdx);
+        return [...prev, { id: `pane-${Date.now()}`, tabs: [path], activeTabIdx: 0 }];
+      }
+      const newPanes = [...prev];
+      const targetPane = { ...newPanes[targetIdx] };
+      const existingIdx = targetPane.tabs.indexOf(path);
+      if (existingIdx !== -1) {
+        targetPane.activeTabIdx = existingIdx;
+      } else {
+        targetPane.tabs = [...targetPane.tabs, path];
+        targetPane.activeTabIdx = targetPane.tabs.length - 1;
+      }
+      newPanes[targetIdx] = targetPane;
+      setActivePaneIdx(targetIdx);
+      return newPanes;
+    });
+    setActiveNotePath(path);
+  };
+
+  // Bir paneldeki sekmeyi kapatır (X tıklaması veya fare orta tuşu ile çağrılır)
+  const closeTabAt = (paneIdx: number, tabIdx: number) => {
+    setPanes(prev => {
+      const newPanes = [...prev];
+      const activePane = { ...newPanes[paneIdx] };
+      activePane.tabs = activePane.tabs.filter((_, i) => i !== tabIdx);
+      activePane.activeTabIdx = Math.max(0, activePane.activeTabIdx - 1);
+      newPanes[paneIdx] = activePane;
+
+      if (activePane.tabs.length === 0 && newPanes.length > 1) {
+        newPanes.splice(paneIdx, 1);
+        setActivePaneIdx(Math.max(0, paneIdx - 1));
+      } else {
+        setActiveNotePath(activePane.tabs[activePane.activeTabIdx] || null);
+      }
+      return newPanes;
+    });
+  };
+
   const handleOpenInNewWindow = (path: string) => {
     const url = `?note=${encodeURIComponent(path)}`;
     window.open(url, '_blank', 'width=900,height=700,menubar=no,toolbar=no,location=no');
@@ -514,6 +593,96 @@ export default function App() {
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [searchSelectedIndex, setSearchSelectedIndex] = useState(0);
+
+  // Notlar ekranındaki sağ hızlı erişim paneli (Search / Takvim): açılır-kapanır ve yeniden boyutlandırılabilir
+  const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
+  const [rightPanelView, setRightPanelView] = useState<'search' | 'calendar'>('search');
+  const [rightPanelWidth, setRightPanelWidth] = useState(320);
+  const isResizingRightPanel = useRef(false);
+  const rightPanelResizeRaf = useRef<number | null>(null);
+
+  useEffect(() => {
+    const handleMove = (e: MouseEvent) => {
+      if (!isResizingRightPanel.current) return;
+      const newWidth = Math.max(260, Math.min(560, window.innerWidth - e.clientX));
+      setRightPanelWidth(newWidth);
+      // Not editörü, Excalidraw/grafik gibi genişliğe bağlı çocuk bileşenlerin de
+      // sürükleme sırasında anında yeniden ölçülmesi için resize olayını tetikle.
+      if (!rightPanelResizeRaf.current) {
+        rightPanelResizeRaf.current = requestAnimationFrame(() => {
+          rightPanelResizeRaf.current = null;
+          window.dispatchEvent(new Event('resize'));
+        });
+      }
+    };
+    const handleUp = () => {
+      isResizingRightPanel.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.dispatchEvent(new Event('resize'));
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      if (rightPanelResizeRaf.current) cancelAnimationFrame(rightPanelResizeRaf.current);
+    };
+  }, []);
+
+  // İki (veya üç) not paneli arasındaki genişlik oranları — sürüklenerek ayarlanabilir bölücü
+  const [paneWidths, setPaneWidths] = useState<number[]>([100]);
+  const paneResizeState = useRef<{ idx: number; startX: number; startLeft: number; startRight: number; containerWidth: number } | null>(null);
+  const paneResizeRaf = useRef<number | null>(null);
+
+  useEffect(() => {
+    setPaneWidths(prev => {
+      if (prev.length === panes.length) return prev;
+      const even = 100 / panes.length;
+      return panes.map(() => even);
+    });
+  }, [panes.length]);
+
+  useEffect(() => {
+    const handleMove = (e: MouseEvent) => {
+      const st = paneResizeState.current;
+      if (!st) return;
+      const deltaPct = ((e.clientX - st.startX) / st.containerWidth) * 100;
+      const minPct = 15;
+      let left = st.startLeft + deltaPct;
+      let right = st.startRight - deltaPct;
+      if (left < minPct) { right -= (minPct - left); left = minPct; }
+      if (right < minPct) { left -= (minPct - right); right = minPct; }
+      setPaneWidths(prev => {
+        const next = [...prev];
+        next[st.idx] = left;
+        next[st.idx + 1] = right;
+        return next;
+      });
+      // Not editörü içindeki genişliğe bağlı bileşenlerin (Excalidraw, grafik vb.)
+      // sürükleme sırasında anında yeniden ölçülmesi için resize olayını tetikle.
+      if (!paneResizeRaf.current) {
+        paneResizeRaf.current = requestAnimationFrame(() => {
+          paneResizeRaf.current = null;
+          window.dispatchEvent(new Event('resize'));
+        });
+      }
+    };
+    const handleUp = () => {
+      if (!paneResizeState.current) return;
+      paneResizeState.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.dispatchEvent(new Event('resize'));
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      if (paneResizeRaf.current) cancelAnimationFrame(paneResizeRaf.current);
+    };
+  }, []);
 
   // Clipboard Monitoring states
   const [clipboardText, setClipboardText] = useState('');
@@ -1277,6 +1446,32 @@ export default function App() {
     return localStorage.getItem('setting_focus_pet_enabled') !== 'false';
   });
 
+  // Ana gezinme artık sol menüde değil, üst başlık çubuğunda (titlebar) kompakt ikonlar olarak gösteriliyor.
+  const titlebarPrimaryItems = [
+    { id: 'notfactory', label: 'Hızlı Giriş', icon: Zap },
+    { id: 'dashboard', label: 'Gösterge Paneli', icon: Layout },
+    { id: 'inbox', label: 'Gelen Kutusu (Inbox)', icon: Inbox },
+    { id: 'tasks', label: 'Görev Havuzu (Tasks)', icon: CheckSquare },
+    { id: 'timeline', label: 'Zaman Akışı (Timeline)', icon: Clock },
+    { id: 'calendar', label: 'Takvim Planlayıcı', icon: Calendar },
+  ];
+  const titlebarWorkItems = [
+    { id: 'projects', label: 'Proje Yönetimi', icon: KanbanSquare },
+    { id: 'finance', label: 'Finans', icon: Wallet },
+  ];
+  const titlebarToolItems = [
+    { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
+    { id: 'srs', label: 'Ezber Kartları (SRS)', icon: BookOpen },
+    ...(isNoteCityEnabled ? [{ id: 'city', label: 'Not Şehri (City)', icon: Building2 }] : []),
+    { id: 'ambient', label: 'Ortam Sesleri', icon: Volume2 },
+    { id: 'forge', label: 'Sentez Tezgahı', icon: FlaskConical },
+    { id: 'mentor', label: 'Not Mentorü', icon: Compass },
+    { id: 'analytics', label: 'Verimlilik Analizi', icon: BarChart2 },
+    { id: 'browser', label: 'Web Araştırma', icon: Globe },
+    { id: 'music', label: 'Müzik Kutusu', icon: Headphones },
+  ];
+  const [openTitlebarMenu, setOpenTitlebarMenu] = useState<'work' | 'tools' | null>(null);
+
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Şablon (template) dosyalarının aranacağı ve oluşturulacağı özel klasör adını tutar.
   const [templatesFolder, setTemplatesFolder] = useState<string>(() => {
@@ -1367,17 +1562,19 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
-  const [settingsTab, setSettingsTab] = useState<'sync' | 'appearance' | 'about'>('sync');
+  const [settingsTab, setSettingsTab] = useState<'sync' | 'appearance' | 'shortcuts' | 'about'>('sync');
 
   // Help Guide states
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
-  const [helpTab, setHelpTab] = useState<'guide' | 'shortcuts'>('guide');
   const [recordingShortcutKey, setRecordingShortcutKey] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState<Record<string, { label: string; shortcut: ShortcutKey }>>(() => {
     const saved = localStorage.getItem('desktop_shortcuts');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // Kaydedilmiş kısayolları varsayılanlarla birleştiriyoruz ki sonradan eklenen yeni
+        // kısayollar (örn. üst menü gezinme kısayolları) eski kullanıcılarda da görünsün.
+        return { ...DEFAULT_SHORTCUTS, ...JSON.parse(saved) };
       } catch (e) {
         console.error('Error parsing shortcuts:', e);
       }
@@ -2461,6 +2658,18 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         setGlobalSearchQuery('');
         setSearchSelectedIndex(0);
         setActiveTab('notes');
+      } else {
+        // Üst başlık çubuğuna taşınan gezinme öğeleri için kısayol eşleşmesi
+        for (const [shortcutId, tabId] of Object.entries(NAV_SHORTCUT_TARGETS)) {
+          const item = shortcuts[shortcutId];
+          if (item && matches(item.shortcut)) {
+            e.preventDefault();
+            setActiveTab(tabId);
+            setSelectedFolder(null);
+            setSelectedTag(null);
+            break;
+          }
+        }
       }
     };
 
@@ -3710,6 +3919,98 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           </button>
           <span className="titlebar-lbl">Ultimate NoteFactory</span>
         </div>
+
+        {/* Ana gezinme: sol menüdeki klasör listesine daha çok yer bırakmak için üst başlık çubuğuna taşındı */}
+        <div className="titlebar-nav-icons">
+          {titlebarPrimaryItems.map(item => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                className={`titlebar-nav-icon ${activeTab === item.id ? 'active' : ''}`}
+                title={item.label}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSelectedFolder(null);
+                  setSelectedTag(null);
+                }}
+              >
+                <Icon size={16} />
+              </button>
+            );
+          })}
+
+          <div style={{ position: 'relative' }}>
+            <button
+              className={`titlebar-nav-icon ${openTitlebarMenu === 'work' ? 'active' : ''}`}
+              title="İş & Yönetim"
+              onClick={() => setOpenTitlebarMenu(m => m === 'work' ? null : 'work')}
+            >
+              <Briefcase size={16} />
+            </button>
+            {openTitlebarMenu === 'work' && (
+              <div className="titlebar-dropdown">
+                {titlebarWorkItems.map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      className="titlebar-dropdown-item"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setSelectedFolder(null);
+                        setSelectedTag(null);
+                        setOpenTitlebarMenu(null);
+                      }}
+                    >
+                      <Icon size={14} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ position: 'relative' }}>
+            <button
+              className={`titlebar-nav-icon ${openTitlebarMenu === 'tools' ? 'active' : ''}`}
+              title="Diğer Araçlar"
+              onClick={() => setOpenTitlebarMenu(m => m === 'tools' ? null : 'tools')}
+            >
+              <Wrench size={16} />
+            </button>
+            {openTitlebarMenu === 'tools' && (
+              <div className="titlebar-dropdown">
+                {titlebarToolItems.map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      className="titlebar-dropdown-item"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setSelectedFolder(null);
+                        setSelectedTag(null);
+                        setOpenTitlebarMenu(null);
+                      }}
+                    >
+                      <Icon size={14} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {openTitlebarMenu && (
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 999 }}
+            onClick={() => setOpenTitlebarMenu(null)}
+          />
+        )}
       </div>
 
       <div className="main-viewport">
@@ -3826,17 +4127,19 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
 
           {activeTab === 'notes' && (
+            <div className="notes-view-row">
             <div className="workspace-panes-wrapper">
               {panes.map((pane, idx) => {
                 const isFocused = idx === activePaneIdx;
                 const activePath = pane.tabs[pane.activeTabIdx] || null;
                 return (
+                  <Fragment key={pane.id}>
                   <div
-                    key={pane.id}
                     onClick={() => setActivePaneIdx(idx)}
                     className={`workspace-pane ${isFocused ? 'focused' : ''}`}
                     style={{
-                      flex: idx === 0 && panes.length > 1 ? '1 1 60%' : '1 1 50%',
+                      flex: `0 0 ${paneWidths[idx] ?? (100 / panes.length)}%`,
+                      minWidth: 0,
                     }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => handleTabDrop(e, idx)}
@@ -3866,6 +4169,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                               setActivePaneIdx(idx);
                               setActiveNotePath(tabPath);
                             }}
+                            onMouseDown={(e) => {
+                              if (e.button === 1) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                closeTabAt(idx, tabIdx);
+                              }
+                            }}
+                            onAuxClick={(e) => e.preventDefault()}
                             className={`pane-tab ${isTabActive ? 'active' : ''}`}
                           >
                             <FileText size={12} />
@@ -3873,21 +4184,17 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setPanes(prev => {
-                                  const newPanes = [...prev];
-                                  const activePane = { ...newPanes[idx] };
-                                  activePane.tabs = activePane.tabs.filter((_, i) => i !== tabIdx);
-                                  activePane.activeTabIdx = Math.max(0, activePane.activeTabIdx - 1);
-                                  newPanes[idx] = activePane;
-                                  
-                                  if (activePane.tabs.length === 0 && newPanes.length > 1) {
-                                    newPanes.splice(idx, 1);
-                                    setActivePaneIdx(Math.max(0, idx - 1));
-                                  } else {
-                                    setActiveNotePath(activePane.tabs[activePane.activeTabIdx] || null);
-                                  }
-                                  return newPanes;
-                                });
+                                handleOpenTabOnRight(tabPath, idx);
+                              }}
+                              className="pane-tab-split"
+                              title="Sağda aç"
+                            >
+                              <ArrowRight size={11} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                closeTabAt(idx, tabIdx);
                               }}
                               className="pane-tab-close"
                             >
@@ -3987,8 +4294,132 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       lineMargin={lineMargin}
                     />
                   </div>
+                  {idx < panes.length - 1 && (
+                    <div
+                      className="pane-resize-gutter"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const container = (e.currentTarget.parentElement) as HTMLElement;
+                        paneResizeState.current = {
+                          idx,
+                          startX: e.clientX,
+                          startLeft: paneWidths[idx] ?? (100 / panes.length),
+                          startRight: paneWidths[idx + 1] ?? (100 / panes.length),
+                          containerWidth: container ? container.getBoundingClientRect().width : window.innerWidth,
+                        };
+                        document.body.style.cursor = 'col-resize';
+                        document.body.style.userSelect = 'none';
+                      }}
+                    >
+                      <GripVertical size={12} />
+                    </div>
+                  )}
+                  </Fragment>
                 );
               })}
+            </div>
+            <div className={`notes-quick-panel ${rightPanelExpanded ? 'expanded' : ''}`} style={{ width: rightPanelExpanded ? rightPanelWidth : 44 }}>
+              {rightPanelExpanded && (
+                <div
+                  className="notes-quick-panel-resize"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    isResizingRightPanel.current = true;
+                    document.body.style.cursor = 'col-resize';
+                    document.body.style.userSelect = 'none';
+                  }}
+                />
+              )}
+
+              <div className="notes-quick-rail">
+                <button
+                  className={`notes-quick-rail-btn ${rightPanelExpanded && rightPanelView === 'search' ? 'active' : ''}`}
+                  title="Arama"
+                  onClick={() => {
+                    if (rightPanelExpanded && rightPanelView === 'search') {
+                      setRightPanelExpanded(false);
+                    } else {
+                      setRightPanelView('search');
+                      setRightPanelExpanded(true);
+                    }
+                  }}
+                >
+                  <Search size={18} />
+                </button>
+                <button
+                  className={`notes-quick-rail-btn ${rightPanelExpanded && rightPanelView === 'calendar' ? 'active' : ''}`}
+                  title="Takvim"
+                  onClick={() => {
+                    if (rightPanelExpanded && rightPanelView === 'calendar') {
+                      setRightPanelExpanded(false);
+                    } else {
+                      setRightPanelView('calendar');
+                      setRightPanelExpanded(true);
+                    }
+                  }}
+                >
+                  <Calendar size={18} />
+                </button>
+              </div>
+
+              {rightPanelExpanded && (
+                <div className="notes-quick-panel-content">
+                  {rightPanelView === 'search' ? (
+                    <div className="notes-quick-search">
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="Arama..."
+                        value={globalSearchQuery}
+                        onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                        className="notes-quick-search-input"
+                      />
+                      <div className="notes-quick-search-results">
+                        {!globalSearchQuery.trim() ? (
+                          <div className="notes-quick-panel-empty">Aramak istediğiniz kelimeyi yazın...</div>
+                        ) : getSearchResults().length === 0 ? (
+                          <div className="notes-quick-panel-empty">Eşleşen not bulunamadı.</div>
+                        ) : (
+                          getSearchResults().map(note => {
+                            const content = fileContents[note.path] || '';
+                            const snippet = getSearchSnippet(content, globalSearchQuery);
+                            return (
+                              <div
+                                key={note.path}
+                                className="notes-quick-search-result"
+                                onClick={() => handleOpenSearchResult(note.path)}
+                              >
+                                <div className="notes-quick-search-result-title">{note.name.replace('.md', '')}</div>
+                                {snippet && (
+                                  <div
+                                    className="notes-quick-search-result-snippet"
+                                    dangerouslySetInnerHTML={{ __html: snippet }}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="notes-quick-calendar">
+                      <CalendarView
+                        embedded
+                        notes={notes}
+                        folders={folders}
+                        tags={tags}
+                        readNoteContent={handleReadNoteContent}
+                        onSaveNote={handleSaveNote}
+                        onCreateDailyNote={handleCreateDailyNote}
+                        onSelectDateNotes={handleSelectDateNotes}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             </div>
           )}
 
@@ -4443,7 +4874,30 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 <span>🎨</span> Modül & Görünüm
               </button>
 
-              <button 
+              <button
+                type="button"
+                onClick={() => setSettingsTab('shortcuts')}
+                style={{
+                  background: settingsTab === 'shortcuts' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  border: 'none',
+                  color: settingsTab === 'shortcuts' ? '#fff' : 'var(--text-muted)',
+                  borderLeft: settingsTab === 'shortcuts' ? '3px solid var(--accent-color)' : '3px solid transparent',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: '12.5px',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span>⌨️</span> Kısayollar
+              </button>
+
+              <button
                 type="button"
                 onClick={() => setSettingsTab('about')}
                 style={{ 
@@ -4705,6 +5159,98 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                     <button type="button" style={{ flex: 1, padding: '8px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }} onClick={() => setIsSettingsModalOpen(false)}>Kapat ve Kaydet</button>
                   </div>
+                </div>
+              )}
+
+              {settingsTab === 'shortcuts' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', color: '#fff' }}>Klavye Kısayolları</h3>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                    Desktop uygulamasında hızlı gezinme ve işlem gerçekleştirmek için kısayol tuşlarını buradan özelleştirebilirsiniz. Değiştirmek istediğiniz kısayolun yanındaki "Değiştir" butonuna tıklayıp ardından yeni tuş kombinasyonuna basın.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {Object.entries(shortcuts).map(([key, item]) => {
+                      const isRecording = recordingShortcutKey === key;
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: 'rgba(255, 255, 255, 0.02)',
+                            padding: '10px 14px',
+                            borderRadius: '8px',
+                            border: '1px solid rgba(255, 255, 255, 0.05)'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: '600', color: '#fff' }}>{item.label}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Aksiyon: {key}</div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div
+                              style={{
+                                background: isRecording ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                                border: isRecording ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)',
+                                padding: '6px 12px',
+                                borderRadius: '6px',
+                                fontFamily: 'monospace',
+                                fontWeight: 'bold',
+                                color: isRecording ? '#f59e0b' : 'var(--accent-color)',
+                                fontSize: '12px'
+                              }}
+                            >
+                              {isRecording ? 'Yeni tuşlara basın (İptal: Esc)...' : formatShortcut(item.shortcut)}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setRecordingShortcutKey(key)}
+                              disabled={isRecording}
+                              style={{
+                                background: 'rgba(255, 255, 255, 0.05)',
+                                border: '1px solid rgba(255, 255, 255, 0.1)',
+                                borderRadius: '6px',
+                                padding: '6px 12px',
+                                color: '#fff',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                                transition: 'all 0.2s'
+                              }}
+                            >
+                              Değiştir
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm('Tüm kısayolları varsayılan fabrika ayarlarına döndürmek istediğinize emin misiniz?')) {
+                        setShortcuts(DEFAULT_SHORTCUTS);
+                        localStorage.setItem('desktop_shortcuts', JSON.stringify(DEFAULT_SHORTCUTS));
+                      }
+                    }}
+                    style={{
+                      alignSelf: 'flex-start',
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      border: '1px solid rgba(239, 68, 68, 0.2)',
+                      borderRadius: '6px',
+                      padding: '8px 16px',
+                      color: '#ef4444',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                      marginTop: '10px'
+                    }}
+                  >
+                    Varsayılanlara Sıfırla
+                  </button>
                 </div>
               )}
 
@@ -5336,45 +5882,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               </button>
             </div>
 
-            {/* Tab navigation */}
-            <div style={{ display: 'flex', background: 'rgba(255, 255, 255, 0.02)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', padding: '0 20px' }}>
-              <button
-                type="button"
-                onClick={() => setHelpTab('guide')}
-                style={{
-                  padding: '12px 16px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: helpTab === 'guide' ? '2px solid var(--accent-color)' : '2px solid transparent',
-                  color: helpTab === 'guide' ? '#fff' : 'var(--text-muted)',
-                  cursor: 'pointer',
-                  fontWeight: '600',
-                  fontSize: '13px'
-                }}
-              >
-                Kullanım Kılavuzu & Senaryolar
-              </button>
-              <button
-                type="button"
-                onClick={() => setHelpTab('shortcuts')}
-                style={{
-                  padding: '12px 16px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: helpTab === 'shortcuts' ? '2px solid var(--accent-color)' : '2px solid transparent',
-                  color: helpTab === 'shortcuts' ? '#fff' : 'var(--text-muted)',
-                  cursor: 'pointer',
-                  fontWeight: '600',
-                  fontSize: '13px'
-                }}
-              >
-                Klavye Kısayolları (Desktop)
-              </button>
-            </div>
-
             {/* Modal Body */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px', color: 'var(--text-secondary)', fontSize: '13.5px', lineHeight: '1.6' }}>
-              {helpTab === 'guide' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                   
                   {/* Card 1: NoteFactory / Hızlı Giriş Gücü */}
@@ -5612,105 +6121,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   </div>
 
                 </div>
-              ) : (
-                /* Tab 2: Keyboard Shortcuts customizing */
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  <p style={{ margin: '0 0 10px 0', fontSize: '12px', color: 'var(--text-muted)' }}>
-                    Desktop uygulamasında hızlı gezinme ve işlem gerçekleştirmek için kısayol tuşlarını buradan özelleştirebilirsiniz. Değiştirmek istediğiniz kısayolun yanındaki "Değiştir" butonuna tıklayıp ardından yeni tuş kombinasyonuna basın.
-                  </p>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {Object.entries(shortcuts).map(([key, item]) => {
-                      const isRecording = recordingShortcutKey === key;
-                      return (
-                        <div 
-                          key={key} 
-                          style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'space-between', 
-                            background: 'rgba(255, 255, 255, 0.02)', 
-                            padding: '10px 14px', 
-                            borderRadius: '8px', 
-                            border: '1px solid rgba(255, 255, 255, 0.05)' 
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: '600', color: '#fff' }}>{item.label}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Aksiyon: {key}</div>
-                          </div>
-                          
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <div 
-                              style={{ 
-                                background: isRecording ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)', 
-                                border: isRecording ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.1)', 
-                                padding: '6px 12px', 
-                                borderRadius: '6px', 
-                                fontFamily: 'monospace', 
-                                fontWeight: 'bold', 
-                                color: isRecording ? '#f59e0b' : 'var(--accent-color)',
-                                fontSize: '12px'
-                              }}
-                            >
-                              {isRecording ? 'Yeni tuşlara basın (İptal: Esc)...' : formatShortcut(item.shortcut)}
-                            </div>
-                            
-                            <button
-                              type="button"
-                              onClick={() => setRecordingShortcutKey(key)}
-                              disabled={isRecording}
-                              style={{
-                                background: 'rgba(255, 255, 255, 0.05)',
-                                border: '1px solid rgba(255, 255, 255, 0.1)',
-                                borderRadius: '6px',
-                                padding: '6px 12px',
-                                color: '#fff',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                transition: 'all 0.2s'
-                              }}
-                            >
-                              Değiştir
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm('Tüm kısayolları varsayılan fabrika ayarlarına döndürmek istediğinize emin misiniz?')) {
-                        setShortcuts(DEFAULT_SHORTCUTS);
-                        localStorage.setItem('desktop_shortcuts', JSON.stringify(DEFAULT_SHORTCUTS));
-                      }
-                    }}
-                    style={{
-                      alignSelf: 'flex-start',
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      border: '1px solid rgba(239, 68, 68, 0.2)',
-                      borderRadius: '6px',
-                      padding: '8px 16px',
-                      color: '#ef4444',
-                      cursor: 'pointer',
-                      fontSize: '12px',
-                      marginTop: '10px'
-                    }}
-                  >
-                    Varsayılanlara Sıfırla
-                  </button>
-
-                </div>
-              )}
             </div>
 
             {/* Footer */}
             <div style={{ padding: '14px 20px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(0,0,0,0.1)' }}>
-              <button 
-                type="button" 
-                className="btn-modal-cancel" 
+              <button
+                type="button"
+                className="btn-modal-cancel"
                 onClick={() => setIsHelpModalOpen(false)}
                 style={{ padding: '8px 20px', borderRadius: '6px', cursor: 'pointer' }}
               >

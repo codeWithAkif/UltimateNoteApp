@@ -53,6 +53,7 @@ interface CalendarViewProps {
   onSaveNote: (path: string, content: string) => Promise<void>;
   onCreateDailyNote: (dateStr: string) => void;
   onSelectDateNotes: (dateStr: string) => void;
+  embedded?: boolean; // Sağ hızlı erişim panelinde küçük "günlük takvim" olarak gömülüyken sadeleştirilmiş görünüm
 }
 
 export interface WorkspaceSubTask {
@@ -380,9 +381,11 @@ export default function CalendarView({
   readNoteContent,
   onSaveNote,
   onCreateDailyNote,
-  onSelectDateNotes
+  onSelectDateNotes,
+  embedded = false
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
+    if (embedded) return 'day';
     return (isElectron || isBrowser) ? 'week' : 'day';
   });
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -1509,7 +1512,7 @@ export default function CalendarView({
   };
 
   return (
-    <div className="calendar-workspace-layout animate-fade">
+    <div className={`calendar-workspace-layout animate-fade ${embedded ? 'embedded' : ''}`}>
       {isUnplannedOpen && (
         <div 
           className="drawer-overlay visible-mobile" 
@@ -1543,7 +1546,7 @@ export default function CalendarView({
                 <ChevronRight size={16} />
               </button>
             </div>
-            <button
+            {!embedded && <button
               type="button"
               className="btn-unplanned-toggle visible-mobile"
               onClick={() => setIsUnplannedOpen(!isUnplannedOpen)}
@@ -1565,12 +1568,12 @@ export default function CalendarView({
               <span style={{ background: 'var(--accent-color)', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '9px', lineHeight: 1 }}>
                 {unscheduledTasks.length}
               </span>
-            </button>
+            </button>}
           </div>
 
           {/* View Switcher Segmented Control */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
+            {!embedded && <button
               onClick={() => setIsSyncModalOpen(true)}
               style={{
                 background: 'rgba(99, 102, 241, 0.1)',
@@ -1589,9 +1592,9 @@ export default function CalendarView({
               title="Dış Takvim Eşitle (Google / Outlook)"
             >
               📅 Takvim Bağla
-            </button>
+            </button>}
 
-            <div className="calendar-view-toggle">
+            {!embedded && <div className="calendar-view-toggle">
               <button 
                 type="button" 
                 className={`toggle-btn ${viewMode === 'month' ? 'active' : ''}`}
@@ -1620,7 +1623,7 @@ export default function CalendarView({
               >
                 Günlük
               </button>
-            </div>
+            </div>}
           </div>
         </div>
 
@@ -2527,7 +2530,7 @@ export default function CalendarView({
 
       {/* 3. Right Section: Unscheduled Tasks Inbox panel */}
       <div 
-        className={`calendar-unscheduled-sidebar ${isUnplannedOpen ? 'open' : ''}`}
+        className={`calendar-unscheduled-sidebar ${isUnplannedOpen ? 'open' : ''} ${embedded ? 'force-hidden' : ''}`}
         onDragOver={(e) => {
           e.preventDefault();
           e.currentTarget.classList.add('drop-hover');

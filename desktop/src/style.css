@@ -165,6 +165,74 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-muted);
 }
 
+/* Ana gezinme ikonları artık üst başlık çubuğunda — Electron'da pencere sürükleme
+   bölgesinin (app-region: drag) tıklamaları yutmaması için no-drag olarak işaretlenir. */
+.titlebar-nav-icons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-nav-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.titlebar-nav-icon:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+.titlebar-nav-icon.active {
+  background-color: var(--accent-glow);
+  color: var(--accent-color);
+}
+
+.titlebar-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1000;
+}
+
+.titlebar-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.titlebar-dropdown-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 .main-viewport {
   display: flex;
   flex: 1;
@@ -274,6 +342,39 @@ input:focus, textarea:focus, select:focus {
   font-weight: 600;
 }
 
+/* Obsidian tarzı kompakt üst ikon şeridi: ana gezinme tek tek satır yerine ikon ızgarasında */
+.sidebar-nav-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 15px;
+}
+
+.nav-item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.nav-item-icon:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-item-icon.active {
+  background-color: var(--accent-glow);
+  color: var(--accent-color);
+}
+
 .sidebar-divider {
   height: 1px;
   background-color: var(--border-color);
@@ -285,6 +386,12 @@ input:focus, textarea:focus, select:focus {
   flex-direction: column;
   gap: 5px;
   margin-bottom: 15px;
+}
+
+/* Klasör bölümü: en çok kullanılan alan olduğu için sidebar'da kalan tüm boşluğu doldurur */
+.sidebar-section-folders {
+  flex: 1 1 auto;
+  min-height: 80px;
 }
 
 .section-header {
@@ -315,7 +422,8 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 150px;
+  flex: 1 1 auto;
+  min-height: 60px;
   overflow-y: auto;
 }
 
@@ -1065,11 +1173,52 @@ input:focus, textarea:focus, select:focus {
 
 .notes-sidebar {
   width: 280px;
+  flex: 0 0 280px;
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   height: 100%;
   background-color: var(--bg-secondary);
+}
+
+/* Not açıldığında daralan not listesi sütunu — sadece genişletme oku kalır */
+.notes-sidebar-collapsed-rail {
+  width: 18px;
+  flex: 0 0 18px;
+  height: 100%;
+  border: none;
+  border-right: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.notes-sidebar-collapsed-rail:hover {
+  background-color: var(--bg-hover);
+  color: var(--accent-color);
+}
+
+.btn-collapse-filelist {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.btn-collapse-filelist:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .notes-sidebar .sidebar-header {
@@ -3720,7 +3869,7 @@ input:focus, textarea:focus, select:focus {
   gap: 4px;
   min-height: 400px;
   width: 100%;
-  max-width: 900px;
+  max-width: min(1400px, 100%);
   margin: 0 auto;
   min-width: 0;
 }
@@ -3968,6 +4117,17 @@ input:focus, textarea:focus, select:focus {
   height: 100%;
   overflow: hidden;
   padding: 20px;
+}
+
+/* Sağ hızlı erişim panelindeki küçük "günlük takvim" gömülü görünümü için sadeleştirme */
+.calendar-workspace-layout.embedded .calendar-main-panel {
+  padding: 10px;
+}
+.calendar-workspace-layout.embedded .calendar-workspace-header h2 {
+  font-size: 14px;
+}
+.calendar-unscheduled-sidebar.force-hidden {
+  display: none !important;
 }
 
 .calendar-workspace-header {
@@ -7616,15 +7776,194 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* MULTI-PANE SPLIT EDITOR STYLES */
-.workspace-panes-wrapper {
+.notes-view-row {
   display: flex;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  gap: 10px;
+}
+
+.workspace-panes-wrapper {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  gap: 0;
   padding: 8px;
   background-color: var(--bg-tertiary, #0d0e12);
   box-sizing: border-box;
+}
+
+/* İki not paneli arasında sürüklenerek genişlik ayarlanan bölücü */
+.pane-resize-gutter {
+  flex: 0 0 10px;
+  width: 10px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, rgba(255, 255, 255, 0.35));
+  position: relative;
+  z-index: 2;
+}
+.pane-resize-gutter::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-color, rgba(255, 255, 255, 0.08));
+  transform: translateX(-50%);
+}
+.pane-resize-gutter:hover,
+.pane-resize-gutter:active {
+  color: var(--accent-color, #6366f1);
+}
+.pane-resize-gutter svg {
+  background: var(--bg-tertiary, #0d0e12);
+  border-radius: 4px;
+  position: relative;
+}
+
+.notes-quick-panel {
+  display: flex;
+  flex: 0 0 auto;
+  height: 100%;
+  min-height: 0;
+  background-color: var(--bg-tertiary, #0d0e12);
+  border-left: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  position: relative;
+  transition: width 0.12s ease;
+}
+
+.notes-quick-panel-resize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.notes-quick-panel-resize:hover {
+  background-color: rgba(99, 102, 241, 0.25);
+}
+
+.notes-quick-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 44px;
+  width: 44px;
+  padding: 10px 0;
+}
+
+.notes-quick-rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.notes-quick-rail-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.notes-quick-rail-btn.active {
+  background-color: var(--accent-glow, rgba(99, 102, 241, 0.15));
+  color: var(--accent-color, #6366f1);
+}
+
+.notes-quick-panel-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  display: flex;
+  flex-direction: column;
+}
+
+.notes-quick-search {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+  gap: 8px;
+}
+
+.notes-quick-search-input {
+  background: var(--bg-secondary, #18181b);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text-primary, #f4f4f5);
+  font-size: 13px;
+}
+
+.notes-quick-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notes-quick-panel-empty {
+  padding: 16px 4px;
+  text-align: center;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  font-size: 12px;
+}
+
+.notes-quick-search-result {
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.notes-quick-search-result:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+.notes-quick-search-result-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary, #f4f4f5);
+  margin-bottom: 3px;
+}
+.notes-quick-search-result-snippet {
+  font-size: 11.5px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  line-height: 1.4;
+}
+
+.notes-quick-calendar {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.notes-quick-calendar .calendar-workspace-layout {
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .notes-quick-panel {
+    display: none;
+  }
 }
 
 .workspace-pane {
@@ -7715,6 +8054,29 @@ input:focus, textarea:focus, select:focus {
   transition: all 0.15s ease;
 }
 .pane-tab-close:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.pane-tab-split {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+  opacity: 0;
+}
+.pane-tab:hover .pane-tab-split {
+  opacity: 1;
+}
+.pane-tab-split:hover {
   background-color: rgba(255, 255, 255, 0.15);
   color: #fff;
 }

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Inbox, FileText, Calendar, Clock, Database, Folder, Tag, Plus, Settings, CheckSquare, Zap, Trash2, Globe,
-  Briefcase, Code, Heart, Star, BookOpen, Sparkles, Coffee, Rocket, Smile, HelpCircle, Headphones,
-  ChevronLeft, ChevronRight, ChevronDown, Wallet, KanbanSquare, BarChart2, Layout, Building2, Volume2, FlaskConical, Compass, Sun, Moon
+import {
+  Inbox, FileText, Calendar, Database, Folder, Tag, Plus, Settings, Trash2,
+  Briefcase, Code, Heart, Star, BookOpen, Sparkles, Coffee, Rocket, Smile, HelpCircle,
+  ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout
 } from 'lucide-react';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
@@ -628,35 +628,6 @@ export default function Sidebar({
   onToggleTheme,
   onSavePetData
 }: SidebarProps) {
-  const primaryItems = [
-    { id: 'notfactory', label: 'Hızlı Giriş', icon: Zap },
-    { id: 'dashboard', label: 'Gösterge Paneli', icon: Layout },
-    { id: 'inbox', label: 'Gelen Kutusu (Inbox)', icon: Inbox },
-    { id: 'tasks', label: 'Görev Havuzu (Tasks)', icon: CheckSquare },
-    { id: 'timeline', label: 'Zaman Akışı (Timeline)', icon: Clock },
-    { id: 'calendar', label: 'Takvim Planlayıcı', icon: Calendar },
-  ];
-
-  const workItems = [
-    { id: 'projects', label: 'Proje Yönetimi', icon: KanbanSquare },
-    { id: 'finance', label: 'Finans', icon: Wallet },
-  ];
-
-  const toolItems = [
-    { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
-    { id: 'srs', label: 'Ezber Kartları (SRS)', icon: BookOpen },
-    ...(isNoteCityEnabled ? [{ id: 'city', label: 'Not Şehri (City)', icon: Building2 }] : []),
-    { id: 'ambient', label: 'Ortam Sesleri', icon: Volume2 },
-    { id: 'forge', label: 'Sentez Tezgahı', icon: FlaskConical },
-    { id: 'mentor', label: 'Not Mentorü', icon: Compass },
-    { id: 'analytics', label: 'Verimlilik Analizi', icon: BarChart2 },
-    { id: 'browser', label: 'Web Araştırma', icon: Globe },
-    { id: 'music', label: 'Müzik Kutusu', icon: Headphones },
-  ];
-
-  const [isWorkExpanded, setIsWorkExpanded] = React.useState(false);
-  const [isToolsExpanded, setIsToolsExpanded] = React.useState(false);
-
   // Klasör ağacı Accordion durumu: alt klasörü olan bir klasör daraltıldığında
   // (collapsed) tüm alt öğeleri gizlenir. Seçim yapılabilirlik için localStorage'da saklanır.
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => {
@@ -676,26 +647,6 @@ export default function Sidebar({
       localStorage.setItem('sidebar_collapsed_folders', JSON.stringify([...next]));
       return next;
     });
-  };
-
-  const renderItem = (item: typeof primaryItems[0]) => {
-    const Icon = item.icon;
-    return (
-      <button
-        key={item.id}
-        className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
-        title={isCollapsed ? item.label : undefined}
-        style={{ justifyContent: isCollapsed ? 'center' : 'flex-start', padding: isCollapsed ? '10px 0' : '10px 16px' }}
-        onClick={() => {
-          setActiveTab(item.id);
-          setSelectedFolder(null);
-          setSelectedTag(null);
-        }}
-      >
-        <Icon size={18} style={{ marginRight: isCollapsed ? '0' : '10px' }} />
-        {!isCollapsed && <span>{item.label}</span>}
-      </button>
-    );
   };
 
   return (
@@ -737,64 +688,13 @@ export default function Sidebar({
       {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
           Menü elemanlarının ve klasör listesinin ekran dışına taşmasını engellemek için scrollable flex alanı. */}
       <div className="sidebar-scrollable-content" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0, gap: '5px' }}>
-        {/* Primary Navigation */}
-      <nav className="sidebar-nav">
-        {primaryItems.map(renderItem)}
-      </nav>
-
-      {/* Divider / Header - İş & Yönetim */}
-      <div 
-        onClick={() => setIsWorkExpanded(!isWorkExpanded)}
-        style={{ cursor: 'pointer' }}
-      >
-        {isCollapsed ? (
-          <div className="sidebar-divider" style={{ margin: '12px 0', borderTop: isWorkExpanded ? '2px solid var(--accent-color)' : '1px dashed var(--border-color)' }} title="💼 İş & Yönetim (Aç/Kapat)" />
-        ) : (
-          <div className="sidebar-section-header" style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', margin: '20px 16px 6px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', textTransform: 'uppercase', letterSpacing: '0.5px', opacity: 0.8, userSelect: 'none' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>💼</span> <span>İş & Yönetim</span>
-            </div>
-            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{isWorkExpanded ? '▼' : '▶'}</span>
-          </div>
-        )}
-      </div>
-
-      {isWorkExpanded && (
-        <nav className="sidebar-nav" style={{ marginTop: '0' }}>
-          {workItems.map(renderItem)}
-        </nav>
-      )}
-
-      {/* Divider / Header - Diğer Araçlar */}
-      <div 
-        onClick={() => setIsToolsExpanded(!isToolsExpanded)}
-        style={{ cursor: 'pointer' }}
-      >
-        {isCollapsed ? (
-          <div className="sidebar-divider" style={{ margin: '12px 0', borderTop: isToolsExpanded ? '2px solid var(--accent-color)' : '1px dashed var(--border-color)' }} title="🛠️ Diğer Araçlar (Aç/Kapat)" />
-        ) : (
-          <div className="sidebar-section-header" style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', margin: '20px 16px 6px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', textTransform: 'uppercase', letterSpacing: '0.5px', opacity: 0.8, userSelect: 'none' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>🛠️</span> <span>Diğer Araçlar</span>
-            </div>
-            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{isToolsExpanded ? '▼' : '▶'}</span>
-          </div>
-        )}
-      </div>
-
-      {isToolsExpanded && (
-        <nav className="sidebar-nav" style={{ marginTop: '0' }}>
-          {toolItems.map(renderItem)}
-        </nav>
-      )}
-
-      {!isCollapsed && (
+        {!isCollapsed && (
         <>
           {/* Divider */}
           <div className="sidebar-divider" />
 
           {/* Folders Section */}
-          <div className="sidebar-section">
+          <div className="sidebar-section sidebar-section-folders">
             <div className="section-header">
               <span className="section-title">Klasörler</span>
               <button className="btn-add" onClick={onCreateFolder} title="Yeni Klasör">
