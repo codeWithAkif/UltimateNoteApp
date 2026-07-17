@@ -7,7 +7,7 @@ import {
   RotateCcw, Volume2, Mic, Square, Check, Copy, Table, HelpCircle, Activity, Heart, Sparkles, 
   Pin, Music, X, Globe, PenTool, Database, Inbox,
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
-  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch
+  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search
 } from 'lucide-react';
 import { platform, isElectron, isBrowser } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
@@ -2800,6 +2800,113 @@ export default function NotesView({
   // Obsidian-Style Premium States
   // Obsidian-Style Premium States
   const [isSourceMode, setIsSourceMode] = useState(false);
+
+  // Ara / Değiştir (Ctrl+F / Ctrl+H): klasik editörlerdeki gibi not içinde arama ve değiştirme.
+  const [isFindBarOpen, setIsFindBarOpen] = useState(false);
+  const [isReplaceRowOpen, setIsReplaceRowOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [replaceQuery, setReplaceQuery] = useState('');
+  const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Not içeriğindeki (editorContent) tüm eşleşmelerin karakter konumları (offset)
+  const findMatches = useMemo(() => {
+    if (!findQuery) return [] as number[];
+    const haystack = findCaseSensitive ? editorContent : editorContent.toLowerCase();
+    const needle = findCaseSensitive ? findQuery : findQuery.toLowerCase();
+    const matches: number[] = [];
+    let idx = haystack.indexOf(needle);
+    while (idx !== -1) {
+      matches.push(idx);
+      idx = haystack.indexOf(needle, idx + needle.length);
+    }
+    return matches;
+  }, [editorContent, findQuery, findCaseSensitive]);
+
+  useEffect(() => {
+    setCurrentMatchIdx(0);
+  }, [findQuery, findCaseSensitive]);
+
+  // Karakter offset'inden hangi satırda olduğunu bulur (lines: editorContent.split('\n'))
+  const getLineIdxForOffset = (offset: number): number => {
+    let acc = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (offset <= acc + lines[i].length) return i;
+      acc += lines[i].length + 1; // +1 satır sonu karakteri (\n) için
+    }
+    return Math.max(0, lines.length - 1);
+  };
+
+  // Aktif eşleşmeye kaydırır — Kaynak Modunda gerçek metin seçimi, Canlı Modda satır vurgusu yapar.
+  useEffect(() => {
+    if (!isFindBarOpen || findMatches.length === 0) return;
+    const offset = findMatches[currentMatchIdx] ?? findMatches[0];
+    if (isSourceMode) {
+      const textarea = document.querySelector('.source-mode-textarea') as HTMLTextAreaElement | null;
+      if (textarea) {
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(offset, offset + findQuery.length);
+        const before = textarea.value.slice(0, offset);
+        const approxLine = before.split('\n').length - 1;
+        const lineHeight = 20;
+        textarea.scrollTop = Math.max(0, approxLine * lineHeight - textarea.clientHeight / 2);
+      }
+    } else {
+      scrollToElement(`editor-line-${getLineIdxForOffset(offset)}`);
+    }
+  }, [currentMatchIdx, findMatches, isFindBarOpen, isSourceMode]);
+
+  const goToNextMatch = () => {
+    if (findMatches.length === 0) return;
+    setCurrentMatchIdx(prev => (prev + 1) % findMatches.length);
+  };
+  const goToPrevMatch = () => {
+    if (findMatches.length === 0) return;
+    setCurrentMatchIdx(prev => (prev - 1 + findMatches.length) % findMatches.length);
+  };
+
+  const handleReplaceCurrent = () => {
+    if (findMatches.length === 0) return;
+    const offset = findMatches[currentMatchIdx % findMatches.length];
+    const before = editorContent.slice(0, offset);
+    const after = editorContent.slice(offset + findQuery.length);
+    setEditorContent(before + replaceQuery + after);
+  };
+
+  const handleReplaceAll = () => {
+    if (!findQuery) return;
+    const regex = new RegExp(escapeRegExp(findQuery), findCaseSensitive ? 'g' : 'gi');
+    setEditorContent(editorContent.replace(regex, replaceQuery));
+  };
+
+  const openFindBar = (withReplace: boolean) => {
+    setIsFindBarOpen(true);
+    setIsReplaceRowOpen(withReplace);
+    setTimeout(() => findInputRef.current?.focus(), 0);
+  };
+
+  // Ctrl+F / Ctrl+H genel klavye kısayolları (Not açıkken)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!activeNotePath) return;
+      const isMod = e.ctrlKey || e.metaKey;
+      if (isMod && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        openFindBar(false);
+      } else if (isMod && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        openFindBar(true);
+      } else if (e.key === 'Escape' && isFindBarOpen) {
+        setIsFindBarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeNotePath, isFindBarOpen]);
+
   const [isDictating, setIsDictating] = useState(false);
   const speechRecognitionRef = useRef<any>(null);
   const [collapsedHeadings, setCollapsedHeadings] = useState<Record<number, boolean>>({});
@@ -8154,6 +8261,18 @@ export default function NotesView({
                 {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
                   <button
                     type="button"
+                    className={`toolbar-btn find-toggle-btn ${isFindBarOpen ? 'active' : ''}`}
+                    style={{ width: '28px', height: '28px', padding: 0, borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => isFindBarOpen ? setIsFindBarOpen(false) : openFindBar(false)}
+                    title="Not İçinde Ara (Ctrl+F)"
+                  >
+                    <Search size={14} />
+                  </button>
+                )}
+
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
+                  <button
+                    type="button"
                     className={`toolbar-btn source-toggle-btn ${isSourceMode ? 'active' : ''}`}
                     style={{ width: '28px', height: '28px', padding: 0, borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     onClick={() => {
@@ -8228,6 +8347,72 @@ export default function NotesView({
                 </div>
               </div>
             </div>
+
+            {isFindBarOpen && activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && (
+              <div className="find-replace-bar">
+                <div className="find-replace-row">
+                  <Search size={14} className="find-replace-icon" />
+                  <input
+                    ref={findInputRef}
+                    type="text"
+                    className="find-replace-input"
+                    placeholder="Ara..."
+                    value={findQuery}
+                    onChange={(e) => setFindQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (e.shiftKey) goToPrevMatch(); else goToNextMatch();
+                      } else if (e.key === 'Escape') {
+                        setIsFindBarOpen(false);
+                      }
+                    }}
+                  />
+                  <span className="find-replace-count">
+                    {findQuery ? (findMatches.length > 0 ? `${currentMatchIdx + 1}/${findMatches.length}` : '0/0') : ''}
+                  </span>
+                  <button type="button" className="find-replace-nav-btn" onClick={goToPrevMatch} title="Önceki (Shift+Enter)"><ChevronUp size={14} /></button>
+                  <button type="button" className="find-replace-nav-btn" onClick={goToNextMatch} title="Sonraki (Enter)"><ChevronDown size={14} /></button>
+                  <button
+                    type="button"
+                    className={`find-replace-nav-btn ${findCaseSensitive ? 'active' : ''}`}
+                    onClick={() => setFindCaseSensitive(v => !v)}
+                    title="Büyük/Küçük Harf Duyarlı"
+                  >
+                    Aa
+                  </button>
+                  <button
+                    type="button"
+                    className={`find-replace-nav-btn ${isReplaceRowOpen ? 'active' : ''}`}
+                    onClick={() => setIsReplaceRowOpen(v => !v)}
+                    title="Değiştir"
+                  >
+                    ⇄
+                  </button>
+                  <button type="button" className="find-replace-close-btn" onClick={() => setIsFindBarOpen(false)} title="Kapat (Esc)"><X size={14} /></button>
+                </div>
+
+                {isReplaceRowOpen && (
+                  <div className="find-replace-row">
+                    <input
+                      type="text"
+                      className="find-replace-input"
+                      style={{ marginLeft: '22px' }}
+                      placeholder="Değiştir..."
+                      value={replaceQuery}
+                      onChange={(e) => setReplaceQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); handleReplaceCurrent(); }
+                        else if (e.key === 'Escape') setIsFindBarOpen(false);
+                      }}
+                    />
+                    <button type="button" className="find-replace-action-btn" onClick={handleReplaceCurrent} disabled={findMatches.length === 0}>Değiştir</button>
+                    <button type="button" className="find-replace-action-btn" onClick={handleReplaceAll} disabled={findMatches.length === 0}>Tümünü Değiştir</button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {activeNote.type === 'excalidraw' ? (
               /* Excalidraw Drawing Editor */
               <div className="excalidraw-editor-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: '8px', margin: '0 8px 8px 8px', border: '1px solid rgba(139, 92, 246, 0.2)', background: '#121214' }}>
