@@ -23,7 +23,7 @@ import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
-import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, type SyncConflict } from './services/supabaseSync';
 import { Preferences } from '@capacitor/preferences';
 import { registerPlugin } from '@capacitor/core';
 
@@ -1562,7 +1562,12 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
-  const [settingsTab, setSettingsTab] = useState<'sync' | 'appearance' | 'shortcuts' | 'about'>('sync');
+  const [settingsTab, setSettingsTab] = useState<'sync' | 'appearance' | 'shortcuts' | 'trash' | 'about'>('sync');
+  // Çöp Kutusu: yerel .trash/index.json içeriği + Supabase'de is_deleted=true olan
+  // (yerelde kopyası olmayabilecek) notlar birleştirilerek gösterilir.
+  const [localTrashEntries, setLocalTrashEntries] = useState<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>>([]);
+  const [remoteTrashEntries, setRemoteTrashEntries] = useState<Array<{ path: string; name: string; content: string; updated_at: string }>>([]);
+  const [isTrashLoading, setIsTrashLoading] = useState(false);
 
   // Help Guide states
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
@@ -3041,6 +3046,87 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   };
 
   // 4. Delete Path
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Yerel çöp kutusu: silinen notun son içeriği tek bir JSON indeksinde saklanır ki
+  // Supabase kullanmayan (yerel kayıt modundaki) kullanıcılar da yanlışlıkla sildiği
+  // notu geri getirebilsin. Ayarlar > Çöp Kutusu ekranından okunup geri yazılır.
+  const TRASH_INDEX_PATH = '.trash/index.json';
+
+  const readLocalTrash = async (): Promise<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>> => {
+    try {
+      const raw = await platform.readNote(TRASH_INDEX_PATH);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_e) {
+      return [];
+    }
+  };
+
+  const addToLocalTrash = async (path: string) => {
+    try {
+      const content = fileContents[path] ?? await platform.readNote(path);
+      const trash = await readLocalTrash();
+      trash.push({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        originalPath: path,
+        name: path.split('/').pop() || path,
+        content,
+        deletedAt: Date.now()
+      });
+      await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(trash));
+    } catch (e) {
+      console.error('Not çöp kutusuna taşınamadı:', e);
+    }
+  };
+
+  // Çöp Kutusu sekmesi açıldığında hem yerel hem (varsa) Supabase'deki silinmiş notları yükler.
+  const loadTrashData = async () => {
+    setIsTrashLoading(true);
+    try {
+      const local = await readLocalTrash();
+      setLocalTrashEntries(local.slice().sort((a, b) => b.deletedAt - a.deletedAt));
+      const remote = await fetchDeletedNotes();
+      // Yerelde zaten bir çöp kutusu kaydı olan yollar uzak listede tekrar gösterilmesin.
+      const localPaths = new Set(local.map(e => e.originalPath));
+      setRemoteTrashEntries(remote.filter(r => !localPaths.has(r.path)));
+    } finally {
+      setIsTrashLoading(false);
+    }
+  };
+
+  const handleRestoreLocalTrash = async (entry: { id: string; originalPath: string; content: string }) => {
+    await platform.writeNote(entry.originalPath, entry.content);
+    handleLocalSave(entry.originalPath, entry.content);
+    const trash = await readLocalTrash();
+    await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(trash.filter(e => e.id !== entry.id)));
+    await loadAllData();
+    await loadTrashData();
+  };
+
+  const handlePermanentlyDeleteLocalTrash = async (id: string) => {
+    const trash = await readLocalTrash();
+    await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(trash.filter(e => e.id !== id)));
+    await loadTrashData();
+  };
+
+  const handleRestoreRemoteTrash = async (entry: { path: string; content: string }) => {
+    await platform.writeNote(entry.path, entry.content);
+    const res = await restoreRemoteNote(entry.path);
+    if (!res.success) {
+      console.error('Uzak not geri getirilemedi:', res.error);
+    }
+    await loadAllData();
+    await loadTrashData();
+  };
+
+  const handlePermanentlyDeleteRemoteTrash = async (path: string) => {
+    const res = await permanentlyDeleteRemoteNote(path);
+    if (!res.success) {
+      console.error('Uzak not kalıcı olarak silinemedi:', res.error);
+    }
+    await loadTrashData();
+  };
+
   const handleDeletePath = async (path: string) => {
     const isFile = path.endsWith('.md') || path.endsWith('.excalidraw') || path.endsWith('.drawio');
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -3103,10 +3189,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       const isFile = path.endsWith('.md') || path.endsWith('.excalidraw') || path.endsWith('.drawio');
       if (!isFile) {
         // Folder deletion: soft-delete all containing notes/drawings in remote database
+        // and move each one into the local trash index too.
         try {
           const allFiles = await platform.listFiles();
           for (const file of allFiles) {
             if ((file.type === 'note' || file.type === 'excalidraw' || file.type === 'drawio') && file.path.startsWith(path + '/')) {
+              await addToLocalTrash(file.path);
               await handleLocalDelete(file.path);
             }
           }
@@ -3114,6 +3202,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           console.error('[Delete Path] Failed to list or soft-delete folder children:', e);
         }
       } else {
+        await addToLocalTrash(path);
         await handleLocalDelete(path);
       }
       const res = await platform.deletePath(path);
@@ -4899,6 +4988,29 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
               <button
                 type="button"
+                onClick={() => { setSettingsTab('trash'); loadTrashData(); }}
+                style={{
+                  background: settingsTab === 'trash' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  border: 'none',
+                  color: settingsTab === 'trash' ? '#fff' : 'var(--text-muted)',
+                  borderLeft: settingsTab === 'trash' ? '3px solid var(--accent-color)' : '3px solid transparent',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: '12.5px',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span>🗑️</span> Çöp Kutusu
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setSettingsTab('about')}
                 style={{ 
                   background: settingsTab === 'about' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
@@ -5251,6 +5363,111 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   >
                     Varsayılanlara Sıfırla
                   </button>
+                </div>
+              )}
+
+              {settingsTab === 'trash' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0 }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', color: '#fff' }}>Çöp Kutusu</h3>
+                  <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                    Sildiğin notların son hâli burada tutulur. "Uzak" olarak işaretlenenler yalnızca Supabase'de duruyor
+                    (yerelde kopyası yok) — muhtemelen başka bir cihazda veya bu özellik eklenmeden önce silinmiş.
+                  </p>
+
+                  {isTrashLoading ? (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Yükleniyor...</div>
+                  ) : (localTrashEntries.length === 0 && remoteTrashEntries.length === 0) ? (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Çöp kutusu boş.</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' }}>
+                      {localTrashEntries.map(entry => (
+                        <div
+                          key={entry.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: 'rgba(255, 255, 255, 0.02)',
+                            padding: '10px 14px',
+                            borderRadius: '8px',
+                            border: '1px solid rgba(255, 255, 255, 0.05)'
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: '600', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                              {entry.originalPath} · {new Date(entry.deletedAt).toLocaleString('tr-TR')}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRestoreLocalTrash(entry)}
+                              style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                            >
+                              Geri Getir
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (confirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`)) {
+                                  handlePermanentlyDeleteLocalTrash(entry.id);
+                                }
+                              }}
+                              style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                            >
+                              Kalıcı Sil
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+
+                      {remoteTrashEntries.map(entry => (
+                        <div
+                          key={entry.path}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: 'rgba(255, 255, 255, 0.02)',
+                            padding: '10px 14px',
+                            borderRadius: '8px',
+                            border: '1px solid rgba(255, 255, 255, 0.05)'
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: '600', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
+                              <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--accent-color)', background: 'rgba(99, 102, 241, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>UZAK</span>
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                              {entry.path} · {new Date(entry.updated_at).toLocaleString('tr-TR')}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRestoreRemoteTrash(entry)}
+                              style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                            >
+                              Geri Getir
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (confirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`)) {
+                                  handlePermanentlyDeleteRemoteTrash(entry.path);
+                                }
+                              }}
+                              style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                            >
+                              Kalıcı Sil
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

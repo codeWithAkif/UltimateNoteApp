@@ -199,7 +199,12 @@ export default function GraphView({
           const dist = Math.sqrt(distSq);
 
           if (dist < 350) {
-            const force = repulsionRef.current / distSq;
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Düğümler çok yakınken (örn. başlangıçtaki dairesel dizilimde onlarca not üst üste biner)
+            // itme kuvveti 1/mesafe² ile patlayıp düğümleri fırlatıyor ve sonsuz salınıma yol açıyordu.
+            // Mesafeyi bir tabana (min ~15px) sabitleyerek bu patlamayı önlüyoruz.
+            const clampedDistSq = Math.max(distSq, 225);
+            const force = repulsionRef.current / clampedDistSq;
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
 
@@ -247,6 +252,17 @@ export default function GraphView({
         // Apply velocities with damping
         node.vx *= kDamping;
         node.vy *= kDamping;
+
+        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+        // Herhangi bir kaynaktan (itme, çekim vb.) gelen ani büyük kuvvet birikimini sınırlayarak
+        // düğümlerin ekranda fırlayıp geri gelmesini (kararsız salınım) önleyen hız tavanı.
+        const speed = Math.sqrt(node.vx * node.vx + node.vy * node.vy);
+        const maxSpeed = 30;
+        if (speed > maxSpeed) {
+          node.vx = (node.vx / speed) * maxSpeed;
+          node.vy = (node.vy / speed) * maxSpeed;
+        }
+
         node.x += node.vx;
         node.y += node.vy;
       });

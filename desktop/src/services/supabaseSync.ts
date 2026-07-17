@@ -734,6 +734,59 @@ export const handleLocalDelete = async (path: string) => {
   }
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// handleLocalDelete() sadece is_deleted/updated_at alanlarını güncellediği için (upsert
+// diğer sütunlara dokunmaz), Supabase'deki content sütunu silinen notun SON hâlini hâlâ
+// taşır. Bu fonksiyon, o "yumuşak silinmiş" notları çöp kutusu ekranında listelemek için çeker.
+export const fetchDeletedNotes = async (): Promise<Array<{ path: string; name: string; content: string; updated_at: string }>> => {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('notes')
+      .select('path, name, content, updated_at')
+      .eq('vault', currentVault)
+      .eq('is_deleted', true);
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    console.error('[Supabase Sync] Failed to fetch deleted notes:', err);
+    return [];
+  }
+};
+
+// Uzaktaki (yerelde artık kopyası olmayabilecek) bir notu is_deleted=false yaparak geri getirir.
+// İçeriği çağıran taraf ayrıca yerel dosyaya yazmalıdır (bkz. App.tsx handleRestoreFromTrash).
+export const restoreRemoteNote = async (path: string): Promise<{ success: boolean; error?: string }> => {
+  if (!supabase) return { success: false, error: 'Supabase yapılandırılmamış' };
+  try {
+    const { error } = await supabase
+      .from('notes')
+      .update({ is_deleted: false, updated_at: new Date().toISOString() })
+      .eq('vault', currentVault)
+      .eq('path', path);
+    if (error) throw error;
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+};
+
+// Çöp kutusundaki bir notu Supabase'den kalıcı olarak siler (satırı tamamen kaldırır).
+export const permanentlyDeleteRemoteNote = async (path: string): Promise<{ success: boolean; error?: string }> => {
+  if (!supabase) return { success: false, error: 'Supabase yapılandırılmamış' };
+  try {
+    const { error } = await supabase
+      .from('notes')
+      .delete()
+      .eq('vault', currentVault)
+      .eq('path', path);
+    if (error) throw error;
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+};
+
 let lastSyncTime = 0;
 const SYNC_THROTTLE_MS = 10000;
 
