@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Clock, CheckCircle2, Circle, Tag as TagIcon, Folder as FolderIcon, Hash } from 'lucide-react';
+import { Clock, CheckCircle2, Circle, Tag as TagIcon, Folder as FolderIcon, Hash, History } from 'lucide-react';
 import GraphView from './GraphView';
 
 interface NoteItem {
@@ -35,6 +35,7 @@ interface TimelineViewProps {
   scannedContents?: Record<string, string>;
   onOpenNotePath?: (path: string) => void;
   folderCustomizations?: Record<string, { icon?: string; color?: string }>;
+  onViewHistory?: (item: TimelineItem) => void;
 }
 
 const calculateTaskScore = (text: string): number => {
@@ -201,13 +202,23 @@ export default function TimelineView({
   notes = [],
   scannedContents = {},
   onOpenNotePath,
-  folderCustomizations = {}
+  folderCustomizations = {},
+  onViewHistory
 }: TimelineViewProps) {
   const [activeViewTab, setActiveViewTab] = useState<'timeline' | 'graph'>('timeline');
   const [searchQuery, setSearchQuery] = useState('');
-  
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Zaman Akışı "gün gün ne eklediğinizi" gösteren geçmişe dönük bir günlük — ama görev
+  // satırlarındaki [due:...] etiketi ileri bir tarih olabilir (özellikle tekrarlayan görevler
+  // tamamlandıkça bir sonraki tekrarı ileri tarihe atar). Bu yüzden henüz gelmemiş tarihli
+  // görevler burada "geçmişte olmuş" gibi görünüyordu. Bugünden sonraki girdileri filtrele.
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
   // Filter timeline items
   const filteredItems = timelineItems.filter((item) => {
+    if (item.dateStr > todayStr) return false;
     if (selectedTag && !item.tags.includes(selectedTag)) return false;
     if (selectedFolder && item.folder !== selectedFolder) return false;
     if (searchQuery) {
@@ -421,6 +432,19 @@ export default function TimelineView({
 
                             <p className="card-content-text">{parseCardContent(item.content, item.isTodo && !item.isCompleted)}</p>
                           </div>
+
+                          {onViewHistory && (
+                            <button
+                              className="timeline-history-btn"
+                              title="Bu nottaki değişiklikleri gör"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onViewHistory(item);
+                              }}
+                            >
+                              <History size={14} />
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>

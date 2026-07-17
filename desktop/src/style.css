@@ -1603,6 +1603,25 @@ input:focus, textarea:focus, select:focus {
   gap: 5px;
 }
 
+.timeline-history-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.timeline-history-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--accent-color);
+}
+
 .card-meta {
   display: flex;
   align-items: center;

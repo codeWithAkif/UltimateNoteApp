@@ -1569,6 +1569,12 @@ export default function App() {
   const [remoteTrashEntries, setRemoteTrashEntries] = useState<Array<{ path: string; name: string; content: string; updated_at: string }>>([]);
   const [isTrashLoading, setIsTrashLoading] = useState(false);
 
+  // Zaman Akışı'ndaki bir kayda tıklanınca o notun .versions geçmişinden git benzeri
+  // (kırmızı/yeşil) satır bazlı değişiklik listesini gösteren modal.
+  const [historyModalItem, setHistoryModalItem] = useState<TimelineItem | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<Array<{ timestamp: number; before: string; after: string }>>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+
   // Help Guide states
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [recordingShortcutKey, setRecordingShortcutKey] = useState<string | null>(null);
@@ -2249,6 +2255,66 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       return filename;
     } else {
       return 'inbox.md';
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Klasik LCS tabanlı satır-satır diff — iki metin arasında hangi satırların aynı kaldığını,
+  // hangilerinin çıkarıldığını (remove) ve hangilerinin eklendiğini (add) hesaplar.
+  const diffLines = (oldText: string, newText: string): Array<{ type: 'same' | 'add' | 'remove'; text: string }> => {
+    const oldLines = oldText.split('\n');
+    const newLines = newText.split('\n');
+    const m = oldLines.length;
+    const n = newLines.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const result: Array<{ type: 'same' | 'add' | 'remove'; text: string }> = [];
+    let i = 0, j = 0;
+    while (i < m && j < n) {
+      if (oldLines[i] === newLines[j]) {
+        result.push({ type: 'same', text: oldLines[i] });
+        i++; j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        result.push({ type: 'remove', text: oldLines[i] });
+        i++;
+      } else {
+        result.push({ type: 'add', text: newLines[j] });
+        j++;
+      }
+    }
+    while (i < m) { result.push({ type: 'remove', text: oldLines[i] }); i++; }
+    while (j < n) { result.push({ type: 'add', text: newLines[j] }); j++; }
+    return result;
+  };
+
+  // Bir Zaman Akışı kaydına ait notun .versions geçmişini okuyup, her kayıt anı için
+  // (önceki içerik -> sonraki içerik) çiftlerini en yeniden en eskiye sıralı döndürür.
+  const handleViewNoteHistory = async (item: TimelineItem) => {
+    const path = getTimelineItemPath(item);
+    setHistoryModalItem(item);
+    setIsHistoryLoading(true);
+    try {
+      let snapshots: Array<{ timestamp: number; content: string }> = [];
+      try {
+        const raw = await platform.readNote(`.versions/${path}.json`);
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(parsed)) snapshots = parsed;
+      } catch (_e) {
+        // Geçmiş dosyası yok — bu not hiç düzenlenmemiş olabilir.
+      }
+      const currentContent = fileContents[path] ?? '';
+      const pairs: Array<{ timestamp: number; before: string; after: string }> = snapshots.map((snap, idx) => ({
+        timestamp: snap.timestamp,
+        before: snap.content,
+        after: idx + 1 < snapshots.length ? snapshots[idx + 1].content : currentContent
+      }));
+      setHistoryEntries(pairs.reverse());
+    } finally {
+      setIsHistoryLoading(false);
     }
   };
 
@@ -4540,6 +4606,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 setActiveTab('notes');
               }}
               folderCustomizations={folderCustomizations}
+              onViewHistory={handleViewNoteHistory}
             />
           )}
 
@@ -6074,6 +6141,80 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   );
                 });
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Not Geçmişi Modalı: Zaman Akışı'ndaki bir kayda ait notun git benzeri (kırmızı/yeşil) satır diff'leri */}
+      {historyModalItem && (
+        <div className="modal-overlay active" style={{ zIndex: 3000 }} onClick={() => setHistoryModalItem(null)}>
+          <div
+            className="modal-container"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '720px',
+              maxWidth: '92%',
+              maxHeight: '82vh',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'rgba(15, 23, 42, 0.97)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '12px',
+              overflow: 'hidden'
+            }}
+          >
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#fff' }}>Değişiklik Geçmişi</h2>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{getTimelineItemPath(historyModalItem)}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryModalItem(null)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '20px' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              {isHistoryLoading ? (
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Yükleniyor...</div>
+              ) : historyEntries.length === 0 ? (
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Bu not için henüz kayıtlı bir değişiklik geçmişi yok (henüz sadece bir kez kaydedilmiş olabilir).
+                </div>
+              ) : (
+                historyEntries.map((entry, idx) => {
+                  const diff = diffLines(entry.before, entry.after);
+                  return (
+                    <div key={idx} style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.03)', fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600 }}>
+                        {new Date(entry.timestamp).toLocaleString('tr-TR')}
+                      </div>
+                      <div style={{ fontFamily: 'monospace', fontSize: '12px', lineHeight: 1.6 }}>
+                        {diff.filter(d => d.type !== 'same' || d.text.trim() !== '').map((d, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              padding: '1px 12px',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              background: d.type === 'add' ? 'rgba(16, 185, 129, 0.12)' : d.type === 'remove' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
+                              color: d.type === 'add' ? '#34d399' : d.type === 'remove' ? '#f87171' : 'var(--text-muted)',
+                              textDecoration: d.type === 'remove' ? 'line-through' : 'none'
+                            }}
+                          >
+                            {d.type === 'add' ? '+ ' : d.type === 'remove' ? '- ' : '  '}{d.text || ' '}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
