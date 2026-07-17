@@ -23,7 +23,7 @@ import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
-import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
 import { Preferences } from '@capacitor/preferences';
 import { registerPlugin } from '@capacitor/core';
 
@@ -1568,6 +1568,43 @@ export default function App() {
   const [localTrashEntries, setLocalTrashEntries] = useState<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>>([]);
   const [remoteTrashEntries, setRemoteTrashEntries] = useState<Array<{ path: string; name: string; content: string; updated_at: string }>>([]);
   const [isTrashLoading, setIsTrashLoading] = useState(false);
+
+  // Supabase veritabanı boyutu (Ayarlar > Senkronizasyon ekranında gösterilir).
+  const [dbSizeBytes, setDbSizeBytes] = useState<number | null>(null);
+  const [isDbSizeLoading, setIsDbSizeLoading] = useState(false);
+  const [dbSizeError, setDbSizeError] = useState<string | null>(null);
+
+  const loadDbSize = async () => {
+    setIsDbSizeLoading(true);
+    setDbSizeError(null);
+    try {
+      const bytes = await fetchDatabaseSizeBytes();
+      if (bytes === null) {
+        setDbSizeError('get_db_size fonksiyonu bulunamadı — aşağıdaki SQL\'i Supabase SQL Editor\'de bir kez çalıştırman gerekiyor.');
+      }
+      setDbSizeBytes(bytes);
+    } finally {
+      setIsDbSizeLoading(false);
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIdx = -1;
+    do {
+      value /= 1024;
+      unitIdx++;
+    } while (value >= 1024 && unitIdx < units.length - 1);
+    return `${value.toFixed(value < 10 ? 2 : 1)} ${units[unitIdx]}`;
+  };
+
+  useEffect(() => {
+    if (isSettingsModalOpen && settingsTab === 'sync') {
+      loadDbSize();
+    }
+  }, [isSettingsModalOpen, settingsTab]);
 
   // Zaman Akışı'ndaki bir kayda tıklanınca o notun .versions geçmişinden git benzeri
   // (kırmızı/yeşil) satır bazlı değişiklik listesini gösteren modal.
@@ -5204,6 +5241,44 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       Farklı cihazları aynı hesaba bağlarken aynı Kasa Adını kullanın.
                     </span>
                   </div>
+
+                  {supabaseUrl && supabaseAnonKey && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px 12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Veritabanı Kullanımı</span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); loadDbSize(); }}
+                          style={{ background: 'transparent', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '10.5px', fontWeight: '600' }}
+                        >
+                          {isDbSizeLoading ? 'Yükleniyor...' : 'Yenile'}
+                        </button>
+                      </div>
+                      {dbSizeBytes !== null ? (
+                        <span style={{ fontSize: '15px', fontWeight: '700', color: '#fff' }}>{formatBytes(dbSizeBytes)}</span>
+                      ) : dbSizeError ? (
+                        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                          <div style={{ marginBottom: '6px' }}>{dbSizeError}</div>
+                          <pre style={{ margin: 0, padding: '8px', background: 'rgba(0,0,0,0.3)', borderRadius: '6px', fontSize: '9.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#a5b4fc' }}>
+{`create or replace function get_db_size()
+returns bigint
+language sql
+security definer
+as $$
+  select pg_database_size(current_database());
+$$;
+
+grant execute on function get_db_size() to anon;`}
+                          </pre>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{isDbSizeLoading ? 'Yükleniyor...' : '—'}</span>
+                      )}
+                      <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+                        Aylık trafik (egress) bilgisi Postgres içinde tutulmadığı için buradan gösterilemiyor — Supabase Dashboard'daki proje kullanım sayfasından görülebilir.
+                      </span>
+                    </div>
+                  )}
 
                   <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                     <button type="button" style={{ padding: '8px 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }} onClick={() => setIsSettingsModalOpen(false)}>Kapat</button>

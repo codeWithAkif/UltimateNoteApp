@@ -787,6 +787,23 @@ export const permanentlyDeleteRemoteNote = async (path: string): Promise<{ succe
   }
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Veritabanı boyutunu, kullanıcının Supabase projesinde bir kez tanımladığı basit bir
+// RPC fonksiyonu (get_db_size) üzerinden okur. Bilinçli olarak sadece anon key ile
+// erişilebilen, hesap genelinde yetki gerektirmeyen bir bilgi — trafik/egress verisi
+// Postgres içinde tutulmadığı için buradan okunamaz (Supabase Dashboard'da görülür).
+export const fetchDatabaseSizeBytes = async (): Promise<number | null> => {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.rpc('get_db_size');
+    if (error) throw error;
+    return typeof data === 'number' ? data : Number(data);
+  } catch (err) {
+    console.error('[Supabase Sync] Failed to fetch database size:', err);
+    return null;
+  }
+};
+
 let lastSyncTime = 0;
 const SYNC_THROTTLE_MS = 10000;
 
