@@ -2154,6 +2154,10 @@ export default function NotesView({
   useEffect(() => {
     if (activeNotePath) setIsFileListCollapsed(true);
   }, [activeNotePath]);
+  // Sol menüden bir klasöre tıklanınca, daralmış olsa bile not listesini tekrar açar.
+  useEffect(() => {
+    setIsFileListCollapsed(false);
+  }, [selectedFolder]);
   const [isCreating, setIsCreating] = useState(false);
   const [creatingType, setCreatingType] = useState<'note' | 'excalidraw' | 'rfc' | 'drawio'>('note');
   

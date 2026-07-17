@@ -3897,7 +3897,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       }}
     >
       {/* Visual Titlebar area for modern borderless Electron applications */}
-      <div className="window-titlebar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+      <div className="window-titlebar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 140px 0 12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {/* Mobile Sidebar Hamburger Toggle Button */}
           <button 

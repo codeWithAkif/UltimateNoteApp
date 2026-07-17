@@ -721,6 +721,11 @@ export default function Sidebar({
                 const name = parts[parts.length - 1];
                 const depth = parts.length - 1;
 
+                // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                // .templates, .versions gibi nokta ile başlayan sistem klasörleri hâlâ tamamen
+                // işlevsel taranır/kullanılır — sadece kullanıcıya görünen klasör ağacında gösterilmezler.
+                if (parts[0].startsWith('.')) return null;
+
                 // Bu klasörün üstündeki (ata) klasörlerden herhangi biri daraltılmışsa
                 // (collapsed) bu klasörü gizle — Accordion görünürlük mantığı.
                 const isHiddenByCollapsedAncestor = parts.slice(0, depth).some((_, i) => {

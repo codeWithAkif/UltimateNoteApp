@@ -1181,7 +1181,8 @@ input:focus, textarea:focus, select:focus {
   background-color: var(--bg-secondary);
 }
 
-/* Not açıldığında daralan not listesi sütunu — sadece genişletme oku kalır */
+/* Not açıldığında daralan not listesi sütunu — genişletme oku, daralmışken de
+   kolayca fark edilsin diye vurgu rengiyle gösterilir (halka/rozet olmadan). */
 .notes-sidebar-collapsed-rail {
   width: 18px;
   flex: 0 0 18px;
@@ -1189,7 +1190,7 @@ input:focus, textarea:focus, select:focus {
   border: none;
   border-right: 1px solid var(--border-color);
   background-color: var(--bg-secondary);
-  color: var(--text-muted);
+  color: var(--accent-color, #6366f1);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1199,7 +1200,7 @@ input:focus, textarea:focus, select:focus {
 }
 .notes-sidebar-collapsed-rail:hover {
   background-color: var(--bg-hover);
-  color: var(--accent-color);
+  color: var(--accent-hover, var(--accent-color));
 }
 
 .btn-collapse-filelist {
