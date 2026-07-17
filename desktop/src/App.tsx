@@ -6204,21 +6204,29 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         {new Date(entry.timestamp).toLocaleString('tr-TR')}
                       </div>
                       <div style={{ fontFamily: 'monospace', fontSize: '12px', lineHeight: 1.6 }}>
-                        {diff.filter(d => d.type !== 'same' || d.text.trim() !== '').map((d, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              padding: '1px 12px',
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word',
-                              background: d.type === 'add' ? 'rgba(16, 185, 129, 0.12)' : d.type === 'remove' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
-                              color: d.type === 'add' ? '#34d399' : d.type === 'remove' ? '#f87171' : 'var(--text-muted)',
-                              textDecoration: d.type === 'remove' ? 'line-through' : 'none'
-                            }}
-                          >
-                            {d.type === 'add' ? '+ ' : d.type === 'remove' ? '- ' : '  '}{d.text || ' '}
-                          </div>
-                        ))}
+                        {diff.filter(d => d.type !== 'same' || d.text.trim() !== '').map((d, i) => {
+                          // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                          // Eklenen/çıkarılan satır tamamen boşsa renkli çubuk boş görünüp
+                          // "bozuk" hissi veriyordu — bunun yerine görünür bir etiket gösteriyoruz.
+                          const isBlank = d.text.trim() === '';
+                          return (
+                            <div
+                              key={i}
+                              style={{
+                                padding: '1px 12px',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                fontStyle: isBlank ? 'italic' : 'normal',
+                                opacity: isBlank ? 0.7 : 1,
+                                background: d.type === 'add' ? 'rgba(16, 185, 129, 0.12)' : d.type === 'remove' ? 'rgba(239, 68, 68, 0.12)' : 'transparent',
+                                color: d.type === 'add' ? '#34d399' : d.type === 'remove' ? '#f87171' : 'var(--text-muted)',
+                                textDecoration: d.type === 'remove' && !isBlank ? 'line-through' : 'none'
+                              }}
+                            >
+                              {d.type === 'add' ? '+ ' : d.type === 'remove' ? '- ' : '  '}{isBlank ? '(boş satır)' : d.text}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
