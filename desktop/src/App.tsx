@@ -2079,6 +2079,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             const timestampMatch = rawText.match(/\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/);
             const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/);
             const timeSlotMatch = rawText.match(/\[time:(\d{2}:\d{2})-\d{2}:\d{2}\]/);
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Bazı görev satırları tarihi [due:...] etiketiyle değil, doğrudan okunabilir metin
+            // olarak yazılmış (örn. "30-06-2026 - Salı Saat: 12:30-13:30"). Bu etiketsiz format
+            // hiçbir bracket ile eşleşmediği için tarih tespit edilemiyor ve satır yanlışlıkla
+            // notun son kaydedilme tarihine (genelde "bugün") düşüyordu.
+            const naturalDateMatch = rawText.match(/(\d{2})-(\d{2})-(\d{4})\s*-\s*\S+\s+Saat:\s*(\d{2}):(\d{2})/i);
 
             let dateStr = '';
             let timestamp = '';
@@ -2093,6 +2099,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               } else {
                 timestamp = '09:00';
               }
+            } else if (naturalDateMatch) {
+              dateStr = `${naturalDateMatch[3]}-${naturalDateMatch[2]}-${naturalDateMatch[1]}`;
+              timestamp = `${naturalDateMatch[4]}:${naturalDateMatch[5]}`;
             } else {
               const noteDate = new Date(note.updatedAt);
               dateStr = format(noteDate, 'yyyy-MM-dd');
