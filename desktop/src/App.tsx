@@ -1573,6 +1573,15 @@ export default function App() {
   const [dbSizeBytes, setDbSizeBytes] = useState<number | null>(null);
   const [isDbSizeLoading, setIsDbSizeLoading] = useState(false);
   const [dbSizeError, setDbSizeError] = useState<string | null>(null);
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Toplam kota (kaç MB/GB'a kadar hakkımız var) Supabase'in Management API'si olmadan
+  // programatik okunamıyor (bkz. önceki karar: hesap genelinde yetkili token istemiyoruz).
+  // Bunun yerine kullanıcı planını burada bir kereliğine seçiyor, biz de kullanılan/toplam
+  // oranını buradan hesaplıyoruz.
+  const [dbCapacityMb, setDbCapacityMb] = useState<number>(() => {
+    const saved = localStorage.getItem('supabase_db_capacity_mb');
+    return saved ? Number(saved) : 500; // Supabase Free plan varsayılanı
+  });
 
   const loadDbSize = async () => {
     setIsDbSizeLoading(true);
@@ -5255,7 +5264,54 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         </button>
                       </div>
                       {dbSizeBytes !== null ? (
-                        <span style={{ fontSize: '15px', fontWeight: '700', color: '#fff' }}>{formatBytes(dbSizeBytes)}</span>
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: '15px', fontWeight: '700', color: '#fff' }}>
+                              {formatBytes(dbSizeBytes)} <span style={{ fontSize: '11px', fontWeight: '400', color: 'var(--text-muted)' }}>/ {dbCapacityMb >= 1024 ? `${(dbCapacityMb / 1024).toFixed(1)} GB` : `${dbCapacityMb} MB`}</span>
+                            </span>
+                            <span style={{ fontSize: '11px', fontWeight: '700', color: (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) > 0.9 ? '#ef4444' : (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) > 0.7 ? '#f59e0b' : '#10b981' }}>
+                              %{Math.min(100, (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) * 100).toFixed(1)}
+                            </span>
+                          </div>
+                          <div style={{ width: '100%', height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                            <div style={{
+                              width: `${Math.min(100, (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) * 100)}%`,
+                              height: '100%',
+                              borderRadius: '3px',
+                              background: (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) > 0.9 ? '#ef4444' : (dbSizeBytes / (dbCapacityMb * 1024 * 1024)) > 0.7 ? '#f59e0b' : '#10b981',
+                              transition: 'width 0.3s ease'
+                            }} />
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>Plan:</span>
+                            <select
+                              value={[500, 8192].includes(dbCapacityMb) ? String(dbCapacityMb) : 'custom'}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                const next = v === 'custom' ? dbCapacityMb : Number(v);
+                                setDbCapacityMb(next);
+                                localStorage.setItem('supabase_db_capacity_mb', String(next));
+                              }}
+                              style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', color: '#fff', fontSize: '10px', padding: '2px 4px' }}
+                            >
+                              <option value="500">Free (500 MB)</option>
+                              <option value="8192">Pro (8 GB)</option>
+                              <option value="custom">Özel</option>
+                            </select>
+                            <input
+                              type="number"
+                              min={1}
+                              value={dbCapacityMb}
+                              onChange={(e) => {
+                                const next = Math.max(1, Number(e.target.value) || 1);
+                                setDbCapacityMb(next);
+                                localStorage.setItem('supabase_db_capacity_mb', String(next));
+                              }}
+                              style={{ width: '70px', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', color: '#fff', fontSize: '10px', padding: '2px 4px' }}
+                            />
+                            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>MB toplam kota</span>
+                          </div>
+                        </>
                       ) : dbSizeError ? (
                         <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                           <div style={{ marginBottom: '6px' }}>{dbSizeError}</div>
