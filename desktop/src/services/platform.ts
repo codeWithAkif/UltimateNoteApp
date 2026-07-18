@@ -56,11 +56,17 @@ const assertSafeRelPath = (relativePath: string): string => {
   return relativePath;
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Android 11+ (targetSdk 30+) genel "Documents" klasörüne izinsiz erişimi engelliyor
+// (Scoped Storage) — eski Directory.Documents kullanımı "MANAGE_EXTERNAL_STORAGE" gibi
+// özel bir izin ister. Bunun yerine hiçbir izin gerektirmeyen uygulamaya özel dahili
+// depolamayı (Directory.Data) kullanıyoruz; dosyalar başka bir dosya yöneticisiyle
+// görülemez ama uygulama + Supabase senkronu üzerinden tam olarak yönetilebilir.
 const ensureMobileRoot = async () => {
   try {
     await Filesystem.mkdir({
       path: 'UltimateNotes',
-      directory: Directory.Documents,
+      directory: Directory.Data,
       recursive: true
     });
   } catch (e) {
@@ -75,7 +81,7 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
     
     const result = await Filesystem.readdir({
       path: targetPath,
-      directory: Directory.Documents
+      directory: Directory.Data
     });
 
     const fileList: any[] = [];
@@ -95,7 +101,7 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
       try {
         const statResult = await Filesystem.stat({
           path: `UltimateNotes/${fileRelPath}`,
-          directory: Directory.Documents
+          directory: Directory.Data
         });
         mtime = statResult.mtime || 0;
       } catch (_e) {
@@ -145,7 +151,7 @@ const listMobileMediaRecursively = async (dirRelPath: string = ''): Promise<Arra
   try {
     await ensureMobileRoot();
     const targetPath = dirRelPath ? `UltimateNotes/${dirRelPath}` : 'UltimateNotes';
-    const result = await Filesystem.readdir({ path: targetPath, directory: Directory.Documents });
+    const result = await Filesystem.readdir({ path: targetPath, directory: Directory.Data });
 
     const fileList: Array<{ path: string; size?: number; updatedAt: number }> = [];
     for (const file of result.files) {
@@ -164,7 +170,7 @@ const listMobileMediaRecursively = async (dirRelPath: string = ''): Promise<Arra
       let mtime = 0;
       let size: number | undefined;
       try {
-        const statResult = await Filesystem.stat({ path: `UltimateNotes/${fileRelPath}`, directory: Directory.Documents });
+        const statResult = await Filesystem.stat({ path: `UltimateNotes/${fileRelPath}`, directory: Directory.Data });
         mtime = statResult.mtime || 0;
         size = statResult.size;
       } catch (_e) {
@@ -196,7 +202,7 @@ const mobilePlatform: PlatformAPI = {
     await ensureMobileRoot();
     const res = await Filesystem.readFile({
       path: `UltimateNotes/${relativePath}`,
-      directory: Directory.Documents,
+      directory: Directory.Data,
       encoding: Encoding.UTF8
     });
     return res.data as string;
@@ -206,7 +212,7 @@ const mobilePlatform: PlatformAPI = {
     await ensureMobileRoot();
     const res = await Filesystem.readFile({
       path: `UltimateNotes/${relativePath}`,
-      directory: Directory.Documents
+      directory: Directory.Data
     });
     // Convert to base64 Data URL
     const ext = relativePath.split('.').pop()?.toLowerCase();
@@ -228,7 +234,7 @@ const mobilePlatform: PlatformAPI = {
       try {
         await Filesystem.mkdir({
           path: `UltimateNotes/${parentDir}`,
-          directory: Directory.Documents,
+          directory: Directory.Data,
           recursive: true
         });
       } catch (e) {}
@@ -238,13 +244,13 @@ const mobilePlatform: PlatformAPI = {
       const base64Data = content.split(';base64,').pop() || '';
       await Filesystem.writeFile({
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents,
+        directory: Directory.Data,
         data: base64Data
       });
     } else {
       await Filesystem.writeFile({
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents,
+        directory: Directory.Data,
         data: content,
         encoding: Encoding.UTF8
       });
@@ -259,14 +265,14 @@ const mobilePlatform: PlatformAPI = {
     try {
       await Filesystem.deleteFile({
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents
+        directory: Directory.Data
       });
     } catch (e) {
       // If it fails, try deleting as a folder
       try {
         await Filesystem.rmdir({
           path: `UltimateNotes/${relativePath}`,
-          directory: Directory.Documents,
+          directory: Directory.Data,
           recursive: true
         });
       } catch (err) {
@@ -282,7 +288,7 @@ const mobilePlatform: PlatformAPI = {
     try {
       await Filesystem.mkdir({
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents,
+        directory: Directory.Data,
         recursive: true
       });
       triggerMobileGitSync();
@@ -299,7 +305,7 @@ const mobilePlatform: PlatformAPI = {
       await Filesystem.rename({
         from: `UltimateNotes/${oldPath}`,
         to: `UltimateNotes/${newPath}`,
-        directory: Directory.Documents
+        directory: Directory.Data
       });
       triggerMobileGitSync();
       return { success: true };
@@ -372,7 +378,7 @@ const mobilePlatform: PlatformAPI = {
       assertSafeRelPath(relativePath);
       await Filesystem.stat({
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents
+        directory: Directory.Data
       });
       return true;
     } catch (e) {
@@ -388,7 +394,7 @@ const mobilePlatform: PlatformAPI = {
       try {
         await Filesystem.mkdir({
           path: `UltimateNotes/${parentDir}`,
-          directory: Directory.Documents,
+          directory: Directory.Data,
           recursive: true
         });
       } catch (e) {}
@@ -397,7 +403,7 @@ const mobilePlatform: PlatformAPI = {
       await Filesystem.downloadFile({
         url,
         path: `UltimateNotes/${relativePath}`,
-        directory: Directory.Documents
+        directory: Directory.Data
       });
       triggerMobileGitSync();
       return { success: true };
