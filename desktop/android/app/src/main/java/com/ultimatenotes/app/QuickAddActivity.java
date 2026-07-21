@@ -954,12 +954,20 @@ public class QuickAddActivity extends AppCompatActivity {
     }
 
     private File getNoteFile(String pinnedPath) {
+        // BUG DÜZELTMESİ: uygulama artık notları hep getFilesDir() (Directory.Data,
+        // app-private) altında tutuyor; eski genel Documents konumu yalnızca göç
+        // öncesinden kalmış YETİM kopyalar için bir yedek. Bu liste eskiden genel
+        // Documents'ı ÖNCE tarıyordu — göç sonrası bile hâlâ orada duran eski/boş bir
+        // kopya varsa (silinmemiş), widget güncel app-private kopya yerine o eskisini
+        // buluyor ve gösteriyordu/yazmaya çalışıyordu (MANAGE_EXTERNAL_STORAGE izni
+        // olmadığı için sessizce başarısız oluyordu). Doğru/güncel konum artık ÖNCE
+        // taranıyor.
         File[] rootDirs = new File[]{
+            new File(getFilesDir(), "UltimateNotes"),
+            new File(getFilesDir(), "Documents/UltimateNotes"),
             new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
             new File(getExternalFilesDir(null), "Documents/UltimateNotes"),
-            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(getFilesDir(), "UltimateNotes"),
-            new File(getFilesDir(), "Documents/UltimateNotes")
+            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes")
         };
         for (File rootDir : rootDirs) {
             File testFile = new File(rootDir, pinnedPath);
@@ -977,12 +985,20 @@ public class QuickAddActivity extends AppCompatActivity {
     }
 
     private File getNotesDir() {
+        // BUG DÜZELTMESİ: uygulama artık notları hep getFilesDir() (Directory.Data,
+        // app-private) altında tutuyor; eski genel Documents konumu yalnızca göç
+        // öncesinden kalmış YETİM kopyalar için bir yedek. Bu liste eskiden genel
+        // Documents'ı ÖNCE tarıyordu — göç sonrası bile hâlâ orada duran eski/boş bir
+        // kopya varsa (silinmemiş), widget güncel app-private kopya yerine o eskisini
+        // buluyor ve gösteriyordu/yazmaya çalışıyordu (MANAGE_EXTERNAL_STORAGE izni
+        // olmadığı için sessizce başarısız oluyordu). Doğru/güncel konum artık ÖNCE
+        // taranıyor.
         File[] rootDirs = new File[]{
+            new File(getFilesDir(), "UltimateNotes"),
+            new File(getFilesDir(), "Documents/UltimateNotes"),
             new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
             new File(getExternalFilesDir(null), "Documents/UltimateNotes"),
-            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(getFilesDir(), "UltimateNotes"),
-            new File(getFilesDir(), "Documents/UltimateNotes")
+            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes")
         };
         for (File dir : rootDirs) {
             if (dir.exists() && dir.isDirectory()) {

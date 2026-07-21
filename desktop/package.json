@@ -29,6 +29,7 @@
     "wait-on": "^9.0.10"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.1",
     "@capacitor/browser": "^8.0.3",
     "@capacitor/clipboard": "^8.0.1",
     "@capacitor/core": "^8.3.4",
@@ -37,6 +38,7 @@
     "@capacitor/preferences": "^8.0.1",
     "@supabase/supabase-js": "^2.108.2",
     "buffer": "^6.0.3",
+    "highlight.js": "^11.11.1",
     "isomorphic-git": "^1.38.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

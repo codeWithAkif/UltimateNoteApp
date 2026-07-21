@@ -33,6 +33,10 @@ interface InboxViewProps {
   loadAllData: () => Promise<void>;
   setActiveTab: (tab: string) => void;
   setActiveNotePath: (path: string | null) => void;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
+  // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
 }
 
 export default function InboxView({
@@ -44,7 +48,8 @@ export default function InboxView({
   onCreateNote,
   loadAllData,
   setActiveTab,
-  setActiveNotePath
+  setActiveNotePath,
+  onRequestConfirm
 }: InboxViewProps) {
   // Inbox Files list
   const inboxNotes = notes.filter(n => n.type === 'note' && (n.path === 'inbox.md' || n.path.endsWith('/inbox.md')));
@@ -438,23 +443,29 @@ export default function InboxView({
   // 7. Bulk Actions
   const handleBulkDelete = async () => {
     if (selectedItemIds.length === 0) return;
-    if (!confirm(`${selectedItemIds.length} öğeyi kalıcı olarak silmek istediğinize emin misiniz?`)) return;
-
-    try {
-      let fileContent = await readNoteContent(selectedInboxPath);
-      for (const itemId of selectedItemIds) {
-        const item = inboxItems.find(i => i.id === itemId);
-        if (item) {
-          fileContent = fileContent.replace(item.raw, '');
+    const message = `${selectedItemIds.length} öğeyi kalıcı olarak silmek istediğinize emin misiniz?`;
+    const doDelete = async () => {
+      try {
+        let fileContent = await readNoteContent(selectedInboxPath);
+        for (const itemId of selectedItemIds) {
+          const item = inboxItems.find(i => i.id === itemId);
+          if (item) {
+            fileContent = fileContent.replace(item.raw, '');
+          }
         }
-      }
 
-      fileContent = fileContent.replace(/\n{3,}/g, '\n\n').trim();
-      await onSaveNote(selectedInboxPath, fileContent);
-      await loadAllData();
-      await fetchInboxItems();
-    } catch (err) {
-      console.error('Error during bulk delete:', err);
+        fileContent = fileContent.replace(/\n{3,}/g, '\n\n').trim();
+        await onSaveNote(selectedInboxPath, fileContent);
+        await loadAllData();
+        await fetchInboxItems();
+      } catch (err) {
+        console.error('Error during bulk delete:', err);
+      }
+    };
+    if (onRequestConfirm) {
+      onRequestConfirm(message, doDelete);
+    } else if (confirm(message)) {
+      await doDelete();
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Folder, FileText, CheckSquare, Hash, Zap, Send, Calendar, Clock, X } from 'lucide-react';
+import { Folder, FileText, CheckSquare, Hash, Zap, Send, Calendar, Clock, X, Sparkles } from 'lucide-react';
+import { extractDateFromText, isGeminiConfigured } from '../services/geminiMentor';
 
 interface NoteItem {
   name: string;
@@ -184,6 +185,30 @@ export default function NoteFactoryView({
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
 
   const [activePopover, setActivePopover] = useState<'@' | '!' | '#' | 'priority' | 'due' | 'time' | null>(null);
+
+  // AI tarih/saat algılama: metindeki "yarın öğlen" gibi doğal dil ifadelerini
+  // [due:]/[time:] etiketine çevirir — kullanıcı elle tarih seçmek zorunda kalmaz.
+  const [isDetectingDate, setIsDetectingDate] = useState(false);
+
+  const handleDetectDate = async () => {
+    if (!inputVal.trim() || isDetectingDate) return;
+    setIsDetectingDate(true);
+    try {
+      const todayISO = new Date().toISOString().split('T')[0];
+      const result = await extractDateFromText(inputVal, todayISO);
+      if (result.found && result.date) {
+        let tagsToAdd = `[due:${result.date}]`;
+        if (result.time && /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(result.time)) {
+          tagsToAdd += ` [time:${result.time}]`;
+        }
+        insertTextAtCursor(tagsToAdd);
+      }
+    } catch (e) {
+      console.error('Tarih algılanamadı:', e);
+    } finally {
+      setIsDetectingDate(false);
+    }
+  };
 
   const insertTextAtCursor = (textToInsert: string) => {
     const el = textareaRef.current;
@@ -1052,6 +1077,20 @@ export default function NoteFactoryView({
                   </button>
                   {!isMobile && activePopover === 'time' && renderTimePopover()}
                 </div>
+
+                {/* AI Date Detection Button */}
+                {isGeminiConfigured() && (
+                  <button
+                    type="button"
+                    onClick={handleDetectDate}
+                    disabled={!inputVal.trim() || isDetectingDate}
+                    style={getToolbarButtonStyle(false)}
+                    title="Metindeki tarih/saat ifadesini AI ile algıla (ör. 'yarın öğlen')"
+                  >
+                    <Sparkles size={12} style={{ color: '#c084fc' }} />
+                    <span>{isDetectingDate ? 'Algılanıyor...' : '✨ Tarihi Algıla'}</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>

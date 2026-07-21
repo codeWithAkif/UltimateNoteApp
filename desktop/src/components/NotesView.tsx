@@ -11,8 +11,77 @@ import {
 } from 'lucide-react';
 import { platform, isElectron, isBrowser } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
+import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
 import MindmapView from './MindmapView';
+import hljs from 'highlight.js/lib/core';
+import 'highlight.js/styles/atom-one-dark.css';
+import csharp from 'highlight.js/lib/languages/csharp';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import python from 'highlight.js/lib/languages/python';
+import java from 'highlight.js/lib/languages/java';
+import cpp from 'highlight.js/lib/languages/cpp';
+import cLang from 'highlight.js/lib/languages/c';
+import json from 'highlight.js/lib/languages/json';
+import bash from 'highlight.js/lib/languages/bash';
+import sql from 'highlight.js/lib/languages/sql';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import go from 'highlight.js/lib/languages/go';
+import rust from 'highlight.js/lib/languages/rust';
+import php from 'highlight.js/lib/languages/php';
+import yaml from 'highlight.js/lib/languages/yaml';
+import kotlin from 'highlight.js/lib/languages/kotlin';
+import swift from 'highlight.js/lib/languages/swift';
+import markdown from 'highlight.js/lib/languages/markdown';
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Kod bloğu önizlemesinde dil bazlı renklendirme (syntax highlighting) için —
+// bundle boyutunu şişirmemek adına highlight.js'in TÜMÜ (~190 dil) yerine yalnızca
+// yaygın kullanılan diller `lib/core` üzerine kayıt edilir. hljs'in kendi alias
+// sistemi (ör. 'cs'/'c#' -> csharp, 'js' -> javascript, 'py' -> python, 'sh' -> bash)
+// zaten dahili olarak çalışır.
+hljs.registerLanguage('csharp', csharp);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('java', java);
+hljs.registerLanguage('cpp', cpp);
+hljs.registerLanguage('c', cLang);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('sql', sql);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('html', xml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('php', php);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('kotlin', kotlin);
+hljs.registerLanguage('swift', swift);
+hljs.registerLanguage('markdown', markdown);
+
+const escapeHtmlForCode = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Kod bloğu içeriğini, ``` sonrası yazılan dil etiketine göre (ör. ```csharp)
+// renklendirir; etiket tanınmıyorsa veya yoksa hljs'in otomatik dil algılamasına düşer.
+const highlightCodeBlock = (code: string, lang: string): string => {
+  try {
+    const normalizedLang = lang.trim().toLowerCase();
+    if (normalizedLang && hljs.getLanguage(normalizedLang)) {
+      return hljs.highlight(code, { language: normalizedLang }).value;
+    }
+    if (code.trim()) {
+      return hljs.highlightAuto(code).value;
+    }
+    return escapeHtmlForCode(code);
+  } catch (e) {
+    return escapeHtmlForCode(code);
+  }
+};
 
 const iconMap: Record<string, React.ComponentType<any>> = {
   Folder,
@@ -67,6 +136,11 @@ interface NotesViewProps {
   onRenameNote: (oldPath: string, newPath: string) => Promise<void>;
   onNoteContextMenu?: (e: React.MouseEvent, notePath: string) => void;
   onSearchWeb?: (query: string) => void;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır — bkz. App.tsx'teki requestConfirm üstündeki ayrıntılı yorum
+  // (confirm() gerçek bir pencere blur/focus olayı tetiklemediği için odağa dayalı
+  // temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
   folderCustomizations?: Record<string, { icon?: string; color?: string }>;
   hideSidebar?: boolean;
   onSplitWorkspace?: () => void;
@@ -2130,6 +2204,7 @@ export default function NotesView({
   onRenameNote,
   onNoteContextMenu,
   onSearchWeb,
+  onRequestConfirm,
   folderCustomizations = {},
   hideSidebar = false,
   onSplitWorkspace,
@@ -2149,6 +2224,55 @@ export default function NotesView({
     return '';
   });
   const [newNoteName, setNewNoteName] = useState('');
+
+  // Not özeti + etiket önerisi (AI): "Özetle" butonuyla açılan sonuç modalının durumu.
+  const [isSummarizingNote, setIsSummarizingNote] = useState(false);
+  const [noteSummaryResult, setNoteSummaryResult] = useState<{ summary: string; tags: string[] } | null>(null);
+  const [noteSummaryError, setNoteSummaryError] = useState<string | null>(null);
+  const [selectedSummaryTags, setSelectedSummaryTags] = useState<Set<string>>(new Set());
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI'nin var olan etiketlerle tutarlı öneriler yapabilmesi için tüm notlardaki #etiket
+  // kullanımlarını tarar (App.tsx'teki aynı basit regex tarama deseniyle) — ayrı bir prop
+  // taşımaya gerek kalmadan, zaten sahip olunan fileContents'ten türetilir.
+  const allExistingTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    const tagRegex = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
+    Object.values(fileContents).forEach(content => {
+      let m;
+      while ((m = tagRegex.exec(content)) !== null) {
+        tagSet.add(m[1].toLowerCase());
+      }
+    });
+    return Array.from(tagSet);
+  }, [fileContents]);
+
+  const handleSummarizeNote = async () => {
+    if (!editorContent.trim() || isSummarizingNote) return;
+    setIsSummarizingNote(true);
+    setNoteSummaryError(null);
+    setNoteSummaryResult(null);
+    try {
+      const result = await summarizeNoteAndSuggestTags(editorContent, allExistingTags);
+      setNoteSummaryResult(result);
+      setSelectedSummaryTags(new Set(result.tags));
+    } catch (err: any) {
+      setNoteSummaryError(err?.message || 'Özet oluşturulamadı.');
+    } finally {
+      setIsSummarizingNote(false);
+    }
+  };
+
+  const handleApplySummaryAndTags = () => {
+    if (!noteSummaryResult) return;
+    let addition = `\n\n## Özet\n${noteSummaryResult.summary}`;
+    const tagsToAdd = Array.from(selectedSummaryTags).filter(t => !editorContent.includes(`#${t}`));
+    if (tagsToAdd.length > 0) {
+      addition += `\n\n${tagsToAdd.map(t => `#${t}`).join(' ')}`;
+    }
+    setEditorContent(prev => prev + addition);
+    setNoteSummaryResult(null);
+  };
   // Not listesi sütunu: bir not açıldığında otomatik daralır, kullanıcı ok ile tekrar genişletebilir.
   const [isFileListCollapsed, setIsFileListCollapsed] = useState<boolean>(!!activeNotePath);
   useEffect(() => {
@@ -2913,6 +3037,52 @@ export default function NotesView({
   const [dragSelectStartIdx, setDragSelectStartIdx] = useState<number | null>(null);
   const [dragSelectEndIdx, setDragSelectEndIdx] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  // BUG DÜZELTMESİ: Her satır `EditorLine`/`VirtBlock` ile React.memo sarılı ve
+  // yalnızca KENDİ içerik/odak durumu değiştiğinde yeniden render oluyor (yazma
+  // performansı için — bkz. EditorLine'ın üstündeki yorum). Bu yüzden bir satırın
+  // onMouseEnter callback'i, sürükleme BAŞKA bir satırdan başladığında güncellenen
+  // `isDragging` state'ini asla göremiyordu (o satır kendisi yeniden render
+  // olmadığı sürece callback'i eski/kapanmış "isDragging=false" değerine sahip
+  // kalıyordu) — bu da fare ile birden fazla satır sürükleyip seçmenin HİÇ
+  // çalışmamasının asıl nedeniydi. `isDraggingRef` bir REF olduğundan (aynı
+  // nesne referansı korunur), eski bir kapanış bile `.current`'ın GÜNCEL
+  // değerini okur — state'in aksine yeniden render gerektirmez.
+  const isDraggingRef = useRef(false);
+
+  // BUG DÜZELTMESİ: "Bir şey sildikten sonra artık hiçbir yerde (not içinde,
+  // hatta 'Yeni Not' modalındaki adı kutusunda bile) yazı yazamıyorum, uygulamayı
+  // kapatıp açmam gerekiyor" şikayetinin kök nedeni. Çoklu satır seçim aralığı
+  // (dragSelectStartIdx/EndIdx) yalnızca Escape/yeni sürükleme/Ctrl+A gibi
+  // BELİRLİ eylemlerde temizleniyordu — not değiştirildiğinde veya odak
+  // (activeElement) bir input/textarea/contenteditable OLMAYAN bir yere
+  // (ör. bir onay diyaloğu kapandıktan sonra document.body'ye) düştüğünde ASLA
+  // temizlenmiyordu. Aşağıdaki global keydown dinleyicisi ise "odak bir
+  // input/textarea değilse VE aktif bir aralık seçimi varsa" her tek karakter
+  // tuşunu (hatta uygulamanın tamamen başka bir yerindeki, bu notla ilgisi
+  // olmayan bir modalın input'una yönelik tuş vuruşlarını da!) preventDefault
+  // ile yutup replaceSelectedLines'a yönlendiriyordu — kullanıcı hiçbir yerde
+  // yazamaz hale geliyordu, çünkü eski/bayat aralık silinene kadar bu döngü
+  // kalıcıydı ve onu temizleyecek hiçbir mekanizma yoktu. Bu iki nokta, notu
+  // değiştirdiğimizde (activeNotePath değişince — bir önceki notun aralığı
+  // yeni notta ANLAMSIZ) ve pencere odağı kaybolup (blur — native onay
+  // diyaloğu kapanışı gibi durumlar) geri geldiğinde aralığı kesin olarak sıfırlar.
+  useEffect(() => {
+    setDragSelectStartIdx(null);
+    setDragSelectEndIdx(null);
+    isDraggingRef.current = false;
+    setIsDragging(false);
+  }, [activeNotePath]);
+
+  useEffect(() => {
+    const clearStaleSelection = () => {
+      setDragSelectStartIdx(null);
+      setDragSelectEndIdx(null);
+      isDraggingRef.current = false;
+      setIsDragging(false);
+    };
+    window.addEventListener('blur', clearStaleSelection);
+    return () => window.removeEventListener('blur', clearStaleSelection);
+  }, []);
 
   // Ultimate Note Factory Widget states
   const [activeTimers, setActiveTimers] = useState<Record<number, { remaining: number; isRunning: boolean; duration: number }>>({});
@@ -3602,12 +3772,18 @@ export default function NotesView({
         setActiveNotePath(targetNote.path);
       }
     } else {
-      if (confirm(`"${targetName}" adında bir not bulunamadı. Yeni bir not oluşturmak ister misiniz?`)) {
+      const message = `"${targetName}" adında bir not bulunamadı. Yeni bir not oluşturmak ister misiniz?`;
+      const createIt = async () => {
         try {
           await onCreateNote(targetName, selectedFolder);
         } catch (err) {
           console.error('Wiki-link not oluşturma hatası:', err);
         }
+      };
+      if (onRequestConfirm) {
+        onRequestConfirm(message, createIt);
+      } else if (confirm(message)) {
+        await createIt();
       }
     }
   };
@@ -4050,12 +4226,24 @@ export default function NotesView({
     };
   }, []);
   const handleLineMouseDown = (e: React.MouseEvent, idx: number) => {
-    if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLButtonElement || e.target instanceof HTMLSelectElement) {
+    if (e.target instanceof HTMLButtonElement || e.target instanceof HTMLSelectElement) {
       return;
     }
+    // BUG DÜZELTMESİ: Önceden hedef bir <textarea> ise (yani sürükleme, o an
+    // odaklanılmış/düzenlenen satırdan başlıyorsa) fonksiyon erkenden çıkıyordu —
+    // bu da kullanıcı odaklı satırdan başlayıp aşağıya doğru birkaç satır
+    // sürükleyip seçmeye çalıştığında çoklu satır seçiminin HİÇ başlamamasına
+    // yol açıyordu (en sık rastlanan "seçip silemiyorum" senaryosu budur, çünkü
+    // kullanıcı genelde imlecin zaten bulunduğu satırdan sürüklemeye başlar).
+    // Burada isDragging'i yine de true yapıyoruz; textarea içinde normal metin
+    // seçimi (native drag) bozulmuyor çünkü fare AYNI satırın içinde kaldığı
+    // sürece dragSelectEndIdx hiç değişmiyor (başka bir satırın onMouseEnter'ı
+    // tetiklenmedikçe) — çoklu satır seçimi yalnızca fare GERÇEKTEN başka bir
+    // satıra girdiğinde etkinleşir.
     mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
     setDragSelectStartIdx(idx);
     setDragSelectEndIdx(idx);
+    isDraggingRef.current = true;
     setIsDragging(true);
   };
 
@@ -4079,6 +4267,7 @@ export default function NotesView({
   // Global mouse and keyboard listeners for drag selection
   useEffect(() => {
     const handleGlobalMouseUp = () => {
+      isDraggingRef.current = false;
       setIsDragging(false);
     };
     window.addEventListener('mouseup', handleGlobalMouseUp);
@@ -4207,10 +4396,14 @@ export default function NotesView({
             setCaretPos({ lineIdx: savedFocus, charIdx: parseInt(savedCaretStr, 10) });
           }
         } else {
-          setFocusedLineIdx(null);
+          // Bu not için daha önce kaydedilmiş bir imleç konumu yok (ör. silinen bir
+          // sekmeden sonra otomatik geçilen sekme). Odağı hiç uygulamadan null
+          // bırakmak, hiçbir satırın focus almamasına ve kullanıcının tıklamadan
+          // yazamamasına yol açıyordu — bu yüzden ilk satıra odaklanıyoruz.
+          setFocusedLineIdx(0);
           setCaretPos(null);
         }
-        
+
         setExpandedTaskIdx(null);
         setIsSourceMode(false);
         setIsMindmapMode(false);
@@ -4472,7 +4665,15 @@ export default function NotesView({
     // `autoFocus` imleci varsayılan olarak 0'a atar. focusedLineIdx DEĞİŞMEDİĞİ için
     // bu efekt önceden tekrar tetiklenmiyordu; caretPos her tuş vuruşunda güncellendiği
     // için artık bu durumda da doğru imleç konumu hemen yeniden uygulanıyor.
-  }, [focusedLineIdx, caretPos]);
+    //
+    // activeNotePath de bilerek bağımlılıklara eklendi: iki farklı not, aynı
+    // focusedLineIdx/caretPos değerine sahip olduğunda (ör. ikisi de satır 0'da
+    // odaklıyken biri silinip diğerine geçilince) React bu iki state'te SAYISAL
+    // bir değişiklik görmüyor ve efekt tekrar çalışmıyordu — bu da not değişse
+    // bile hiçbir textarea'nın focus almamasına (ve "imleç yok, yazamıyorum"
+    // hatasına) yol açıyordu. activeNotePath her not değişiminde kesin olarak
+    // değiştiği için bu durumda da odak doğru şekilde yeniden uygulanıyor.
+  }, [focusedLineIdx, caretPos, activeNotePath]);
 
   // Helper functions for parsing list/checklist structures
   const getChecklistInfo = (text: string) => {
@@ -5444,6 +5645,8 @@ export default function NotesView({
           );
         }
 
+      const codeText = codeLines.join('\n');
+      const highlightedHtml = highlightCodeBlock(codeText, lang);
       return (
         <div className="preview-code-block-container" style={{
           margin: '10px 0',
@@ -5457,7 +5660,13 @@ export default function NotesView({
           position: 'relative'
         }}>
           {lang && <span style={{ position: 'absolute', right: '10px', top: '5px', fontSize: '10px', color: '#64748b', textTransform: 'uppercase' }}>{lang}</span>}
-          <pre style={{ margin: 0, padding: 0, color: '#e2e8f0', fontFamily: 'monospace', lineHeight: 1.5 }}>{codeLines.join('\n') || '\n'}</pre>
+          <pre style={{ margin: 0, padding: 0, fontFamily: 'monospace', lineHeight: 1.5 }}>
+            <code
+              className={`hljs${lang ? ` language-${lang.toLowerCase()}` : ''}`}
+              style={{ background: 'transparent' }}
+              dangerouslySetInnerHTML={{ __html: highlightedHtml || '\n' }}
+            />
+          </pre>
         </div>
       );
         }
@@ -7837,7 +8046,10 @@ export default function NotesView({
             type="button"
             className="footer-action-btn delete-btn"
             onClick={() => {
-              if (confirm('Bu görevi tamamen silmek istediğinize emin misiniz?')) {
+              const message = 'Bu görevi tamamen silmek istediğinize emin misiniz?';
+              if (onRequestConfirm) {
+                onRequestConfirm(message, () => handleDeleteTaskLine(lineIdx));
+              } else if (confirm(message)) {
                 handleDeleteTaskLine(lineIdx);
               }
             }}
@@ -8032,9 +8244,11 @@ export default function NotesView({
                     className="btn-delete-note"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm('Bu notu silmek istediğinize emin misiniz?')) {
+                      const message = 'Bu notu silmek istediğinize emin misiniz?';
+                      if (onRequestConfirm) {
+                        onRequestConfirm(message, () => onDeletePath(note.path));
+                      } else if (confirm(message)) {
                         onDeletePath(note.path);
-                        if (activeNotePath === note.path) setActiveNotePath(null);
                       }
                     }}
                   >
@@ -8239,6 +8453,19 @@ export default function NotesView({
                     title={pinnedWidgetLists.includes(activeNotePath) ? "Widget sabitlemesini kaldır" : "Android ana ekran widget'ına sabitle"}
                   >
                     <Pin size={14} style={{ color: pinnedWidgetLists.includes(activeNotePath) ? 'var(--accent-color, #818cf8)' : undefined }} />
+                  </button>
+                )}
+
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && isGeminiConfigured() && (
+                  <button
+                    type="button"
+                    className="toolbar-btn summarize-note-btn"
+                    style={{ width: '28px', height: '28px', padding: 0, borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={handleSummarizeNote}
+                    disabled={isSummarizingNote || !editorContent.trim()}
+                    title="Notu özetle ve etiket öner (AI)"
+                  >
+                    <Sparkles size={14} style={{ color: isSummarizingNote ? 'var(--text-muted)' : '#c084fc' }} />
                   </button>
                 )}
 
@@ -8448,6 +8675,7 @@ export default function NotesView({
                           onSaveMindmapLayout(activeNotePath, coords, customs);
                         }
                       }}
+                      onRequestConfirm={onRequestConfirm}
                     />
                   </div>
                 ) : (
@@ -8829,7 +9057,17 @@ export default function NotesView({
             // detay satırı) komşu satırlara bakabiliyor. Yalnızca kendi satırını
             // anahtara koymak, komşu bir satır değiştiğinde bu satırın bayat
             // kalmasına yol açabilirdi; ufak bir güvenlik payı ekliyoruz.
-            const cacheKey = `${lines[lineIdx - 1] ?? ''} ${lines[lineIdx]} ${lines[lineIdx + 1] ?? ''}`;
+            // BUG DÜZELTMESİ: Çoklu satır sürükleme-seçimi sırasında bu satırın
+            // "seçili" görünüp görünmeyeceği (isSelected/line-selected sınıfı)
+            // yalnızca renderSingleLine'ın İÇİNDE hesaplanıyordu — ama cacheKey
+            // buna bakmadığından, seçim aralığı genişleyip bu satırı kapsasa bile
+            // EditorLine'ın memo karşılaştırıcısı "değişiklik yok" deyip eski
+            // (seçili OLMAYAN) render'ı koruyordu. Seçili olma durumunu da
+            // cacheKey'e katarak, bir satır seçime girip çıktığında gerçekten
+            // yeniden render olmasını garanti ediyoruz.
+            const selRangeForCache = getSelectedRange();
+            const isSelForCache = !!(selRangeForCache && lineIdx >= selRangeForCache.start && lineIdx <= selRangeForCache.end);
+            const cacheKey = `${lines[lineIdx - 1] ?? ''} ${lines[lineIdx]} ${lines[lineIdx + 1] ?? ''} ${isSelForCache}`;
             pushBlock(lineIdx, lineIdx, lineIdx, () => (
               <EditorLine key={lineIdx} cacheKey={cacheKey} renderFn={() => renderSingleLine(lineIdx)} />
             ));
@@ -8921,7 +9159,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           style={{ 
                             paddingLeft: `${6 + getLineIndentPx(line)}px`,
@@ -9054,7 +9292,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           draggable={false}
                           onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -9121,7 +9359,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           draggable={false}
                           onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -9191,7 +9429,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           draggable={false}
                           onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -9266,7 +9504,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           draggable={false}
                           onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -9329,7 +9567,7 @@ export default function NotesView({
                           onClick={(e) => handleLineClick(idx, e)}
                           onMouseDown={(e) => handleLineMouseDown(e, idx)}
                           onMouseEnter={() => {
-                            if (isDragging) setDragSelectEndIdx(idx);
+                            if (isDraggingRef.current) setDragSelectEndIdx(idx);
                           }}
                           draggable={false}
                           onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -9477,7 +9715,7 @@ export default function NotesView({
                         onClick={(e) => handleLineClick(idx, e)}
                         onMouseDown={(e) => handleLineMouseDown(e, idx)}
                         onMouseEnter={() => {
-                          if (isDragging) setDragSelectEndIdx(idx);
+                          if (isDraggingRef.current) setDragSelectEndIdx(idx);
                         }}
                         draggable={false}
                         onDragOver={(e) => handleLineDragOver(e, idx)}
@@ -10029,6 +10267,91 @@ export default function NotesView({
         return null;
       })()}
 
+      {/* Not Özeti + Etiket Önerisi Modalı (AI) */}
+      {(isSummarizingNote || noteSummaryResult || noteSummaryError) && (
+        <div className="modal-overlay active" onClick={() => { if (!isSummarizingNote) { setNoteSummaryResult(null); setNoteSummaryError(null); } }}>
+          <div
+            className="modal-container"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '420px',
+              maxWidth: '95%',
+              padding: '20px',
+              background: 'rgba(15, 23, 42, 0.95)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '12px',
+              color: '#fff'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={15} style={{ color: '#c084fc' }} /> Not Özeti
+              </h3>
+              <button onClick={() => { setNoteSummaryResult(null); setNoteSummaryError(null); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+            </div>
+
+            {isSummarizingNote && (
+              <div style={{ padding: '24px', textAlign: 'center', fontSize: '12.5px', color: 'var(--text-muted)' }}>Not özetleniyor...</div>
+            )}
+
+            {noteSummaryError && (
+              <div style={{ padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                {noteSummaryError}
+              </div>
+            )}
+
+            {noteSummaryResult && !isSummarizingNote && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Özet</label>
+                  <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.6, color: 'var(--text-primary)' }}>{noteSummaryResult.summary}</p>
+                </div>
+
+                {noteSummaryResult.tags.length > 0 && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Önerilen Etiketler</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {noteSummaryResult.tags.map(tag => {
+                        const isSelected = selectedSummaryTags.has(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => {
+                              setSelectedSummaryTags(prev => {
+                                const next = new Set(prev);
+                                if (next.has(tag)) next.delete(tag); else next.add(tag);
+                                return next;
+                              });
+                            }}
+                            style={{
+                              padding: '4px 10px', borderRadius: '6px', fontSize: '11.5px', cursor: 'pointer',
+                              border: `1px solid ${isSelected ? 'var(--accent-color, #818cf8)' : 'rgba(255,255,255,0.1)'}`,
+                              background: isSelected ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                              color: isSelected ? 'var(--accent-color, #818cf8)' : 'var(--text-secondary)'
+                            }}
+                          >
+                            #{tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {noteSummaryResult && !isSummarizingNote && (
+              <div className="modal-footer" style={{ marginTop: '18px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button type="button" className="btn-modal-cancel" onClick={() => setNoteSummaryResult(null)}>İptal</button>
+                <button type="button" className="btn-modal-confirm" onClick={handleApplySummaryAndTags}>Nota Ekle</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Sürüm Geçmişi (Version History) Modalı */}
       {isHistoryModalOpen && (
         <div className="modal-overlay active" onClick={() => { setIsHistoryModalOpen(false); setPreviewVersion(null); }}>
@@ -10116,7 +10439,10 @@ export default function NotesView({
                       </div>
                       <button
                         onClick={() => {
-                          if (confirm('Bu sürümü geri yüklemek istediğinize emin misiniz? Mevcut hâl de otomatik olarak geçmişe kaydedilecek.')) {
+                          const message = 'Bu sürümü geri yüklemek istediğinize emin misiniz? Mevcut hâl de otomatik olarak geçmişe kaydedilecek.';
+                          if (onRequestConfirm) {
+                            onRequestConfirm(message, () => handleRestoreVersion(previewVersion));
+                          } else if (confirm(message)) {
                             handleRestoreVersion(previewVersion);
                           }
                         }}

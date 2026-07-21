@@ -16,6 +16,10 @@ interface MindmapViewProps {
   savedCoords: LayoutCoords;
   savedCustoms: CustomElement[];
   onSaveLayout: (coords: LayoutCoords, customs: CustomElement[]) => void;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
+  // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
 }
 
 interface MindmapNode {
@@ -58,7 +62,8 @@ export default function MindmapView({
   noteName,
   savedCoords,
   savedCustoms,
-  onSaveLayout
+  onSaveLayout,
+  onRequestConfirm
 }: MindmapViewProps) {
   // ==========================================
   // STATE VE REFERANS TANIMLAMALARI (States & Refs)
@@ -664,11 +669,18 @@ export default function MindmapView({
   };
 
   const handleDeleteCustom = (id: string) => {
-    if (!confirm('Bu özel öğeyi tuvalden silmek istediğinize emin misiniz?')) return;
-    const updated = customs.filter(c => c.id !== id);
-    setCustoms(updated);
-    setSelectedCustomId(null);
-    saveTreeToMarkdown(nodes, updated);
+    const doDelete = () => {
+      const updated = customs.filter(c => c.id !== id);
+      setCustoms(updated);
+      setSelectedCustomId(null);
+      saveTreeToMarkdown(nodes, updated);
+    };
+    const message = 'Bu özel öğeyi tuvalden silmek istediğinize emin misiniz?';
+    if (onRequestConfirm) {
+      onRequestConfirm(message, doDelete);
+    } else if (confirm(message)) {
+      doDelete();
+    }
   };
 
   // Yapışkan Not (Sticky) rengini değiştir
@@ -852,45 +864,52 @@ export default function MindmapView({
     const node = nodes.find(n => n.id === nodeId);
     if (!node) return;
 
-    if (!confirm('Seçili düğümü ve altındaki tüm dalları silmek istediğinize emin misiniz?')) return;
+    const doDelete = () => {
+      const layoutRegex = /<!--\s*mindmap-layout:\s*({.*?})\s*-->/s;
+      const cleanContent = content.replace(layoutRegex, '');
+      const lines = cleanContent.split('\n');
 
-    const layoutRegex = /<!--\s*mindmap-layout:\s*({.*?})\s*-->/s;
-    const cleanContent = content.replace(layoutRegex, '');
-    const lines = cleanContent.split('\n');
+      const lineIndexesToDelete: number[] = [];
+      const collectLineIndexes = (nId: string) => {
+        const pNode = nodes.find(n => n.id === nId);
+        if (pNode && pNode.lineIndex !== -1) {
+          lineIndexesToDelete.push(pNode.lineIndex);
+          pNode.children.forEach(collectLineIndexes);
+        }
+      };
+      collectLineIndexes(nodeId);
 
-    const lineIndexesToDelete: number[] = [];
-    const collectLineIndexes = (nId: string) => {
-      const pNode = nodes.find(n => n.id === nId);
-      if (pNode && pNode.lineIndex !== -1) {
-        lineIndexesToDelete.push(pNode.lineIndex);
-        pNode.children.forEach(collectLineIndexes);
-      }
+      lineIndexesToDelete.sort((a, b) => b - a);
+      lineIndexesToDelete.forEach(idx => {
+        lines.splice(idx, 1);
+      });
+
+      const coords: LayoutCoords = {};
+      nodes.forEach(n => {
+        if (!lineIndexesToDelete.includes(n.lineIndex) && n.id !== nodeId) {
+          const lineShiftCount = lineIndexesToDelete.filter(idx => idx < n.lineIndex).length;
+          n.lineIndex -= lineShiftCount;
+          coords[n.id] = { x: Math.round(n.x), y: Math.round(n.y) };
+        }
+      });
+
+      const metadata: MindmapMetadata = {
+        coords,
+        customs
+      };
+
+      const finalMarkdown = lines.join('\n') + `\n\n<!-- mindmap-layout: ${JSON.stringify(metadata)} -->`;
+      onChangeContent(finalMarkdown);
+      setSelectedNodeId(null);
+      setPreviewNodeId(null);
     };
-    collectLineIndexes(nodeId);
 
-    lineIndexesToDelete.sort((a, b) => b - a);
-    lineIndexesToDelete.forEach(idx => {
-      lines.splice(idx, 1);
-    });
-
-    const coords: LayoutCoords = {};
-    nodes.forEach(n => {
-      if (!lineIndexesToDelete.includes(n.lineIndex) && n.id !== nodeId) {
-        const lineShiftCount = lineIndexesToDelete.filter(idx => idx < n.lineIndex).length;
-        n.lineIndex -= lineShiftCount;
-        coords[n.id] = { x: Math.round(n.x), y: Math.round(n.y) };
-      }
-    });
-
-    const metadata: MindmapMetadata = {
-      coords,
-      customs
-    };
-
-    const finalMarkdown = lines.join('\n') + `\n\n<!-- mindmap-layout: ${JSON.stringify(metadata)} -->`;
-    onChangeContent(finalMarkdown);
-    setSelectedNodeId(null);
-    setPreviewNodeId(null);
+    const message = 'Seçili düğümü ve altındaki tüm dalları silmek istediğinize emin misiniz?';
+    if (onRequestConfirm) {
+      onRequestConfirm(message, doDelete);
+    } else if (confirm(message)) {
+      doDelete();
+    }
   };
 
   // ==========================================

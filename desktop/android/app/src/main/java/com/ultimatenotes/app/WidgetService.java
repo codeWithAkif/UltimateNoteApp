@@ -50,12 +50,18 @@ public class WidgetService extends RemoteViewsService {
             }
 
             File file = null;
+            // BUG DÜZELTMESİ: uygulama artık notları hep context.getFilesDir() (Directory.Data,
+            // app-private) altında tutuyor; eski genel Documents konumu yalnızca göç
+            // öncesinden kalmış YETİM kopyalar için bir yedek. Bu liste eskiden genel
+            // Documents'ı ÖNCE tarıyordu — göç sonrası bile hâlâ orada duran eski/boş bir
+            // kopya varsa (silinmemiş), widget güncel app-private kopya yerine o eskisini
+            // buluyor ve içi boş/eski görünüyordu. Doğru/güncel konum artık ÖNCE taranıyor.
             File[] rootDirs = new File[]{
+                new File(context.getFilesDir(), "UltimateNotes"),
+                new File(context.getFilesDir(), "Documents/UltimateNotes"),
                 new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
                 new File(context.getExternalFilesDir(null), "Documents/UltimateNotes"),
-                new File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-                new File(context.getFilesDir(), "UltimateNotes"),
-                new File(context.getFilesDir(), "Documents/UltimateNotes")
+                new File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes")
             };
 
             for (File rootDir : rootDirs) {

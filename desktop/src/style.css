@@ -286,15 +286,10 @@ input:focus, textarea:focus, select:focus {
 }
 
 .brand-logo {
-  background-color: var(--accent-color);
-  color: #fff;
   width: 28px;
   height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 6px;
-  font-weight: 900;
+  object-fit: cover;
 }
 
 .brand-title {

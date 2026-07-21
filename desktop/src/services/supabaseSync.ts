@@ -22,6 +22,7 @@ let localPlatform: any = null;
 let onRemoteChangeCallback: (() => void) | null = null;
 let onStatusChangeCallback: ((status: SyncStatus, error?: string | null) => void) | null = null;
 let onConflictsCallback: ((conflicts: SyncConflict[]) => void) | null = null;
+let onDevPathsChangeCallback: ((data: Record<string, any>) => void) | null = null;
 let realtimeChannel: any = null;
 
 const uploadDebounceTimers: Record<string, any> = {};
@@ -34,6 +35,25 @@ const getHash = (str: string): string => {
     hash |= 0;
   }
   return String(hash);
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// "Aynı cihazdan art arda açılışta gereksiz senkron" şikayetini çözmek için her
+// cihaza kalıcı bir kimlik lazım. localStorage'da saklanır — bu, cihaz kimliğinin
+// tam olarak senkron hash/damga önbellekleriyle (sync_hashes_*/sync_stamps_*) AYNI
+// depoda yaşadığı, dolayısıyla biri temizlenirse (ör. uygulama verisi silinirse)
+// diğerinin de temizleneceği anlamına gelir — bu yüzden aşağıdaki "aynı cihaz mı?"
+// kısayolu, önbellek temizlenmiş bir cihazda otomatik olarak devre dışı kalır.
+const DEVICE_ID_KEY = 'device_id';
+const getDeviceId = (): string => {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
 };
 
 const getSyncHashesKey = (): string => {
@@ -87,6 +107,32 @@ const removeSyncStamp = (path: string) => {
   const stamps = getSyncStamps();
   delete stamps[path];
   localStorage.setItem(getSyncStampsKey(), JSON.stringify(stamps));
+};
+
+// ============================================================================
+// KLASÖR SENKRONİZASYONU
+// ============================================================================
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Notlar sekmesi damgası ile aynı desende ("bu yol daha önce senkronlandı mı?") ama
+// klasörler için ayrı bir anahtar altında tutulur — böylece "uzakta aktif + yerelde
+// hiç görülmemiş" ile "daha önce senkronluydu, şimdi yerelde yok" ayrımı notlardaki
+// gibi netleşir.
+const getFolderSyncStampsKey = (): string => {
+  if (!supabase) return 'sync_folder_stamps_default';
+  const url = (supabase as any).supabaseUrl || '';
+  return `sync_folder_stamps_${getHash(url)}_${currentVault}`;
+};
+
+const getFolderSyncStamps = (): Record<string, string> => {
+  try {
+    return JSON.parse(localStorage.getItem(getFolderSyncStampsKey()) || '{}');
+  } catch (e) {
+    return {};
+  }
+};
+
+const setFolderSyncStamps = (stamps: Record<string, string>) => {
+  localStorage.setItem(getFolderSyncStampsKey(), JSON.stringify(stamps));
 };
 
 // ============================================================================
@@ -222,6 +268,110 @@ const syncMediaFiles = async () => {
   }
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// KLASÖR UZLAŞTIRMASI: syncMediaFiles gibi kendi içinde try/catch'li, bağımsız bir
+// geçiş — "folders" tablosu henüz oluşturulmamışsa (migration çalıştırılmadıysa)
+// burada sessizce uyarı basıp döner, not senkronunu ASLA bozmaz. startSync()'in not
+// uzlaştırması bittikten SONRA çağrılır ve yerel dosya listesini burada TAZE olarak
+// yeniden okur (startSync başındaki listeyi yeniden kullanmaz) — çünkü bu geçiş
+// sırasındaki "klasör artık boş mu?" kontrolü, az önce not uzlaştırmasının indirdiği/
+// sildiği notları da hesaba katmalı.
+const syncFolders = async () => {
+  if (!supabase || !localPlatform) return;
+
+  let remoteFoldersMap: Record<string, any>;
+  try {
+    const { data: remoteFolders, error } = await supabase
+      .from('folders')
+      .select('path, is_deleted, updated_at')
+      .eq('vault', currentVault);
+    if (error) throw error;
+    remoteFoldersMap = {};
+    (remoteFolders || []).forEach((f: any) => { remoteFoldersMap[f.path] = f; });
+  } catch (err) {
+    console.warn('[Supabase Sync] Klasör senkronu atlandı — "folders" tablosu henüz yok gibi görünüyor (bkz. supabase/migrations/0001_create_folders_table.sql):', err);
+    return;
+  }
+
+  try {
+    const localFileList = await localPlatform.listFiles();
+    const localFolderPaths = new Set<string>(
+      localFileList.filter((f: any) => f.type === 'folder').map((f: any) => f.path)
+    );
+    const hasLocalDescendant = (path: string) =>
+      localFileList.some((f: any) => f.path !== path && f.path.startsWith(path + '/'));
+
+    const folderStamps = getFolderSyncStamps();
+    const newFolderStamps: Record<string, string> = { ...folderStamps };
+
+    // Aynı kitlesel-silme koruması (notlardaki ile aynı mantık, bkz. startSync B bölümü):
+    // önceden bilinen klasörlerin yarısından fazlası aniden "yerelde yok" görünüyorsa
+    // bunu gerçek bir silme değil, şüpheli bir yerel depolama arızası say.
+    const candidateLocalFolderDeletes = Object.keys(remoteFoldersMap).filter(
+      path => !localFolderPaths.has(path) && folderStamps[path] !== undefined && !remoteFoldersMap[path].is_deleted
+    );
+    const previouslyTrackedFolderCount = Object.keys(folderStamps).length;
+    const suspiciousMassFolderDeletion =
+      candidateLocalFolderDeletes.length >= 3 &&
+      previouslyTrackedFolderCount > 0 &&
+      candidateLocalFolderDeletes.length >= previouslyTrackedFolderCount * 0.5;
+
+    if (suspiciousMassFolderDeletion) {
+      console.warn(`[Supabase Sync] ${candidateLocalFolderDeletes.length}/${previouslyTrackedFolderCount} previously-synced folder(s) appear missing from local storage at once — treating as a local storage problem, NOT propagating deletion. Re-creating locally instead.`);
+    }
+
+    // A. Uzakta olup yerelde olmayan/durumu farklı olan klasörler
+    for (const path in remoteFoldersMap) {
+      const remoteMeta = remoteFoldersMap[path];
+      const existsLocally = localFolderPaths.has(path);
+      const previouslySynced = folderStamps[path] !== undefined;
+
+      if (!remoteMeta.is_deleted) {
+        if (existsLocally) {
+          newFolderStamps[path] = remoteMeta.updated_at;
+        } else if (previouslySynced && !suspiciousMassFolderDeletion) {
+          // Bu cihaz bu klasörü daha önce görmüş, artık yerelde yok — kullanıcı
+          // sildi say ve uzağa da yansıt (notlardaki "yerelde silinen" mantığının aynısı).
+          console.log(`[Supabase Sync] Folder was deleted locally: ${path}, deleting on remote...`);
+          await handleLocalFolderDelete(path);
+          delete newFolderStamps[path];
+        } else {
+          // Hiç senkronlanmamış YA DA şüpheli kitlesel silme durumu — güvenli yön: indir.
+          console.log(`[Supabase Sync] Remote folder missing locally: ${path}, creating...`);
+          await localPlatform.createFolder(path);
+          newFolderStamps[path] = remoteMeta.updated_at;
+        }
+      } else if (existsLocally) {
+        if (hasLocalDescendant(path)) {
+          // Uzakta silinmiş görünüyor ama yerelde hâlâ içeriği var — içerik kazanır,
+          // eski tombstone'u geri alıp klasörü tekrar aktif olarak yükle.
+          console.log(`[Supabase Sync] Remote folder tombstone conflicts with local content: ${path}, re-uploading...`);
+          const sentStamp = await uploadFolderDirect(path);
+          if (sentStamp) newFolderStamps[path] = sentStamp;
+        } else {
+          console.log(`[Supabase Sync] Remote deleted folder (now empty locally): ${path}, removing locally...`);
+          await localPlatform.deletePath(path);
+          delete newFolderStamps[path];
+        }
+      } else {
+        delete newFolderStamps[path];
+      }
+    }
+
+    // B. Yerelde olup uzakta hiç kaydı olmayan klasörler (hiç senkronlanmamış, yeni)
+    for (const path of localFolderPaths) {
+      if (remoteFoldersMap[path]) continue; // A'da zaten ele alındı.
+      console.log(`[Supabase Sync] Local folder is missing on remote: ${path}, uploading...`);
+      const sentStamp = await uploadFolderDirect(path);
+      if (sentStamp) newFolderStamps[path] = sentStamp;
+    }
+
+    setFolderSyncStamps(newFolderStamps);
+  } catch (err) {
+    console.error('[Supabase Sync] Klasör uzlaştırması başarısız:', err);
+  }
+};
+
 export const initSupabase = (
   url: string,
   key: string,
@@ -229,7 +379,8 @@ export const initSupabase = (
   platform: any,
   onRemoteChange: () => void,
   onStatusChange: (status: SyncStatus, error?: string | null) => void,
-  onConflicts?: (conflicts: SyncConflict[]) => void
+  onConflicts?: (conflicts: SyncConflict[]) => void,
+  onDevPathsChange?: (data: Record<string, any>) => void
 ) => {
   if (realtimeChannel) {
     if (supabase) {
@@ -268,8 +419,14 @@ export const initSupabase = (
     onRemoteChangeCallback = onRemoteChange;
     onStatusChangeCallback = onStatusChange;
     onConflictsCallback = onConflicts || null;
+    onDevPathsChangeCallback = onDevPathsChange || null;
 
-    onStatusChange('syncing', null);
+    // BUG DÜZELTMESİ: Burada eskiden koşulsuz "syncing" durumuna geçiliyordu —
+    // bu da aynı-cihaz kısayolu (bkz. startSync başındaki kontrol) devreye
+    // girecek olsa bile UI'da her açılışta kısa bir "Eşitleniyor..." ekranının
+    // görünmesine yol açıyordu. Artık durum değişikliği startSync()'e bırakılıyor:
+    // kısayol uygunsa doğrudan 'synced' olur (hiç "syncing" görünmez), gerçekten
+    // tam uzlaştırma gerekiyorsa startSync() zaten kendi içinde 'syncing' bildirir.
     startSync();
   } catch (err: any) {
     console.error('[Supabase Sync] Initialization error:', err);
@@ -277,8 +434,217 @@ export const initSupabase = (
   }
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// startSync() her not kaydından sonra ve pencere odaklandığında yeniden
+// çağrılabiliyor (triggerRemoteSync üzerinden). Önceden bu fonksiyon,
+// ZATEN ABONE OLMUŞ eski bir kanal varken bile doğrudan yeni bir
+// .channel(...).on(...).subscribe() zinciri kuruyordu — Supabase istemcisi
+// aynı isimli (topic) kanalı önbellekte tuttuğu için bu, "cannot add
+// postgres_changes callbacks after subscribe()" hatasına yol açıyordu.
+// Yeni bir kanal kurmadan önce eskisini (varsa) temizliyoruz. Ayrı bir fonksiyona
+// çıkarıldı çünkü hem tam uzlaştırma yolundan HEM DE "aynı cihaz" kısayol yolundan
+// (bkz. startSync başındaki kontrol) çağrılması gerekiyor — kısayol alınsa bile
+// gerçek zamanlı güncellemelere abone olunmazsa bu oturum boyunca başka bir
+// cihazın yaptığı değişiklikler hiç yansımaz.
+const subscribeToRealtimeChanges = () => {
+  if (!supabase) return;
+
+  if (realtimeChannel) {
+    try {
+      supabase.removeChannel(realtimeChannel);
+    } catch (e) {
+      console.error('[Supabase Realtime] Error removing previous channel before resubscribe:', e);
+    }
+    realtimeChannel = null;
+  }
+
+  realtimeChannel = supabase
+    .channel('realtime-notes-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'notes',
+        filter: `vault=eq.${currentVault}`
+      },
+      async (payload: any) => {
+        const { eventType, new: newRec, old: oldRec } = payload;
+        console.log(`[Supabase Realtime] Event: ${eventType}`, payload);
+
+        if (eventType === 'INSERT' || eventType === 'UPDATE') {
+          const path = newRec.path;
+          if (isUploadingPaths[path]) return;
+
+          if (newRec.is_deleted) {
+            console.log(`[Supabase Realtime] Soft-delete event: ${path}`);
+            await localPlatform.deletePath(path);
+            const hashes = getSyncHashes();
+            delete hashes[path];
+            localStorage.setItem(getSyncHashesKey(), JSON.stringify(hashes));
+            removeSyncStamp(path);
+            if (onRemoteChangeCallback) onRemoteChangeCallback();
+          } else {
+            let currentLocal = '';
+            const exists = await localPlatform.fileExists(path);
+            if (exists) {
+              try {
+                currentLocal = await localPlatform.readNote(path);
+              } catch (e) {
+                console.error(`[Supabase Realtime] Error reading local note ${path}:`, e);
+              }
+            }
+            const normalizedLocal = currentLocal.replace(/\r\n/g, '\n');
+            const normalizedRemote = newRec.content.replace(/\r\n/g, '\n');
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Damga her durumda güncellenir (içerik zaten eşit olsa bile) —
+            // aksi halde bir sonraki senkron bu notu "değişmiş" sanıp
+            // içeriğini gereksiz yere yeniden indirirdi.
+            if (newRec.updated_at) {
+              updateSyncStamp(path, newRec.updated_at);
+            }
+            if (normalizedLocal !== normalizedRemote) {
+              console.log(`[Supabase Realtime] Remote update event for: ${path}`);
+              await localPlatform.writeNote(path, normalizedRemote);
+              updateSyncHash(path, getHash(normalizedRemote));
+              if (onRemoteChangeCallback) onRemoteChangeCallback();
+            }
+          }
+        } else if (eventType === 'DELETE') {
+          const path = oldRec.path;
+          if (path) {
+            console.log(`[Supabase Realtime] Hard-delete event: ${path}`);
+            await localPlatform.deletePath(path);
+            const hashes = getSyncHashes();
+            delete hashes[path];
+            localStorage.setItem(getSyncHashesKey(), JSON.stringify(hashes));
+            removeSyncStamp(path);
+            if (onRemoteChangeCallback) onRemoteChangeCallback();
+          }
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'folders',
+        filter: `vault=eq.${currentVault}`
+      },
+      async (payload: any) => {
+        const { eventType, new: newRec, old: oldRec } = payload;
+        console.log(`[Supabase Realtime] Folder event: ${eventType}`, payload);
+
+        if (eventType === 'INSERT' || eventType === 'UPDATE') {
+          const path = newRec.path;
+          if (!path) return;
+          if (newRec.is_deleted) {
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // Bir başka cihaz klasörü sildi. Ama bu cihazda o klasörün içinde hâlâ
+            // not/alt klasör varsa (henüz kendi notu-sonu senkronuyla temizlenmediyse)
+            // ZORLA (recursive) silmek veri kaybına yol açar — yalnızca gerçekten
+            // boşsa siliyoruz; değilse bir sonraki tam senkron bunu tekrar değerlendirir.
+            try {
+              const currentFiles = await localPlatform.listFiles();
+              const stillHasChildren = currentFiles.some((f: any) => f.path !== path && f.path.startsWith(path + '/'));
+              if (!stillHasChildren) {
+                await localPlatform.deletePath(path);
+                const stamps = getFolderSyncStamps();
+                delete stamps[path];
+                setFolderSyncStamps(stamps);
+                if (onRemoteChangeCallback) onRemoteChangeCallback();
+              }
+            } catch (e) {
+              console.error(`[Supabase Realtime] Error checking folder emptiness for ${path}:`, e);
+            }
+          } else {
+            await localPlatform.createFolder(path);
+            const stamps = getFolderSyncStamps();
+            stamps[path] = newRec.updated_at;
+            setFolderSyncStamps(stamps);
+            if (onRemoteChangeCallback) onRemoteChangeCallback();
+          }
+        } else if (eventType === 'DELETE') {
+          const path = oldRec?.path;
+          if (path) {
+            try {
+              const currentFiles = await localPlatform.listFiles();
+              const stillHasChildren = currentFiles.some((f: any) => f.path !== path && f.path.startsWith(path + '/'));
+              if (!stillHasChildren) {
+                await localPlatform.deletePath(path);
+              }
+            } catch (e) {
+              console.error(`[Supabase Realtime] Error checking folder emptiness for ${path}:`, e);
+            }
+            const stamps = getFolderSyncStamps();
+            delete stamps[path];
+            setFolderSyncStamps(stamps);
+            if (onRemoteChangeCallback) onRemoteChangeCallback();
+          }
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'dev_paths',
+        filter: `vault=eq.${currentVault}`
+      },
+      (payload: any) => {
+        const newRec = payload.new;
+        if (newRec && newRec.data && onDevPathsChangeCallback) {
+          onDevPathsChangeCallback(newRec.data);
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log('[Supabase Realtime] Subscription status:', status);
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        if (onStatusChangeCallback) {
+          onStatusChangeCallback('error', 'WebSocket subscription connection lost.');
+        }
+      }
+    });
+};
+
 const startSync = async () => {
   if (!supabase || !localPlatform || !onStatusChangeCallback) return;
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ / İSTEK: "En son telefondan açmışsam ve şu an telefonla açıyorsam
+  // eşitleme ile uğraşmasın." — bu cihaz, en son BAŞARIYLA tam senkron tamamlayan
+  // cihazsa (bkz. bu fonksiyonun sonundaki "sync_devices" upsert'i), araya başka
+  // bir cihaz girmemiş demektir; yerel durumumuz zaten en güncel halidir. Böyle bir
+  // durumda her dosyayı yeniden okuyup hash'leyen ağır uzlaştırmayı tamamen atlayıp
+  // doğrudan senkronlanmış say ve gerçek zamanlı aboneliği kur. "sync_devices"
+  // tablosu henüz yoksa (migration çalıştırılmadıysa) bu kısayol sessizce devre
+  // dışı kalır ve her zamanki tam uzlaştırma çalışır.
+  try {
+    const { data: deviceRow } = await supabase
+      .from('sync_devices')
+      .select('device_id')
+      .eq('vault', currentVault)
+      .maybeSingle();
+    if (deviceRow && deviceRow.device_id === getDeviceId()) {
+      console.log('[Supabase Sync] Last full sync was from this same device — skipping reconciliation.');
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // Not/klasör uzlaştırması atlansa da dev_paths ayrı bir kanaldan (uploadDevPaths ile
+      // her değişiklikte anında) yazılabildiği için "sync_devices" damgasını hiç tetiklemeden
+      // güncellenmiş olabilir — bu ucuz tek satır fetch'i her zaman ayrıca yapıyoruz.
+      if (onDevPathsChangeCallback) {
+        const devPathsData = await fetchDevPaths();
+        if (devPathsData) onDevPathsChangeCallback(devPathsData);
+      }
+      onStatusChangeCallback('synced', null);
+      subscribeToRealtimeChanges();
+      return;
+    }
+  } catch (e) {
+    // "sync_devices" tablosu yok/erişilemiyor — normal tam senkrona devam.
+  }
 
   try {
     onStatusChangeCallback('syncing', null);
@@ -385,11 +751,34 @@ const startSync = async () => {
     }
 
     // B. Uzakta olup yerelde olmayan notlar
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // BUG DÜZELTMESİ (kitlesel veri kaybı): "uzakta var + daha önce senkronlanmış hash'i var
+    // + şu an yerelde yok" durumu "kullanıcı yerelde sildi" varsayılıp uzakta da siliniyordu.
+    // Ama bu koşul, depolama konumu değişikliği/izin hatası gibi nedenlerle yerel dosya
+    // listelemesinin YANLIŞLIKLA boş/eksik dönmesiyle de birebir aynı görünüyor (nitekim
+    // Android'de Directory.Documents -> Directory.Data geçişinde tam olarak buna yol açtı).
+    // Bu yüzden önce adayları topluyoruz; yerel liste beklenmedik şekilde önceden bilinen
+    // notların yarısından fazlasını "kayıp" gösteriyorsa bunu gerçek bir silme değil, şüpheli
+    // bir yerel depolama arızası sayıp silmeyi uzağa YANSITMIYORUZ — bunun yerine notu
+    // yereldeki (muhtemelen boşalmış) depoya geri indiriyoruz.
+    const candidateLocalDeletePaths = Object.keys(remoteNotesMap).filter(
+      path => !localNotesMap[path] && syncHashes[path] !== undefined
+    );
+    const previouslyTrackedCount = Object.keys(syncHashes).length;
+    const suspiciousMassDeletion =
+      candidateLocalDeletePaths.length >= 3 &&
+      previouslyTrackedCount > 0 &&
+      candidateLocalDeletePaths.length >= previouslyTrackedCount * 0.5;
+
+    if (suspiciousMassDeletion) {
+      console.warn(`[Supabase Sync] ${candidateLocalDeletePaths.length}/${previouslyTrackedCount} previously-synced note(s) appear missing from local storage at once — treating as a local storage problem, NOT propagating deletion. Re-downloading from remote instead.`);
+    }
+
     const remoteOnlyDownloads: string[] = [];
     for (const path in remoteNotesMap) {
       if (!localNotesMap[path]) {
         const remoteMeta = remoteNotesMap[path];
-        if (syncHashes[path] !== undefined) {
+        if (syncHashes[path] !== undefined && !suspiciousMassDeletion) {
           console.log(`[Supabase Sync] Note was deleted locally: ${path}, deleting on remote...`);
           await handleLocalDelete(path);
           delete newSyncHashes[path];
@@ -495,6 +884,35 @@ const startSync = async () => {
     localStorage.setItem(getSyncStampsKey(), JSON.stringify(newSyncStamps));
     lastSyncTime = Date.now();
 
+    // Klasör uzlaştırması not uzlaştırması TAMAMLANDIKTAN SONRA çalışır (bkz. syncFolders
+    // tanımındaki yorum) — kendi içinde try/catch'li, başarısız olursa not senkronunu bozmaz.
+    await syncFolders();
+
+    // Gelişim yolu (rütbe) verisini çek ve App.tsx'e ilet — kendi try/catch'i fetchDevPaths
+    // içinde, tablo yoksa/erişilemezse sessizce null döner.
+    if (onDevPathsChangeCallback) {
+      const devPathsData = await fetchDevPaths();
+      if (devPathsData) onDevPathsChangeCallback(devPathsData);
+    }
+
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Bu cihazın tam uzlaştırmayı BAŞARIYLA tamamladığını kaydediyoruz — bir sonraki
+    // startSync() çağrısı (uygulama açılışı/resume) bu kaydı kontrol edip, hâlâ AYNI
+    // cihaz en son senkronlayansa (yani araya başka bir cihaz girmediyse) ağır
+    // uzlaştırmayı tamamen atlayabilir (bkz. startSync başındaki kısayol kontrolü).
+    // "sync_devices" tablosu henüz oluşturulmamışsa sessizce yoksayılır.
+    try {
+      await supabase
+        .from('sync_devices')
+        .upsert(
+          { vault: currentVault, device_id: getDeviceId(), synced_at: new Date().toISOString() },
+          { onConflict: 'vault' }
+        );
+    } catch (e) {
+      // Tablo yoksa (migration çalıştırılmadıysa) bu sadece kısayol optimizasyonunun
+      // devre dışı kalmasına yol açar — not senkronu bundan etkilenmez.
+    }
+
     console.log('[Supabase Sync] Reconciliation completed. Subscribing to realtime updates...');
     onStatusChangeCallback('synced', null);
 
@@ -509,98 +927,7 @@ const startSync = async () => {
     // Medya senkronu not senkronunu bekletmeden arka planda çalışır (bkz. yukarıdaki tanım).
     syncMediaFiles();
 
-    // 4. Set up Realtime WebSockets Channel
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // startSync() her not kaydından sonra ve pencere odaklandığında yeniden
-    // çağrılabiliyor (triggerRemoteSync üzerinden). Önceden bu fonksiyon,
-    // ZATEN ABONE OLMUŞ eski bir kanal varken bile doğrudan yeni bir
-    // .channel(...).on(...).subscribe() zinciri kuruyordu — Supabase istemcisi
-    // aynı isimli (topic) kanalı önbellekte tuttuğu için bu, "cannot add
-    // postgres_changes callbacks after subscribe()" hatasına yol açıyordu.
-    // Yeni bir kanal kurmadan önce eskisini (varsa) temizliyoruz.
-    if (realtimeChannel) {
-      try {
-        supabase.removeChannel(realtimeChannel);
-      } catch (e) {
-        console.error('[Supabase Realtime] Error removing previous channel before resubscribe:', e);
-      }
-      realtimeChannel = null;
-    }
-
-    realtimeChannel = supabase
-      .channel('realtime-notes-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'notes',
-          filter: `vault=eq.${currentVault}`
-        },
-        async (payload: any) => {
-          const { eventType, new: newRec, old: oldRec } = payload;
-          console.log(`[Supabase Realtime] Event: ${eventType}`, payload);
-
-          if (eventType === 'INSERT' || eventType === 'UPDATE') {
-            const path = newRec.path;
-            if (isUploadingPaths[path]) return;
-
-            if (newRec.is_deleted) {
-              console.log(`[Supabase Realtime] Soft-delete event: ${path}`);
-              await localPlatform.deletePath(path);
-              const hashes = getSyncHashes();
-              delete hashes[path];
-              localStorage.setItem(getSyncHashesKey(), JSON.stringify(hashes));
-              removeSyncStamp(path);
-              if (onRemoteChangeCallback) onRemoteChangeCallback();
-            } else {
-              let currentLocal = '';
-              const exists = await localPlatform.fileExists(path);
-              if (exists) {
-                try {
-                  currentLocal = await localPlatform.readNote(path);
-                } catch (e) {
-                  console.error(`[Supabase Realtime] Error reading local note ${path}:`, e);
-                }
-              }
-              const normalizedLocal = currentLocal.replace(/\r\n/g, '\n');
-              const normalizedRemote = newRec.content.replace(/\r\n/g, '\n');
-              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-              // Damga her durumda güncellenir (içerik zaten eşit olsa bile) —
-              // aksi halde bir sonraki senkron bu notu "değişmiş" sanıp
-              // içeriğini gereksiz yere yeniden indirirdi.
-              if (newRec.updated_at) {
-                updateSyncStamp(path, newRec.updated_at);
-              }
-              if (normalizedLocal !== normalizedRemote) {
-                console.log(`[Supabase Realtime] Remote update event for: ${path}`);
-                await localPlatform.writeNote(path, normalizedRemote);
-                updateSyncHash(path, getHash(normalizedRemote));
-                if (onRemoteChangeCallback) onRemoteChangeCallback();
-              }
-            }
-          } else if (eventType === 'DELETE') {
-            const path = oldRec.path;
-            if (path) {
-              console.log(`[Supabase Realtime] Hard-delete event: ${path}`);
-              await localPlatform.deletePath(path);
-              const hashes = getSyncHashes();
-              delete hashes[path];
-              localStorage.setItem(getSyncHashesKey(), JSON.stringify(hashes));
-              removeSyncStamp(path);
-              if (onRemoteChangeCallback) onRemoteChangeCallback();
-            }
-          }
-        }
-      )
-      .subscribe((status) => {
-        console.log('[Supabase Realtime] Subscription status:', status);
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          if (onStatusChangeCallback) {
-            onStatusChangeCallback('error', 'WebSocket subscription connection lost.');
-          }
-        }
-      });
+    subscribeToRealtimeChanges();
 
   } catch (err: any) {
     console.error('[Supabase Sync] Sync failed:', err);
@@ -731,6 +1058,92 @@ export const handleLocalDelete = async (path: string) => {
     setTimeout(() => {
       delete isUploadingPaths[path];
     }, 1000);
+  }
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// uploadNoteDirect/handleLocalDelete'in klasör karşılığı — aynı vault+path upsert
+// deseniyle "folders" tablosuna yazar. Bir klasörün içeriği yoktur, bu yüzden hash
+// karşılaştırması gerekmez; yalnızca "var mı / silinmiş mi" bilgisi taşınır.
+// App.tsx'teki klasör oluşturma/yeniden adlandırma/silme çağrılarından hemen sonra
+// çağrılır (platform.createFolder/renamePath/deletePath çağrısını takiben) — böylece
+// bir sonraki tam senkron döngüsünü beklemeden değişiklik anında uzağa yansır.
+export const uploadFolderDirect = async (path: string): Promise<string | null> => {
+  if (!supabase) return null;
+  try {
+    const sentStamp = new Date().toISOString();
+    const { error } = await supabase
+      .from('folders')
+      .upsert(
+        { vault: currentVault, path, is_deleted: false, updated_at: sentStamp },
+        { onConflict: 'vault,path' }
+      );
+    if (error) throw error;
+    const stamps = getFolderSyncStamps();
+    stamps[path] = sentStamp;
+    setFolderSyncStamps(stamps);
+    return sentStamp;
+  } catch (err) {
+    // "folders" tablosu henüz oluşturulmamışsa (migration çalıştırılmadıysa) burada
+    // sessizce başarısız olur — not senkronu bundan etkilenmez.
+    console.warn(`[Supabase Sync] Folder upload failed for ${path} (has the folders table migration been run?):`, err);
+    return null;
+  }
+};
+
+export const handleLocalFolderDelete = async (path: string): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase
+      .from('folders')
+      .upsert(
+        { vault: currentVault, path, is_deleted: true, updated_at: new Date().toISOString() },
+        { onConflict: 'vault,path' }
+      );
+    if (error) throw error;
+    const stamps = getFolderSyncStamps();
+    delete stamps[path];
+    setFolderSyncStamps(stamps);
+  } catch (err) {
+    console.warn(`[Supabase Sync] Folder soft-delete failed for ${path} (has the folders table migration been run?):`, err);
+  }
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// "Gelişim Yolu" (rütbe) verisi notlar/klasörler gibi dosya sistemine bağlı değildir —
+// vault başına TEK bir küçük JSON blob'u olarak tutulur (bkz. dev_paths tablosu,
+// 0003_create_dev_paths_table.sql). Bu yüzden per-path çok satırlı/tombstone'lu bir
+// tasarım yerine tek satırlık upsert/fetch yeterli. Birleştirme (merge) mantığı
+// App.tsx'te yapılır çünkü developmentPaths state'i orada yaşıyor; burası yalnızca
+// ham veriyi taşır.
+export const uploadDevPaths = async (data: Record<string, any>): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase
+      .from('dev_paths')
+      .upsert(
+        { vault: currentVault, data, updated_at: new Date().toISOString() },
+        { onConflict: 'vault' }
+      );
+    if (error) throw error;
+  } catch (err) {
+    console.warn('[Supabase Sync] Dev path upload failed (has the dev_paths table migration been run?):', err);
+  }
+};
+
+const fetchDevPaths = async (): Promise<Record<string, any> | null> => {
+  if (!supabase) return null;
+  try {
+    const { data: row, error } = await supabase
+      .from('dev_paths')
+      .select('data')
+      .eq('vault', currentVault)
+      .maybeSingle();
+    if (error) throw error;
+    return row ? (row.data || {}) : null;
+  } catch (err) {
+    console.warn('[Supabase Sync] Dev path fetch failed (has the dev_paths table migration been run?):', err);
+    return null;
   }
 };
 

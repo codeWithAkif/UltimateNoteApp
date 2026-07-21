@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { 
-  TrendingUp, TrendingDown, DollarSign, PiggyBank, Wallet, Clock, 
+import {
+  TrendingUp, TrendingDown, DollarSign, PiggyBank, Wallet, Clock,
   MapPin, ShoppingCart, Sparkles, Plus, Edit2, Check, ArrowRight, ArrowLeftRight,
-  Gift 
+  Gift
 } from 'lucide-react';
+import { categorizeExpense, isGeminiConfigured } from '../services/geminiMentor';
 
 interface NoteItem {
   name: string;
@@ -24,12 +25,14 @@ interface Transaction {
   id: string;
   noteName: string;
   notePath: string;
+  lineIdx: number;
   date: string;
   description: string;
   amount: number;
   type: 'gelir' | 'gider' | 'yatirim' | 'tasarruf';
   location: string;
   kaynak: string;
+  kategori?: string;
 }
 
 interface PriceRecord {
@@ -96,6 +99,33 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
 
   const [newAssetName, setNewAssetName] = useState('');
   const [newAssetType, setNewAssetType] = useState<'gayrimenkul' | 'hisse' | 'altin-doviz' | 'arac' | 'diger'>('gayrimenkul');
+
+  // AI harcama kategorilendirme: aynı anda hangi işlemin kategorisi sorgulanıyor (buton
+  // spinner'ı için tek bir id yeterli — kullanıcı aynı anda birden fazla butona basmaz).
+  const [categorizingId, setCategorizingId] = useState<string | null>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir harcama satırının [kategori: X] etiketini AI önerisiyle doldurur. Notun HAM
+  // içeriğini satır satır bölüp yalnızca t.lineIdx'teki satırı değiştirir — description'ı
+  // yeniden oluşturmaya çalışmak yerine mevcut etiketlerin (harcama/kaynak/@yer) HEPSİNİ
+  // koruyarak sadece [kategori:] etiketini ekler.
+  const handleCategorizeExpense = async (t: Transaction) => {
+    if (!onSaveNote || categorizingId) return;
+    setCategorizingId(t.id);
+    try {
+      const { category } = await categorizeExpense(t.description, t.location);
+      const content = fileContents[t.notePath] || '';
+      const lines = content.split('\n');
+      if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
+        lines[t.lineIdx] = `${lines[t.lineIdx].trimEnd()} [kategori: ${category}]`;
+        await onSaveNote(t.notePath, lines.join('\n'));
+      }
+    } catch (e) {
+      console.error('Kategori önerisi alınamadı:', e);
+    } finally {
+      setCategorizingId(null);
+    }
+  };
 
   // Helper: Simple string hashing
   const getHash = (str: string): string => {
@@ -278,11 +308,17 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
         const kaynakMatch = trimmed.match(/\[(?:kaynak|kart|hesap):\s*([^\]]+)\]/i);
         const kaynak = kaynakMatch ? kaynakMatch[1].trim() : '';
 
+        // AI kategori etiketi (bkz. categorizeExpense/geminiMentor.ts) — kullanıcı manuel
+        // olarak da [kategori: X] yazabilir, AI önerisiyle aynı formatı kullanır.
+        const kategoriMatch = trimmed.match(/\[kategori:\s*([^\]]+)\]/i);
+        const kategori = kategoriMatch ? kategoriMatch[1].trim() : undefined;
+
         let description = trimmed
           .replace(/^[-*+]\s+/, '') // remove bullet
           .replace(/^\[[xX\s]\]\s*/, '') // remove checkbox
           .replace(/\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\]/g, '')
           .replace(/\[(?:kaynak|kart|hesap):\s*[^\]]+\]/g, '')
+          .replace(/\[kategori:\s*[^\]]+\]/gi, '')
           .replace(/@[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+/g, '')
           .trim();
 
@@ -369,12 +405,14 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
                 id: `${note.path}-${lineIdx}-taksit-${i}`,
                 noteName: note.name,
                 notePath: note.path,
+                lineIdx,
                 date: instDate,
                 description: `${description || 'Açıklamasız Girdi'} (Taksit ${i+1}/${totalTaksit})`,
                 amount: monthlyAmount,
                 type,
                 location: location || 'Genel',
-                kaynak: kaynak || 'Genel'
+                kaynak: kaynak || 'Genel',
+                kategori
               });
             }
           } else {
@@ -382,12 +420,14 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
               id: `${note.path}-${lineIdx}`,
               noteName: note.name,
               notePath: note.path,
+              lineIdx,
               date: baseDate,
               description: description || 'Açıklamasız Girdi',
               amount,
               type,
               location: location || 'Genel',
-              kaynak: kaynak || 'Genel'
+              kaynak: kaynak || 'Genel',
+              kategori
             });
           }
         }
@@ -912,6 +952,45 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
                             {name}
                           </span>
                           <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{data.total.toLocaleString('tr-TR')} TL</span>
+                        </div>
+                        <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.04)', borderRadius: '999px', overflow: 'hidden' }}>
+                          <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-color)' }} />
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            {/* AI kategori dağılımı — yalnızca [kategori:] etiketli harcamalar için (bkz. handleCategorizeExpense) */}
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px' }}>
+              <h4 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', margin: '0 0 16px 0', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                Kategoriye Göre Harcama Dağılımı
+              </h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {(() => {
+                  const grouped: Record<string, number> = {};
+                  financeData.transactions.forEach(t => {
+                    if (t.type !== 'gider' || !t.kategori) return;
+                    grouped[t.kategori] = (grouped[t.kategori] || 0) + t.amount;
+                  });
+
+                  const sorted = Object.entries(grouped).sort((a, b) => b[1] - a[1]);
+
+                  if (sorted.length === 0) {
+                    return <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0' }}>Henüz kategorilendirilmiş harcama yok. Harcama listesinde "Kategori Öner" butonunu kullanabilirsin.</div>;
+                  }
+
+                  const maxTotal = sorted[0][1];
+
+                  return sorted.map(([kategori, total]) => {
+                    const percent = Math.round((total / maxTotal) * 100);
+                    return (
+                      <div key={kategori} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                          <span style={{ color: 'var(--text-primary)' }}>🏷️ {kategori}</span>
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{total.toLocaleString('tr-TR')} TL</span>
                         </div>
                         <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.04)', borderRadius: '999px', overflow: 'hidden' }}>
                           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-color)' }} />
@@ -1544,6 +1623,29 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
                               <span style={{ background: 'var(--bg-tertiary)', padding: '1px 6px', borderRadius: '4px', fontSize: '9.5px', color: 'var(--text-secondary)' }}>
                                 💳 {t.kaynak}
                               </span>
+                            )}
+                            {t.type === 'gider' && (
+                              t.kategori ? (
+                                <span style={{ background: 'rgba(99, 102, 241, 0.12)', color: 'var(--accent-color)', padding: '1px 6px', borderRadius: '4px', fontSize: '9.5px', fontWeight: 600 }}>
+                                  🏷️ {t.kategori}
+                                </span>
+                              ) : onSaveNote && isGeminiConfigured() && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCategorizeExpense(t)}
+                                  disabled={categorizingId === t.id}
+                                  title="AI ile kategori öner"
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: '3px',
+                                    background: 'transparent', border: '1px dashed var(--border-color)',
+                                    borderRadius: '4px', padding: '1px 6px', fontSize: '9.5px',
+                                    color: 'var(--text-muted)', cursor: categorizingId === t.id ? 'default' : 'pointer'
+                                  }}
+                                >
+                                  <Sparkles size={9} />
+                                  {categorizingId === t.id ? 'Öneriliyor...' : 'Kategori Öner'}
+                                </button>
+                              )
                             )}
                           </div>
                         </div>

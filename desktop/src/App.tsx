@@ -23,8 +23,15 @@ import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
-import { initSupabase, handleLocalSave, handleLocalDelete, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
+import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
+import {
+  getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
+  determineLevelAndTopics, generateNextLevel, generateTopicSubNotes, suggestAdditionalTopic, generateQuiz, gradeQuiz, generateFlashcards, evaluateSummary, buildLevelUpMessage,
+  type ClarifyingQA, type TopicSubNote
+} from './services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
+import { App as CapacitorApp } from '@capacitor/app';
 import { registerPlugin } from '@capacitor/core';
 
 const WidgetBridge = registerPlugin<any>('WidgetBridge');
@@ -34,7 +41,8 @@ import {
   Inbox, Calendar, Sparkles, Coffee, Rocket, Smile, HelpCircle,
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
-  Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench
+  Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
+  Award
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -271,6 +279,125 @@ export default function App() {
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Notların içini temiz tutmak ve mindmap koordinatlarını/özel öğelerini merkezi bir yerde saklamak için kullanılan state.
   const [mindmapLayouts, setMindmapLayouts] = useState<Record<string, { coords: any; customs: any[] }>>({});
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Gelişim Yolu" (rütbe) verisi metadata.json'a değil, kendi localStorage anahtarına
+  // yazılır (bkz. devPaths.ts) — metadata.json Supabase'e hiç senkronlanmıyor (bu oturumda
+  // bulunan, eski pet özelliğinin de düştüğü bir tuzak), bu yüzden bu veriyi ayrı bir
+  // "dev_paths" tablosuyla gerçekten senkronluyoruz (bkz. supabaseSync.ts).
+  const [developmentPaths, setDevelopmentPaths] = useState<Record<string, DevPath>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('dev_paths_local') || '{}');
+    } catch (e) {
+      return {};
+    }
+  });
+  const [rankUpCelebration, setRankUpCelebration] = useState<{ path: string; label: string; rankName: string } | null>(null);
+  const devPathsUploadTimerRef = useRef<any>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Gelişim yolu XP hesaplaması: her işaretli klasör için o klasör altındaki notlarda
+  // tamamlanan task sayısı ve çıkan wikilink sayısı, "son görülen sayı" baseline'ına göre
+  // delta olarak XP'ye çevrilir (eski pet özelliğinin task-sayma desenine benzer, bkz.
+  // devPaths.ts). BUG DÜZELTMESİ: bu hesaplama önceden setDevelopmentPaths'in updater
+  // fonksiyonu (prev => {...}) İÇİNDEN başka bir setState (setRankUpCelebration)
+  // çağırıyordu — updater'lar React tarafından senkron çalıştırılacağı garanti edilmeyen
+  // "saf" fonksiyonlardır, bu yüzden kutlama hiç görünmüyordu. Artık developmentPaths
+  // doğrudan (functional update olmadan) okunuyor ve bağımlılık dizisine eklendi; sonsuz
+  // döngü olmuyor çünkü ikinci çalıştırmada delta'lar sıfır olur (baseline'lar zaten
+  // güncellendi) ve anyChange false kalıp setDevelopmentPaths hiç çağrılmaz.
+  useEffect(() => {
+    if (Object.keys(developmentPaths).length === 0) return;
+    let anyChange = false;
+    const next: Record<string, DevPath> = { ...developmentPaths };
+    let celebration: { path: string; label: string; rankName: string } | null = null;
+
+    Object.keys(developmentPaths).forEach(path => {
+      const devPath = developmentPaths[path];
+      // Faz 2: bu hesap sadece 'simple' modundaki (Faz 1 / AI'sız) yollar için geçerli —
+      // 'ai' modundaki yollar konu/test tabanlı ayrı bir mekanizmayla ilerler (bkz.
+      // handleTopicPassed/handleToggleDevPath). `mode` alanı yoksa (eski kayıt) 'simple' say.
+      if ((devPath.mode || 'simple') !== 'simple') return;
+
+      const taskCount = timelineItems.filter(t =>
+        t.isCompleted && t.folder && (t.folder === path || t.folder.startsWith(path + '/'))
+      ).length;
+
+      let linkCount = 0;
+      Object.keys(fileContents).forEach(notePath => {
+        if (notePath.startsWith(path + '/')) {
+          linkCount += countWikilinks(fileContents[notePath] || '');
+        }
+      });
+
+      const lastTaskCount = devPath.lastTaskCount ?? 0;
+      const lastLinkCount = devPath.lastLinkCount ?? 0;
+      const currentXp = devPath.xp ?? 0;
+      const taskDelta = Math.max(0, taskCount - lastTaskCount);
+      const linkDelta = Math.max(0, linkCount - lastLinkCount);
+      if (taskDelta === 0 && linkDelta === 0) return;
+
+      const oldRank = getRankForXp(currentXp);
+      const newXp = currentXp + taskDelta * XP_PER_TASK + linkDelta * XP_PER_LINK;
+      const newRank = getRankForXp(newXp);
+
+      next[path] = {
+        ...devPath,
+        xp: newXp,
+        lastTaskCount: taskCount,
+        lastLinkCount: linkCount,
+        updatedAt: new Date().toISOString()
+      };
+      anyChange = true;
+
+      if (newRank.index > oldRank.index && !celebration) {
+        celebration = { path, label: devPath.label, rankName: newRank.name };
+      }
+    });
+
+    if (anyChange) {
+      setDevelopmentPaths(next);
+      if (celebration) {
+        setRankUpCelebration(celebration);
+        setTimeout(() => setRankUpCelebration(null), 3000);
+      }
+    }
+  }, [fileContents, timelineItems, developmentPaths]);
+
+  // Yerel önbellek her zaman anında güncellenir; Supabase'e gönderim debounce'lu (hızlı
+  // art arda değişikliklerde tek tek istek atmamak için, handleLocalSave'deki desenle aynı).
+  useEffect(() => {
+    localStorage.setItem('dev_paths_local', JSON.stringify(developmentPaths));
+    if (devPathsUploadTimerRef.current) clearTimeout(devPathsUploadTimerRef.current);
+    devPathsUploadTimerRef.current = setTimeout(() => {
+      uploadDevPaths(developmentPaths);
+    }, 800);
+    return () => {
+      if (devPathsUploadTimerRef.current) clearTimeout(devPathsUploadTimerRef.current);
+    };
+  }, [developmentPaths]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Uzaktan (başka bir cihazdan) gelen dev_paths verisini yerelle birleştirir — her yol
+  // için hangisinin updatedAt'i daha yeniyse o kazanır. NOT: bu tek satırlık JSON blob
+  // tasarımında tombstone yok, bu yüzden bir cihazda SİLİNEN bir yol, bu cihazda henüz
+  // görülmemişse (bu cihaz kendi silme/push'unu yapana kadar) geçici olarak kalabilir —
+  // düşük riskli bir sınırlama (XP/rütbe verisi kritik değil).
+  const handleDevPathsChange = (remoteData: Record<string, any>) => {
+    setDevelopmentPaths(prev => {
+      const merged: Record<string, DevPath> = { ...prev };
+      let changed = false;
+      Object.keys(remoteData).forEach(path => {
+        const remote = remoteData[path];
+        const local = prev[path];
+        if (!local || new Date(remote.updatedAt).getTime() > new Date(local.updatedAt).getTime()) {
+          merged[path] = remote;
+          changed = true;
+        }
+      });
+      return changed ? merged : prev;
+    });
+  };
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
   const [customizingFolder, setCustomizingFolder] = useState<string | null>(null);
   const [selectedIcon, setSelectedIcon] = useState('Folder');
@@ -301,7 +428,33 @@ export default function App() {
   const [activeNotePath, setActiveNotePath] = useState<string | null>(() => {
     return localStorage.getItem('active_note_path');
   });
-  
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Breadcrumb gibi bir şey — az önce açtığım nota dönmek istiyorum" isteği için son
+  // görüntülenen notların geçmişi. activeNotePath'i her ayrı yerde (sidebar tıklaması,
+  // arama sonucu, backlink, görev bağlantısı, mobil geri tuşu...) tek tek yakalamak
+  // yerine TEK bir yerden, activeNotePath state'inin kendisini izleyen bir effect ile
+  // takip ediyoruz — hangi kod yolu kullanılırsa kullanılsın nihayetinde hep bu state
+  // güncellendiği için hiçbir giriş noktasını kaçırma riski yok.
+  const [noteViewHistory, setNoteViewHistory] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('note_view_history') || '[]');
+    } catch (e) {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (!activeNotePath) return;
+    setNoteViewHistory(prev => {
+      if (prev[0] === activeNotePath) return prev;
+      const next = [activeNotePath, ...prev.filter(p => p !== activeNotePath)].slice(0, 8);
+      localStorage.setItem('note_view_history', JSON.stringify(next));
+      return next;
+    });
+  }, [activeNotePath]);
+  const [historyDropdownPaneIdx, setHistoryDropdownPaneIdx] = useState<number | null>(null);
+
   // Collapsible sidebar state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
     return localStorage.getItem('sidebar_collapsed') === 'true';
@@ -874,40 +1027,6 @@ export default function App() {
     syncAndVerifyTracks();
   }, [syncStatus]);
 
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Senkronizasyon başarıyla bittiğinde en güncel metadata.json'ı okur, pet verilerini localStorage'a yazar ve reaktif arayüz güncelleme event'ini tetikler.
-  useEffect(() => {
-    if (syncStatus === 'synced') {
-      const reloadPetFromSyncedMetadata = async () => {
-        if (!isBrowser) {
-          try {
-            const rawMeta = await platform.readNote('metadata.json');
-            if (rawMeta) {
-              const metadataObj = JSON.parse(rawMeta);
-              if (metadataObj.focusPet) {
-                const pet = metadataObj.focusPet;
-                if (pet.starter) {
-                  localStorage.setItem('focus_pet_starter', pet.starter);
-                  if (pet.exp !== null && pet.exp !== undefined) localStorage.setItem('focus_pet_exp', String(pet.exp));
-                  if (pet.health !== null && pet.health !== undefined) localStorage.setItem('focus_pet_health', String(pet.health));
-                  if (pet.name) localStorage.setItem('focus_pet_name', pet.name);
-                  if (pet.stage !== null && pet.stage !== undefined) localStorage.setItem('focus_pet_stage', String(pet.stage));
-                  if (pet.lastActive) localStorage.setItem('focus_pet_last_active', String(pet.lastActive));
-                  if (pet.lastTaskCount) localStorage.setItem('focus_pet_last_task_count', String(pet.lastTaskCount));
-                  
-                  // Sol menüdeki widget'ın reaktif yenilenmesi için custom event fırlatıyoruz!
-                  window.dispatchEvent(new CustomEvent('focus_pet_synced'));
-                }
-              }
-            }
-          } catch (e) {
-            console.error('Failed to reload pet data from synced metadata:', e);
-          }
-        }
-      };
-      reloadPetFromSyncedMetadata();
-    }
-  }, [syncStatus]);
 
   useEffect(() => {
     if (isCapacitor) return;
@@ -1394,6 +1513,29 @@ export default function App() {
     };
   }, []);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Android donanım/gesture geri tuşu hiç yakalanmıyordu (varsayılan davranış:
+  // uygulamayı simge durumuna küçült). Bir not açıkken geri tuşuna basılırsa notu
+  // kapatıp notların listelendiği sol paneli açıyoruz; aksi halde önceki varsayılan
+  // davranışı (uygulamayı küçültme) korumak için App.exitApp() çağırıyoruz — bu
+  // dinleyiciyi eklemek varsayılan geri tuşu davranışını TAMAMEN devre dışı bırakır,
+  // bu yüzden başka hiçbir durumu ele almıyoruz burada onu manuel olarak yeniden
+  // tetiklememiz gerekiyor.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    const listenerPromise = CapacitorApp.addListener('backButton', () => {
+      if (activeNotePath) {
+        setActiveNotePath(null);
+        setIsSidebarOpen(true);
+      } else {
+        CapacitorApp.exitApp();
+      }
+    });
+    return () => {
+      listenerPromise.then(handle => handle.remove());
+    };
+  }, [activeNotePath]);
+
   const handlePasteClipboardToNote = async () => {
     const targetPath = activeNotePath || notes.find(n => n.type === 'note')?.path;
     if (!targetPath || !clipboardText) return;
@@ -1420,13 +1562,34 @@ export default function App() {
     setShowClipboardBanner(false);
   };
 
+  // BUG DÜZELTMESİ (kök neden): "Bir şey sildikten sonra hiçbir yerde yazamıyorum, ama
+  // uygulamayı küçültüp büyütünce düzeliyor" şikayetinin asıl kaynağı — native
+  // `window.confirm()` diyaloğu. Bu diyalog senkron/bloklayıcı olsa da gerçek bir
+  // pencere `blur`/`focus` OLAYI TETİKLEMİYOR (yalnızca OS seviyesinde küçültme gibi
+  // GERÇEK bir pencere odağı kaybı bunu tetikliyor) — bu yüzden odağa dayalı hiçbir
+  // temizleme/yenileme mekanizması (ör. NotesView'daki eski seçim aralığı temizliği)
+  // silme onayı sırasında hiç çalışmıyordu. Kalıcı çözüm: tüm silme/onay diyaloglarını
+  // native confirm() yerine bu uygulama-içi (in-app) React modalıyla değiştirmek —
+  // odak hiçbir zaman gerçekten "kayıp" olmuyor, native diyalog kaynaklı tüm bu sınıf
+  // hatalar kökten ortadan kalkıyor.
+  const [confirmDialogState, setConfirmDialogState] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  const requestConfirm = (message: string, onConfirm: () => void) => {
+    setConfirmDialogState({ message, onConfirm });
+  };
+
   // Supabase Sync states
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [supabaseUrl, setSupabaseUrl] = useState('');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
   const [supabaseVault, setSupabaseVault] = useState('default');
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [initialSyncDone, setInitialSyncDone] = useState(false);
+  // BUG DÜZELTMESİ: Tam ekran "Eşitleniyor..." engelleme ekranı yalnızca uygulamanın
+  // İLK açılışındaki senkron için gösterilmeli — ama syncStatus oturum boyunca
+  // (ör. bir klasör silinirken içindeki HER not için triggerRemoteSync tekrar
+  // tekrar çalışıp 'syncing' -> 'synced' arasında gidip geldiğinde) defalarca
+  // 'syncing' olabiliyor. REF (state değil) kullanılıyor çünkü bu sadece render
+  // sırasında okunan bir bayrak — değişmesi kendi başına yeniden render tetiklemesin.
+  const hasCompletedFirstSyncRef = useRef(false);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Yazma Hızı Efektleri (Flow-State / Power Mode) özelliğinin açık olup olmadığını tutar.
@@ -1441,10 +1604,76 @@ export default function App() {
   });
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Odak Evcil Hayvanı (Tamagotchi) widget'ının sol menü altında görünüp görünmeyeceğini tutar.
-  const [isFocusPetEnabled, setIsFocusPetEnabled] = useState<boolean>(() => {
-    return localStorage.getItem('setting_focus_pet_enabled') !== 'false';
+  // "Gelişim Yolu" (rütbe) panelinin sol menü altında görünüp görünmeyeceğini tutar.
+  // Eski "Odak Evcil Hayvanı" özelliğinin yerini alır.
+  const [isDevPathsEnabled, setIsDevPathsEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('setting_dev_paths_enabled') !== 'false';
   });
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Faz 2: Gemini destekli AI Mentor katmanı aç/kapa. Kapalıyken (veya API anahtarı
+  // girilmemişken) gelişim yolu işaretleme Faz 1'in basit rütbe/XP akışına döner.
+  const [isAiMentorEnabled, setIsAiMentorEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('setting_ai_mentor_enabled') !== 'false';
+  });
+  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>(() => getGeminiApiKey() || '');
+  const [geminiModelInput, setGeminiModelInput] = useState<string>(() => getGeminiModel());
+
+  // Gelişim yolu AI sihirbazı (seviye/müfredat belirleme) durumu.
+  const [devPathWizardTarget, setDevPathWizardTarget] = useState<string | null>(null);
+  // BUG DÜZELTMESİ (yanlış anlaşılan hedef): tek bir serbest metin kutusu yerine iki ayrı
+  // alan — "şu anki durum" ve "hedeflenen rol" — kullanıcının niyetini tek bir belirsiz
+  // paragrafa sığdırmak zorunda kalmadan daha net ifade etmesini sağlıyor.
+  const [devPathWizardCurrentDesc, setDevPathWizardCurrentDesc] = useState('');
+  const [devPathWizardGoalDesc, setDevPathWizardGoalDesc] = useState('');
+  // Not oluşturma modu: sihirbazda alan bazında BİR KERE seçilir (bkz. devPaths.ts).
+  const [devPathWizardNoteMode, setDevPathWizardNoteMode] = useState<DevPathNoteMode>('basic');
+  const [devPathWizardQA, setDevPathWizardQA] = useState<ClarifyingQA[]>([]);
+  const [devPathWizardQuestion, setDevPathWizardQuestion] = useState<{ question: string; options: string[] } | null>(null);
+  const [devPathWizardBusy, setDevPathWizardBusy] = useState(false);
+  const [devPathWizardError, setDevPathWizardError] = useState<string | null>(null);
+  // BUG DÜZELTMESİ (yanlış anlaşılan hedef): AI'nin ürettiği seviye+konu listesi artık
+  // HEMEN klasör olarak oluşturulmuyor — önce bu önizleme durumunda gösteriliyor, kullanıcı
+  // konuları tek tek kaldırabiliyor VEYA "bu yanlış" deyip düzeltme yazıp yeniden
+  // ürettirebiliyor. Yalnızca "Onayla ve Oluştur" ile gerçekten diske yazılıyor.
+  const [devPathWizardPreview, setDevPathWizardPreview] = useState<{
+    levelTitle: string;
+    topics: { title: string; description: string; introNote?: string }[];
+    priorLevels: { title: string; topics: { title: string; description: string; introNote?: string }[] }[];
+  } | null>(null);
+  const [devPathWizardShowCorrection, setDevPathWizardShowCorrection] = useState(false);
+  const [devPathWizardCorrectionText, setDevPathWizardCorrectionText] = useState('');
+
+  // Konu testi (quiz) sihirbazı durumu.
+  const [devPathQuizTarget, setDevPathQuizTarget] = useState<{ path: string; levelIdx: number; topicIdx: number } | null>(null);
+  const [devPathQuizQuestions, setDevPathQuizQuestions] = useState<string[]>([]);
+  const [devPathQuizAnswers, setDevPathQuizAnswers] = useState<string[]>([]);
+  const [devPathQuizBusy, setDevPathQuizBusy] = useState(false);
+  const [devPathQuizResult, setDevPathQuizResult] = useState<{ passed: boolean; feedback: string; weakAreas?: string[] } | null>(null);
+  const [devPathQuizError, setDevPathQuizError] = useState<string | null>(null);
+
+  // "Test Et" ÖNCESİ ön koşul: kullanıcı konuyu kendi cümleleriyle özetler, AI onaylarsa
+  // konuya gerçekten çalışıldığının ilk kanıtı sayılır ve quiz açılır.
+  const [devPathSummaryTarget, setDevPathSummaryTarget] = useState<{ path: string; levelIdx: number; topicIdx: number } | null>(null);
+  const [devPathSummaryText, setDevPathSummaryText] = useState('');
+  const [devPathSummaryBusy, setDevPathSummaryBusy] = useState(false);
+  const [devPathSummaryResult, setDevPathSummaryResult] = useState<{ approved: boolean; feedback: string } | null>(null);
+  const [devPathSummaryError, setDevPathSummaryError] = useState<string | null>(null);
+
+  // Gelişim yolu detay paneli (tüm seviyeler/konular + "bunu bilmiyorum" işaretleme).
+  const [devPathDetailTarget, setDevPathDetailTarget] = useState<string | null>(null);
+
+  // Gelişim Yolu Detayı panelinde mevcut seviyeye AI'den bir konu daha önerilmesi
+  // ("Eksik bir konu var, ekle") akışının durumu.
+  const [devPathAddTopicTarget, setDevPathAddTopicTarget] = useState<{ path: string; levelIdx: number } | null>(null);
+  const [devPathAddTopicHint, setDevPathAddTopicHint] = useState('');
+  const [devPathAddTopicBusy, setDevPathAddTopicBusy] = useState(false);
+  const [devPathAddTopicError, setDevPathAddTopicError] = useState<string | null>(null);
+
+  // Konu bazlı işlem (kart oluştur / takvime ekle) çalışıyor/sonuç durumu — detay
+  // panelinde geçici bir onay mesajı göstermek için (ör. "8 kart oluşturuldu ✅").
+  const [devPathTopicActionBusy, setDevPathTopicActionBusy] = useState<{ levelIdx: number; topicIdx: number } | null>(null);
+  const [devPathTopicActionMessage, setDevPathTopicActionMessage] = useState<{ levelIdx: number; topicIdx: number; text: string } | null>(null);
 
   // Ana gezinme artık sol menüde değil, üst başlık çubuğunda (titlebar) kompakt ikonlar olarak gösteriliyor.
   const titlebarPrimaryItems = [
@@ -1528,16 +1757,6 @@ export default function App() {
             const count = Number(localStorage.getItem('completed_pomodoros') || '0');
             localStorage.setItem('completed_pomodoros', String(count + 1));
 
-            // Evcil hayvan ödüllerini doğrudan localStorage'a yaz (böylece Sidebar kapalı olsa bile kaybolmaz)
-            const currentExp = Number(localStorage.getItem('focus_pet_exp') || '0');
-            localStorage.setItem('focus_pet_exp', String(currentExp + 50));
-
-            const currentHealth = Number(localStorage.getItem('focus_pet_health') || '100');
-            localStorage.setItem('focus_pet_health', String(Math.min(100, currentHealth + 25)));
-
-            // Diğer aktif dinleyicilere (örn. Sidebar kutlama efekti) olayı bildir
-            window.dispatchEvent(new Event('pomodoro_completed'));
-
             if ('Notification' in window && Notification.permission === 'granted') {
               new Notification('⏱️ Pomodoro tamamlandı!', { body: 'Mola verme zamanı geldi.' });
             }
@@ -1562,12 +1781,16 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
-  const [settingsTab, setSettingsTab] = useState<'sync' | 'appearance' | 'shortcuts' | 'trash' | 'about'>('sync');
+  const [settingsTab, setSettingsTab] = useState<'sync' | 'ai' | 'appearance' | 'shortcuts' | 'trash' | 'about'>('sync');
   // Çöp Kutusu: yerel .trash/index.json içeriği + Supabase'de is_deleted=true olan
   // (yerelde kopyası olmayabilecek) notlar birleştirilerek gösterilir.
   const [localTrashEntries, setLocalTrashEntries] = useState<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>>([]);
   const [remoteTrashEntries, setRemoteTrashEntries] = useState<Array<{ path: string; name: string; content: string; updated_at: string }>>([]);
   const [isTrashLoading, setIsTrashLoading] = useState(false);
+  // Toplu geri getir/kalıcı sil için işaretlenen çöp kutusu öğeleri. Yerel (id) ve uzak
+  // (path) girişler aynı Set'te "local:"/"remote:" önekiyle ayrıştırılarak tutulur.
+  const [selectedTrashKeys, setSelectedTrashKeys] = useState<Set<string>>(new Set());
+  const [trashSearchQuery, setTrashSearchQuery] = useState('');
 
   // Supabase veritabanı boyutu (Ayarlar > Senkronizasyon ekranında gösterilir).
   const [dbSizeBytes, setDbSizeBytes] = useState<number | null>(null);
@@ -1803,7 +2026,7 @@ export default function App() {
     setSyncStatus(status);
     setSyncError(error || null);
     if (status === 'synced' || status === 'error' || status === 'offline') {
-      setInitialSyncDone(true);
+      hasCompletedFirstSyncRef.current = true;
     }
     if (status === 'synced') {
       loadAllData();
@@ -1862,14 +2085,13 @@ export default function App() {
           platform,
           handleRemoteChange,
           handleStatusChange,
-          handleConflicts
+          handleConflicts,
+          handleDevPathsChange
         );
       } catch (e) {
         console.error('Failed to parse Supabase creds', e);
-        setInitialSyncDone(true);
       }
     } else {
-      setInitialSyncDone(true);
       setIsSettingsModalOpen(true);
     }
   }, []);
@@ -2414,10 +2636,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         hasCompletedInitialLoadRef.current = true;
 
         // Extract folder list and sort alphabetically (excluding media assets)
-        const folderList = filteredList
-          .filter(f => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
-          .map(f => f.path)
-          .sort();
+        const folderList = Array.from(new Set(
+          filteredList
+            .filter(f => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
+            .map(f => f.path)
+        )).sort();
         setFolders(folderList);
 
         // Load index/metadata from root notes directory (if it exists)
@@ -2433,19 +2656,6 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         }
         setFolderCustomizations(metadataObj.folderCustomizations || {});
         setMindmapLayouts((metadataObj as any).mindmapLayouts || {});
-
-        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-        // metadata.json içinde evcil hayvan verisi bulunursa, bunu yerel localStorage'a geri eşitleyerek senkronize eder.
-        if ((metadataObj as any).focusPet) {
-          const pet = (metadataObj as any).focusPet;
-          if (pet.starter) localStorage.setItem('focus_pet_starter', pet.starter);
-          if (pet.exp !== null && pet.exp !== undefined) localStorage.setItem('focus_pet_exp', String(pet.exp));
-          if (pet.health !== null && pet.health !== undefined) localStorage.setItem('focus_pet_health', String(pet.health));
-          if (pet.name) localStorage.setItem('focus_pet_name', pet.name);
-          if (pet.stage !== null && pet.stage !== undefined) localStorage.setItem('focus_pet_stage', String(pet.stage));
-          if (pet.lastActive) localStorage.setItem('focus_pet_last_active', String(pet.lastActive));
-          if (pet.lastTaskCount) localStorage.setItem('focus_pet_last_task_count', String(pet.lastTaskCount));
-        }
 
         const rawTimeline: TimelineItem[] = metadataObj.timeline || [];
         const { tasks: scannedTasks, fileContents: scannedContents, alarms: scannedAlarms } = await scanTasksFromAllNotes(filteredList);
@@ -2572,25 +2782,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       const parsedMeta = JSON.parse(cachedMeta);
       setFolderCustomizations(parsedMeta.folderCustomizations || {});
 
-      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-      // metadata.json (tarayıcı fallback) içinde evcil hayvan verisi bulunursa, bunu yerel localStorage'a geri eşitleyerek senkronize eder.
-      if (parsedMeta.focusPet) {
-        const pet = parsedMeta.focusPet;
-        if (pet.starter) localStorage.setItem('focus_pet_starter', pet.starter);
-        if (pet.exp !== null && pet.exp !== undefined) localStorage.setItem('focus_pet_exp', String(pet.exp));
-        if (pet.health !== null && pet.health !== undefined) localStorage.setItem('focus_pet_health', String(pet.health));
-        if (pet.name) localStorage.setItem('focus_pet_name', pet.name);
-        if (pet.stage !== null && pet.stage !== undefined) localStorage.setItem('focus_pet_stage', String(pet.stage));
-        if (pet.lastActive) localStorage.setItem('focus_pet_last_active', String(pet.lastActive));
-        if (pet.lastTaskCount) localStorage.setItem('focus_pet_last_task_count', String(pet.lastTaskCount));
-      }
-
       setNotes(parsedNotes);
       loadedNotes = parsedNotes;
-      const folderList = parsedNotes
-        .filter((f: any) => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
-        .map((f: any) => f.path || f.name)
-        .sort();
+      const folderList = Array.from(new Set<string>(
+        parsedNotes
+          .filter((f: any) => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
+          .map((f: any) => f.path || f.name)
+      )).sort();
       setFolders(folderList);
       
       const rawTimeline: TimelineItem[] = parsedMeta.timeline || [];
@@ -2892,26 +3090,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   // Helper to Save Metadata
   const saveMetadata = async (newTimeline: TimelineItem[], newRecent: any[], newTags: string[], newCustomizations?: any, newMindmapLayouts?: any) => {
     const cleanTimeline = newTimeline.filter(item => !item.id.startsWith('task::'));
-    
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Odak Evcil Hayvanı (Tamagotchi) durumunu bulutla eşitlemek üzere metadata nesnesine dahil eder.
-    const focusPetData = {
-      starter: localStorage.getItem('focus_pet_starter'),
-      exp: localStorage.getItem('focus_pet_exp'),
-      health: localStorage.getItem('focus_pet_health'),
-      name: localStorage.getItem('focus_pet_name'),
-      stage: localStorage.getItem('focus_pet_stage'),
-      lastActive: localStorage.getItem('focus_pet_last_active'),
-      lastTaskCount: localStorage.getItem('focus_pet_last_task_count')
-    };
 
-    const metaObj = { 
-      timeline: cleanTimeline, 
-      recent: newRecent, 
+    const metaObj = {
+      timeline: cleanTimeline,
+      recent: newRecent,
       tags: newTags,
       folderCustomizations: newCustomizations !== undefined ? newCustomizations : folderCustomizations,
-      mindmapLayouts: newMindmapLayouts !== undefined ? newMindmapLayouts : mindmapLayouts,
-      focusPet: focusPetData
+      mindmapLayouts: newMindmapLayouts !== undefined ? newMindmapLayouts : mindmapLayouts
     };
     if (!isBrowser) {
       await platform.writeNote('metadata.json', JSON.stringify(metaObj, null, 2));
@@ -2920,22 +3105,16 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     }
   };
 
-  const handleSavePetData = () => {
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Evcil hayvan verileri güncellendiğinde en son durumun metadata.json'a yazılıp buluta gönderilmesini sağlar.
-    saveMetadata(timelineItems, recentInputs, tags);
-  };
-
-
   // Helper to Save Notes DB representation (Only needed in Web Mock)
   const mockSaveNotes = (updatedNotes: NoteItem[]) => {
     if (isBrowser) {
       localStorage.setItem('notes_db', JSON.stringify(updatedNotes));
       setNotes(updatedNotes);
-      const folderList = updatedNotes
-        .filter(f => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
-        .map(f => f.path || f.name)
-        .sort();
+      const folderList = Array.from(new Set(
+        updatedNotes
+          .filter(f => f.type === 'folder' && f.path !== 'media' && !f.path.startsWith('media/'))
+          .map(f => f.path || f.name)
+      )).sort();
       setFolders(folderList);
     }
   };
@@ -2961,6 +3140,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     if (!isBrowser) {
       const res = await platform.createFolder(relativePath);
       if (res.success) {
+        // Klasörü hemen Supabase'e de yansıt — bir sonraki tam senkron döngüsünü beklemeden.
+        uploadFolderDirect(relativePath);
         await loadAllData();
       } else {
         alert(res.error || 'Klasör oluşturulamadı');
@@ -3205,11 +3386,25 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     setIsTrashLoading(true);
     try {
       const local = await readLocalTrash();
-      setLocalTrashEntries(local.slice().sort((a, b) => b.deletedAt - a.deletedAt));
+      // BUG DÜZELTMESİ: Kullanıcı aynı yolda sonradan YENİ bir not oluşturursa (ya da eski
+      // dosya bir şekilde geri gelirse), o yol için eski çöp kutusu kaydı kalıcı olarak
+      // "silinmiş" gibi görünmeye devam ediyordu — oysa dosya CANLI ve kullanımda. Bu hem
+      // kafa karıştırıcı hem de riskli (o kayıtta yanlışlıkla "Geri Getir"e basılırsa canlı
+      // dosyanın üzerine eski içerik yazılabilir). Orijinal yolu hâlâ canlı bir not olarak
+      // duran kayıtları listeden çıkarıp indeksten de temizliyoruz.
+      const livePaths = new Set(notes.filter(n => n.type !== 'folder').map(n => n.path));
+      const staleIdSet = new Set(local.filter(e => livePaths.has(e.originalPath)).map(e => e.id));
+      let effectiveLocal = local;
+      if (staleIdSet.size > 0) {
+        effectiveLocal = local.filter(e => !staleIdSet.has(e.id));
+        await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(effectiveLocal));
+      }
+      setLocalTrashEntries(effectiveLocal.slice().sort((a, b) => b.deletedAt - a.deletedAt));
       const remote = await fetchDeletedNotes();
-      // Yerelde zaten bir çöp kutusu kaydı olan yollar uzak listede tekrar gösterilmesin.
-      const localPaths = new Set(local.map(e => e.originalPath));
-      setRemoteTrashEntries(remote.filter(r => !localPaths.has(r.path)));
+      // Yerelde zaten bir çöp kutusu kaydı olan yollar uzak listede tekrar gösterilmesin;
+      // yolu hâlâ canlı bir not olarak duranlar da (yukarıdaki gibi) gösterilmesin.
+      const localPaths = new Set(effectiveLocal.map(e => e.originalPath));
+      setRemoteTrashEntries(remote.filter(r => !localPaths.has(r.path) && !livePaths.has(r.path)));
     } finally {
       setIsTrashLoading(false);
     }
@@ -3245,6 +3440,66 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     if (!res.success) {
       console.error('Uzak not kalıcı olarak silinemedi:', res.error);
     }
+    await loadTrashData();
+  };
+
+  const toggleTrashSelection = (key: string) => {
+    setSelectedTrashKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Tek tek "Kalıcı Sil"e basmak yerine işaretlenen (yerel + uzak) öğeleri TEK seferde
+  // siler — yerel .trash/index.json'ı bir kez okuyup bir kez yazar (her öğe için ayrı
+  // ayrı okuyup yazmak yerine), uzak notları ise sırayla siler.
+  const handleBulkDeleteTrash = async () => {
+    const localIds = localTrashEntries.filter(e => selectedTrashKeys.has(`local:${e.id}`)).map(e => e.id);
+    const remotePaths = remoteTrashEntries.filter(e => selectedTrashKeys.has(`remote:${e.path}`)).map(e => e.path);
+    const total = localIds.length + remotePaths.length;
+    if (total === 0) return;
+    requestConfirm(`${total} öğe kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`, async () => {
+      if (localIds.length > 0) {
+        const idSet = new Set(localIds);
+        const trash = await readLocalTrash();
+        await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(trash.filter(e => !idSet.has(e.id))));
+      }
+      for (const path of remotePaths) {
+        const res = await permanentlyDeleteRemoteNote(path);
+        if (!res.success) {
+          console.error('Uzak not kalıcı olarak silinemedi:', path, res.error);
+        }
+      }
+      setSelectedTrashKeys(new Set());
+      await loadTrashData();
+    });
+  };
+
+  const handleBulkRestoreTrash = async () => {
+    const localEntries = localTrashEntries.filter(e => selectedTrashKeys.has(`local:${e.id}`));
+    const remoteEntries = remoteTrashEntries.filter(e => selectedTrashKeys.has(`remote:${e.path}`));
+    if (localEntries.length === 0 && remoteEntries.length === 0) return;
+
+    for (const entry of localEntries) {
+      await platform.writeNote(entry.originalPath, entry.content);
+      handleLocalSave(entry.originalPath, entry.content);
+    }
+    if (localEntries.length > 0) {
+      const idSet = new Set(localEntries.map(e => e.id));
+      const trash = await readLocalTrash();
+      await platform.writeNote(TRASH_INDEX_PATH, JSON.stringify(trash.filter(e => !idSet.has(e.id))));
+    }
+    for (const entry of remoteEntries) {
+      await platform.writeNote(entry.path, entry.content);
+      const res = await restoreRemoteNote(entry.path);
+      if (!res.success) {
+        console.error('Uzak not geri getirilemedi:', entry.path, res.error);
+      }
+    }
+    setSelectedTrashKeys(new Set());
+    await loadAllData();
     await loadTrashData();
   };
 
@@ -3285,13 +3540,22 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         };
       });
 
-      const activePane = nextPanes[activePaneIdx];
+      // Tüm sekmeleri silinen split-view panellerini kaldır, en az bir panel kalsın.
+      const finalPanes = (nextPanes.length > 1 && nextPanes.some(p => p.tabs.length === 0))
+        ? (nextPanes.filter(p => p.tabs.length > 0).length > 0 ? nextPanes.filter(p => p.tabs.length > 0) : [nextPanes[0]])
+        : nextPanes;
+
+      if (finalPanes.length !== nextPanes.length) {
+        setActivePaneIdx(idx => Math.min(idx, finalPanes.length - 1));
+      }
+
+      const activePane = finalPanes[Math.min(activePaneIdx, finalPanes.length - 1)];
       if (activePane) {
         const newActivePath = activePane.tabs[activePane.activeTabIdx] || null;
         setActiveNotePath(newActivePath);
       }
 
-      return nextPanes;
+      return finalPanes;
     });
 
     const updatedLists = pinnedWidgetLists.filter(p => {
@@ -3317,11 +3581,28 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             if ((file.type === 'note' || file.type === 'excalidraw' || file.type === 'drawio') && file.path.startsWith(path + '/')) {
               await addToLocalTrash(file.path);
               await handleLocalDelete(file.path);
+            } else if (file.type === 'folder' && file.path.startsWith(path + '/')) {
+              await handleLocalFolderDelete(file.path);
             }
           }
+          // Silinen klasörün kendisini de (nested alt klasörlerden ayrı olarak) tombstone'la.
+          await handleLocalFolderDelete(path);
         } catch (e) {
           console.error('[Delete Path] Failed to list or soft-delete folder children:', e);
         }
+        // Silinen klasör (veya alt klasörlerinden biri) bir gelişim yolu olarak
+        // işaretliyse, o rütbe/XP kaydı da anlamsız kalır — temizle.
+        setDevelopmentPaths(prev => {
+          const next = { ...prev };
+          let changed = false;
+          Object.keys(next).forEach(devPath => {
+            if (devPath === path || devPath.startsWith(path + '/')) {
+              delete next[devPath];
+              changed = true;
+            }
+          });
+          return changed ? next : prev;
+        });
       } else {
         await addToLocalTrash(path);
         await handleLocalDelete(path);
@@ -3378,6 +3659,672 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     setIsCustomizerOpen(false);
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir klasörü "Gelişim Yolu" olarak işaretler/kaldırır. İşaretlerken mevcut (o klasör
+  // altındaki) tamamlanmış task ve wikilink sayıları baseline olarak kaydedilir — böylece
+  // önceden yazılmış içerik anında dev bir XP dökmesine yol açmaz (pet'in selectStarter'daki
+  // aynı baseline mantığı, bkz. eski Sidebar.tsx:393-429).
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI'nin ürettiği seviye/konu başlıkları klasör adı olarak kullanılacağı için dosya
+  // sistemi açısından güvenli hale getirilir (özellikle "/" — aksi halde istemeden iç
+  // içe klasör oluşturabilirdi).
+  const sanitizeFolderName = (name: string): string => {
+    return name.replace(/[\/\\:*?"<>|]/g, '-').trim().slice(0, 80) || 'Adsız';
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Her konu klasörüne otomatik yazılan sistem notları (Başlangıç Notu, 'advanced'/
+  // 'complete' modda üretilen alt-notlar, Soru Kartları — bkz. createLevelFolders),
+  // "Test Et"i açan / "Son çalışma" tarihini belirleyen / quiz-kart üretimine kaynak olan
+  // not sayımlarına dahil EDİLMEMELİ — yoksa kullanıcı hiç not yazmadan Test Et anında
+  // açılır ve "bugün çalışıldı" göstergesi yanlış olur. Bu yardımcı, bir konu klasöründeki
+  // notları KULLANICININ KENDİ yazdıklarıyla sınırlar. `extraSystemNames`, o konuya özel
+  // (dinamik başlıklı) alt-not/kart dosya adlarını da hariç tutmak için kullanılır.
+  const DEV_PATH_SYSTEM_NOTE_NAMES = new Set(['Başlangıç Notu.md', 'Seviye Bilgisi.md']);
+  const getUserNotesInTopicFolder = (folderPath: string, extraSystemNames: string[] = []) => {
+    const excluded = extraSystemNames.length
+      ? new Set([...DEV_PATH_SYSTEM_NOTE_NAMES, ...extraSystemNames])
+      : DEV_PATH_SYSTEM_NOTE_NAMES;
+    return notes.filter(n =>
+      n.type !== 'folder' &&
+      n.path.startsWith(folderPath + '/') &&
+      !excluded.has(n.path.split('/').pop() || '')
+    );
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir seviyenin kalıcı, insan-okunur özet notu — konular ve durumları (⬜/🟡/✅/⚠️) ile
+  // ilerleme oranını listeler. Konu durumları her değiştiğinde (test geçme, seviye atlama,
+  // "bilmiyorum" işaretleme) yeniden yazılır ki not her zaman güncel kalsın.
+  const buildLevelNoteContent = (domainLabel: string, level: DevPathLevel): string => {
+    const lines = [
+      `# ${domainLabel} — ${level.title}`,
+      '',
+      'Bir sonraki seviyeye geçmek için gereken konular:',
+      ''
+    ];
+    level.topics.forEach(t => {
+      const emoji = t.status === 'passed' ? '✅' : t.status === 'testable' ? '🟡' : t.status === 'flagged_unknown' ? '⚠️' : '⬜';
+      lines.push(`${emoji} **${t.title}** — ${t.description}`);
+    });
+    const passedCount = level.topics.filter(t => t.status === 'passed').length;
+    lines.push('', `İlerleme: ${passedCount}/${level.topics.length}`);
+    return lines.join('\n');
+  };
+
+  const writeLevelNote = async (domainLabel: string, level: DevPathLevel) => {
+    try {
+      await platform.writeNote(`${level.folderPath}/Seviye Bilgisi.md`, buildLevelNoteContent(domainLabel, level));
+    } catch (e) {
+      console.error('[DevPath] Seviye notu yazılamadı:', e);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir seviye için klasör (ör. ".../ASPNET/Junior") ve altında her konu için ayrı bir alt
+  // klasör (ör. ".../Junior/Dependency Injection") oluşturur — kullanıcı notlarını bu konu
+  // klasörlerinin İÇİNE alır, "Test Et" o klasörde en az bir not olunca aktif olur.
+  const createLevelFolders = async (
+    basePath: string,
+    levelTitle: string,
+    topics: { title: string; description: string; introNote?: string }[],
+    defaultTopicStatus: DevPathTopic['status'] = 'open',
+    noteMode: DevPathNoteMode = 'basic'
+  ): Promise<DevPathLevel> => {
+    const levelFolderPath = `${basePath}/${sanitizeFolderName(levelTitle)}`;
+    await platform.createFolder(levelFolderPath);
+    uploadFolderDirect(levelFolderPath);
+
+    const topicObjs: DevPathTopic[] = [];
+    for (const t of topics) {
+      const topicFolderPath = `${levelFolderPath}/${sanitizeFolderName(t.title)}`;
+      await platform.createFolder(topicFolderPath);
+      uploadFolderDirect(topicFolderPath);
+
+      const systemNoteNames: string[] = [];
+      // AI'nin ürettiği introNote'u, kullanıcı boş bir klasörle karşılaşmasın diye
+      // uygulamanın kendi "🚀 Başlangıç" notu deseniyle tutarlı şekilde bir
+      // "Başlangıç Notu.md" olarak konu klasörünün içine yazıyoruz.
+      let introContent = (t.introNote || '').trim();
+
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // BUG DÜZELTMESİ (az konu üretimi): alt-notlar artık konu listesiyle AYNI çağrıda
+      // değil, HER konu için AYRI bir çağrıyla (generateTopicSubNotes) üretiliyor — eskiden
+      // ikisi aynı çağrıda istendiğinde, konu sayısı arttıkça çıktı katlanarak büyüdüğü
+      // için model konu sayısını (genişliği) fark ettirmeden kısıyordu (bkz.
+      // geminiMentor.ts'teki TOPIC_LIST_SCHEMA yorumu). Alt-notlar her biri KENDİ dosyasına
+      // yazılır ve ana "Başlangıç Notu" bunlara wikilink ile bağlanan bir indeks haline gelir.
+      let subNotesList: TopicSubNote[] = [];
+      if ((noteMode === 'advanced' || noteMode === 'complete') && introContent) {
+        try {
+          const subResult = await generateTopicSubNotes(t.title, t.description, introContent);
+          subNotesList = subResult.subNotes || [];
+        } catch (e) {
+          console.error('[DevPath] Alt not üretimi başarısız:', e);
+        }
+      }
+      if (subNotesList.length > 0) {
+        const linkLines: string[] = [];
+        for (const sn of subNotesList) {
+          const subFileName = `${sanitizeFolderName(sn.title)}.md`;
+          try {
+            await handleSaveNote(`${topicFolderPath}/${subFileName}`, `# ${sn.title}\n\n${sn.content.trim()}\n`);
+            systemNoteNames.push(subFileName);
+            linkLines.push(`- [[${sanitizeFolderName(sn.title)}]]`);
+          } catch (e) {
+            console.error('[DevPath] Alt not yazılamadı:', e);
+          }
+        }
+        if (linkLines.length > 0) {
+          introContent = `${introContent}\n\n## Alt Konular\n${linkLines.join('\n')}\n`;
+        }
+      }
+
+      if (introContent) {
+        try {
+          await handleSaveNote(`${topicFolderPath}/Başlangıç Notu.md`, `# ${t.title}\n\n${introContent}\n`);
+          systemNoteNames.push('Başlangıç Notu.md');
+        } catch (e) {
+          console.error('[DevPath] Başlangıç notu yazılamadı:', e);
+        }
+      }
+
+      // 'complete' modda, az önce üretilen içerikten otomatik soru kartları (SRS) oluşturulur —
+      // kullanıcı "Kart Oluştur"a hiç basmadan konuya aralıklı tekrar ile başlayabilsin diye.
+      if (noteMode === 'complete') {
+        try {
+          const combinedContent = [introContent, ...subNotesList.map(sn => sn.content)].filter(Boolean).join('\n\n---\n\n');
+          if (combinedContent.trim()) {
+            const result = await generateFlashcards(t.title, t.description, combinedContent);
+            if (result.cards && result.cards.length > 0) {
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const cardLines = result.cards.map(c => `[card: ${c.question.trim()} || ${c.answer.trim()}] [srs: box1, ${todayStr}]`).join('\n');
+              await handleSaveNote(`${topicFolderPath}/Soru Kartları.md`, `# ${t.title} — Soru Kartları\n${cardLines}\n`);
+              systemNoteNames.push('Soru Kartları.md');
+            }
+          }
+        } catch (e) {
+          console.error('[DevPath] Complete modu otomatik kart üretimi başarısız:', e);
+        }
+      }
+
+      topicObjs.push({ title: t.title, description: t.description, folderPath: topicFolderPath, status: defaultTopicStatus, systemNoteNames });
+    }
+
+    const level: DevPathLevel = { title: levelTitle, folderPath: levelFolderPath, topics: topicObjs };
+    await writeLevelNote(basePath.split('/').pop() || basePath, level);
+    return level;
+  };
+
+  const handleToggleDevPath = (path: string) => {
+    if (developmentPaths[path]) {
+      const name = path.split('/').pop();
+      requestConfirm(`"${name}" klasörünün gelişim yolu işaretini kaldırmak istediğinize emin misiniz? (Rütbe/XP verisi silinecek)`, () => {
+        setDevelopmentPaths(prev => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+      });
+      return;
+    }
+
+    // Faz 2: AI Mentor aktifse ve Gemini anahtarı girilmişse sihirbazı aç; aksi halde
+    // Faz 1'in basit (AI'sız) akışına düş.
+    if (isAiMentorEnabled && isGeminiConfigured()) {
+      setDevPathWizardTarget(path);
+      setDevPathWizardCurrentDesc('');
+      setDevPathWizardGoalDesc('');
+      setDevPathWizardNoteMode('basic');
+      setDevPathWizardQA([]);
+      setDevPathWizardQuestion(null);
+      setDevPathWizardError(null);
+      setDevPathWizardBusy(false);
+      setDevPathWizardPreview(null);
+      setDevPathWizardShowCorrection(false);
+      setDevPathWizardCorrectionText('');
+      return;
+    }
+
+    const label = prompt('Bu klasör hangi gelişim yolun? (örn: ASP.NET Yazılım Mühendisliği)');
+    if (!label || !label.trim()) return;
+
+    const currentTaskCount = timelineItems.filter(t =>
+      t.isCompleted && t.folder && (t.folder === path || t.folder.startsWith(path + '/'))
+    ).length;
+
+    let currentLinkCount = 0;
+    Object.keys(fileContents).forEach(notePath => {
+      if (notePath.startsWith(path + '/')) {
+        currentLinkCount += countWikilinks(fileContents[notePath] || '');
+      }
+    });
+
+    setDevelopmentPaths(prev => ({
+      ...prev,
+      [path]: {
+        mode: 'simple',
+        label: label.trim(),
+        xp: 0,
+        lastTaskCount: currentTaskCount,
+        lastLinkCount: currentLinkCount,
+        updatedAt: new Date().toISOString()
+      }
+    }));
+  };
+
+  // İki ayrı alanı ("şu anki durum" + "hedeflenen rol") AI'nin beklediği tek
+  // selfDescription string'ine birleştirir.
+  const buildDevPathSelfDescription = () => {
+    return `Şu anki durum/deneyim: ${devPathWizardCurrentDesc.trim() || '(belirtilmedi)'}\nUlaşmak istediği rol/hedef: ${devPathWizardGoalDesc.trim() || '(belirtilmedi)'}`;
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sihirbazda "Devam Et" tıklanınca (ilk açıklama VEYA bir netleştirme sorusuna cevap
+  // sonrası, VEYA bir düzeltme sonrası) çağrılır. AI ya yeni bir netleştirme sorusu döner
+  // (döngü devam eder) ya da nihai seviye+konu listesini döner. BUG DÜZELTMESİ: eskiden bu
+  // noktada doğrudan klasörler oluşturuluyordu — artık sadece bir ÖNİZLEME state'i
+  // dolduruluyor, gerçek diske yazma yalnızca kullanıcı "Onayla ve Oluştur" dediğinde
+  // (handleDevPathWizardConfirmPreview) oluyor.
+  const runDevPathWizardStep = async (qaSoFar: ClarifyingQA[]) => {
+    if (!devPathWizardTarget) return;
+    const path = devPathWizardTarget;
+    const domainLabel = path.split('/').pop() || path;
+
+    setDevPathWizardQA(qaSoFar);
+    setDevPathWizardBusy(true);
+    setDevPathWizardError(null);
+    try {
+      const result = await determineLevelAndTopics(domainLabel, buildDevPathSelfDescription(), qaSoFar, devPathWizardNoteMode);
+      if (result.needsClarification && result.clarifyingQuestion) {
+        setDevPathWizardQuestion({
+          question: result.clarifyingQuestion,
+          options: result.clarifyingOptions || []
+        });
+        setDevPathWizardBusy(false);
+        return;
+      }
+
+      if (!result.levelTitle || !result.topics || result.topics.length === 0) {
+        throw new Error('AI geçerli bir seviye/konu listesi döndürmedi.');
+      }
+
+      setDevPathWizardQuestion(null);
+      setDevPathWizardPreview({
+        levelTitle: result.levelTitle,
+        topics: result.topics,
+        priorLevels: result.priorLevels || []
+      });
+      setDevPathWizardBusy(false);
+    } catch (err: any) {
+      console.error('[DevPath Wizard] Hata:', err);
+      setDevPathWizardError(err?.message || 'Bilinmeyen bir hata oluştu.');
+      setDevPathWizardBusy(false);
+    }
+  };
+
+  const handleDevPathWizardSubmitDescription = () => {
+    if (!devPathWizardCurrentDesc.trim() && !devPathWizardGoalDesc.trim()) return;
+    runDevPathWizardStep([]);
+  };
+
+  // Önizlemedeki bir konuyu (tam yeniden üretime gerek kalmadan) listeden kaldırır.
+  const handleRemovePreviewTopic = (topicIdx: number) => {
+    setDevPathWizardPreview(prev => prev ? { ...prev, topics: prev.topics.filter((_, i) => i !== topicIdx) } : prev);
+  };
+
+  // "Bu yanlış anlaşılmış" — kullanıcının yazdığı düzeltmeyi bir netleştirme
+  // sorusu/cevabı gibi geçmişe ekleyip (mevcut priorQA mekanizmasını yeniden kullanarak)
+  // sihirbazı SIFIRDAN değil, bu bağlamla tekrar çalıştırır.
+  const handleDevPathWizardRegenerateWithCorrection = () => {
+    if (!devPathWizardCorrectionText.trim()) return;
+    const newQA = [...devPathWizardQA, {
+      question: 'Önceki öneri kullanıcının beklentisini karşılamadı. Kullanıcının düzeltmesi/ek açıklaması:',
+      answer: devPathWizardCorrectionText.trim()
+    }];
+    setDevPathWizardCorrectionText('');
+    setDevPathWizardShowCorrection(false);
+    setDevPathWizardPreview(null);
+    runDevPathWizardStep(newQA);
+  };
+
+  // Önizleme onaylandığında gerçek klasörleri/notları oluşturur — eskiden
+  // runDevPathWizardStep'in başarı dalında doğrudan burada yapılan iş, artık kullanıcı
+  // önizlemeyi onayladıktan SONRA tetikleniyor.
+  const handleDevPathWizardConfirmPreview = async () => {
+    if (!devPathWizardTarget || !devPathWizardPreview) return;
+    const path = devPathWizardTarget;
+    const domainLabel = path.split('/').pop() || path;
+
+    if (devPathWizardPreview.topics.length === 0) {
+      setDevPathWizardError('En az bir konu kalmalı — hepsini kaldırdınız.');
+      return;
+    }
+
+    setDevPathWizardBusy(true);
+    setDevPathWizardError(null);
+    try {
+      // Kullanıcı önceki seviyeleri atlayıp doğrudan ileri bir seviyeden başlıyorsa
+      // (ör. "Mid-level" dedi), AI'nin döndürdüğü önceki seviyeleri de klasör+konu
+      // olarak oluşturuyoruz — konuları baştan 'passed' (zaten bilindiği varsayılan)
+      // işaretleniyor ki kullanıcı Gelişim Yolu Detayı panelinde bunları gözden
+      // geçirip gerçekte bilmediklerini "Bunu Bilmiyorum" ile açığa çıkarabilsin.
+      const priorLevelObjs: DevPathLevel[] = [];
+      for (const pl of devPathWizardPreview.priorLevels) {
+        if (!pl.title || !pl.topics || pl.topics.length === 0) continue;
+        const priorLevel = await createLevelFolders(path, pl.title, pl.topics, 'passed', devPathWizardNoteMode);
+        priorLevelObjs.push(priorLevel);
+      }
+
+      const level = await createLevelFolders(path, devPathWizardPreview.levelTitle, devPathWizardPreview.topics, 'open', devPathWizardNoteMode);
+      const allLevels = [...priorLevelObjs, level];
+      setDevelopmentPaths(prev => ({
+        ...prev,
+        [path]: {
+          mode: 'ai',
+          label: domainLabel,
+          domainDescription: buildDevPathSelfDescription(),
+          noteMode: devPathWizardNoteMode,
+          currentLevelIndex: allLevels.length - 1,
+          levels: allLevels,
+          updatedAt: new Date().toISOString()
+        }
+      }));
+      await loadAllData();
+      setDevPathWizardTarget(null);
+      setDevPathWizardPreview(null);
+      setDevPathWizardBusy(false);
+      // Önceki seviyeler oluşturulduysa, kullanıcının bunları hemen gözden geçirip
+      // gerçekte bilmediklerini işaretleyebilmesi için detay panelini otomatik açıyoruz.
+      if (priorLevelObjs.length > 0) {
+        setDevPathDetailTarget(path);
+      }
+    } catch (err: any) {
+      console.error('[DevPath Wizard] Hata:', err);
+      setDevPathWizardError(err?.message || 'Bilinmeyen bir hata oluştu.');
+      setDevPathWizardBusy(false);
+    }
+  };
+
+  const handleDevPathWizardSelectOption = (option: string) => {
+    if (!devPathWizardQuestion) return;
+    const newQA = [...devPathWizardQA, { question: devPathWizardQuestion.question, answer: option }];
+    setDevPathWizardQA(newQA);
+    setDevPathWizardQuestion(null);
+    runDevPathWizardStep(newQA);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir konunun testi geçildiğinde çağrılır: durumu 'passed' yapar, seviye notunu
+  // günceller, ve eğer seviyedeki TÜM konular artık geçilmişse bir sonraki seviyeyi
+  // AI'den isteyip klasörlerini oluşturur ve kutlama banner'ını tetikler.
+  const handleTopicPassed = async (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    if (!devPath || !devPath.levels) return;
+    const level = devPath.levels[levelIdx];
+    if (!level) return;
+
+    const updatedTopics = level.topics.map((t, i) => i === topicIdx ? { ...t, status: 'passed' as const } : t);
+    const updatedLevel: DevPathLevel = { ...level, topics: updatedTopics };
+    const updatedLevels = devPath.levels.map((l, i) => i === levelIdx ? updatedLevel : l);
+
+    setDevelopmentPaths(prev => ({
+      ...prev,
+      [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+    }));
+    await writeLevelNote(devPath.label, updatedLevel);
+
+    const allPassed = updatedTopics.every(t => t.status === 'passed');
+    const isCurrentLevel = levelIdx === (devPath.currentLevelIndex ?? 0);
+    if (allPassed && isCurrentLevel) {
+      try {
+        const priorTitles = updatedLevels.map(l => l.title);
+        const noteMode = devPath.noteMode || 'basic';
+        const nextLevelData = await generateNextLevel(devPath.label, priorTitles, noteMode);
+        const nextLevel = await createLevelFolders(path, nextLevelData.levelTitle, nextLevelData.topics, 'open', noteMode);
+        const finalLevels = [...updatedLevels, nextLevel];
+        setDevelopmentPaths(prev => ({
+          ...prev,
+          [path]: {
+            ...prev[path],
+            levels: finalLevels,
+            currentLevelIndex: finalLevels.length - 1,
+            updatedAt: new Date().toISOString()
+          }
+        }));
+        setRankUpCelebration({ path, label: devPath.label, rankName: nextLevel.title });
+        setTimeout(() => setRankUpCelebration(null), 4000);
+        await loadAllData();
+      } catch (err) {
+        console.error('[DevPath] Sonraki seviye üretilemedi:', err);
+      }
+    }
+  };
+
+  // "Bunu bilmiyorum" — önceki bir seviyeden geçilmiş bir konuyu tekrar açığa alır
+  // (yeniden çalışılıp test edilebilsin diye).
+  const handleFlagTopicUnknown = async (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    if (!devPath || !devPath.levels) return;
+    const level = devPath.levels[levelIdx];
+    if (!level) return;
+    const updatedTopics = level.topics.map((t, i) => i === topicIdx ? { ...t, status: 'flagged_unknown' as const } : t);
+    const updatedLevel: DevPathLevel = { ...level, topics: updatedTopics };
+    const updatedLevels = devPath.levels.map((l, i) => i === levelIdx ? updatedLevel : l);
+    setDevelopmentPaths(prev => ({
+      ...prev,
+      [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+    }));
+    await writeLevelNote(devPath.label, updatedLevel);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Gelişim Yolu Detayı panelinde MEVCUT seviyedeki bir konuyu kaldırır — sihirbaz
+  // önizlemesinden farklı olarak burada konu klasörü zaten diske yazılmış olabilir (gerçek
+  // kullanıcı notları içerebilir), bu yüzden her zaman onay istenir ve klasör de silinir.
+  const handleRemoveCurrentTopic = (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    if (!devPath || !devPath.levels) return;
+    const level = devPath.levels[levelIdx];
+    const topic = level?.topics[topicIdx];
+    if (!topic) return;
+
+    requestConfirm(`"${topic.title}" konusunu ve klasöründeki (varsa) tüm notları kalıcı olarak silmek istediğinize emin misiniz?`, async () => {
+      try {
+        await platform.deletePath(topic.folderPath);
+      } catch (e) {
+        console.error('[DevPath] Konu klasörü silinemedi:', e);
+      }
+      const updatedTopics = level.topics.filter((_, i) => i !== topicIdx);
+      const updatedLevel: DevPathLevel = { ...level, topics: updatedTopics };
+      const updatedLevels = devPath.levels!.map((l, i) => i === levelIdx ? updatedLevel : l);
+      setDevelopmentPaths(prev => ({
+        ...prev,
+        [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+      }));
+      await writeLevelNote(devPath.label, updatedLevel);
+      await loadAllData();
+    });
+  };
+
+  const handleOpenAddTopic = (path: string, levelIdx: number) => {
+    setDevPathAddTopicTarget({ path, levelIdx });
+    setDevPathAddTopicHint('');
+    setDevPathAddTopicError(null);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI'den mevcut seviyeye TEK bir yeni konu önerisi ister ve createLevelFolders'ı (aynı
+  // seviyenin klasörüne, tek konuluk bir liste vererek) yeniden kullanıp gerçek klasörü
+  // materyalize eder. createLevelFolders döndürdüğü level.topics SADECE bu yeni konuyu
+  // içerdiği için (tüm seviyeyi değil), mevcut konu listesine elle EKLENİYOR — üzerine
+  // yazılmıyor.
+  const handleConfirmAddTopic = async () => {
+    if (!devPathAddTopicTarget) return;
+    const { path, levelIdx } = devPathAddTopicTarget;
+    const devPath = developmentPaths[path];
+    const level = devPath?.levels?.[levelIdx];
+    if (!level) return;
+
+    setDevPathAddTopicBusy(true);
+    setDevPathAddTopicError(null);
+    try {
+      const suggestion = await suggestAdditionalTopic(devPath.label, level.title, level.topics.map(t => t.title), devPathAddTopicHint);
+      const result = await createLevelFolders(path, level.title, [suggestion], 'open', devPath.noteMode || 'basic');
+      const newTopic = result.topics[0];
+      const updatedLevel: DevPathLevel = { ...level, topics: [...level.topics, newTopic] };
+      const updatedLevels = devPath.levels!.map((l, i) => i === levelIdx ? updatedLevel : l);
+      setDevelopmentPaths(prev => ({
+        ...prev,
+        [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+      }));
+      await writeLevelNote(devPath.label, updatedLevel);
+      await loadAllData();
+      setDevPathAddTopicTarget(null);
+      setDevPathAddTopicBusy(false);
+    } catch (err: any) {
+      console.error('[DevPath] Konu eklenemedi:', err);
+      setDevPathAddTopicError(err?.message || 'Konu önerilemedi.');
+      setDevPathAddTopicBusy(false);
+    }
+  };
+
+  // Bir konu klasöründeki notların en son ne zaman güncellendiğini bulur — "Son
+  // çalışma: X gün önce" göstergesi ve takvim hatırlatması tetikleme koşulu için.
+  // Not yoksa null döner (henüz hiç çalışılmamış).
+  const getFolderLastActivityDays = (folderPath: string, extraSystemNames: string[] = []): number | null => {
+    const relevantNotes = getUserNotesInTopicFolder(folderPath, extraSystemNames);
+    if (relevantNotes.length === 0) return null;
+    const lastUpdated = Math.max(...relevantNotes.map(n => n.updatedAt || 0));
+    if (!lastUpdated) return null;
+    return Math.floor((Date.now() - lastUpdated) / (1000 * 60 * 60 * 24));
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Konu notlarından, uygulamanın var olan aralıklı tekrar (SRS) söz dizimiyle
+  // ([card: soru || cevap] [srs: boxN, tarih]) uyumlu kartlar üretir ve konu
+  // klasöründeki ayrı bir "Soru Kartları.md" notuna ekler — böylece FlashcardView.tsx
+  // bu kartları otomatik olarak tekrar kuyruğuna alır, ekstra bir depolama gerekmez.
+  const handleGenerateFlashcardsForTopic = async (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    const topic = devPath?.levels?.[levelIdx]?.topics[topicIdx];
+    if (!topic) return;
+
+    setDevPathTopicActionBusy({ levelIdx, topicIdx });
+    setDevPathTopicActionMessage(null);
+    try {
+      const notesContent = getUserNotesInTopicFolder(topic.folderPath, topic.systemNoteNames || [])
+        .map(n => fileContents[n.path] || '')
+        .join('\n\n---\n\n');
+      const result = await generateFlashcards(topic.title, topic.description, notesContent);
+      if (!result.cards || result.cards.length === 0) {
+        throw new Error('AI kart üretmedi.');
+      }
+
+      const cardsNotePath = `${topic.folderPath}/Soru Kartları.md`;
+      const existingContent = fileContents[cardsNotePath] || `# ${topic.title} — Soru Kartları\n`;
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const newLines = result.cards.map(c => `[card: ${c.question.trim()} || ${c.answer.trim()}] [srs: box1, ${todayStr}]`).join('\n');
+      const updatedContent = `${existingContent.trimEnd()}\n${newLines}\n`;
+
+      await handleSaveNote(cardsNotePath, updatedContent);
+      await loadAllData();
+      setDevPathTopicActionMessage({ levelIdx, topicIdx, text: `${result.cards.length} kart oluşturuldu ✅` });
+    } catch (err: any) {
+      setDevPathTopicActionMessage({ levelIdx, topicIdx, text: err?.message || 'Kartlar oluşturulamadı.' });
+    } finally {
+      setDevPathTopicActionBusy(null);
+      setTimeout(() => setDevPathTopicActionMessage(null), 4000);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI çağrısı GEREKTİRMEZ — sadece konu klasörüne, uygulamanın var olan
+  // "- [ ] ... [due:YYYY-MM-DD]" görev söz dizimiyle bir hatırlatma satırı yazar,
+  // bu da mevcut Takvim Planlayıcı'da otomatik olarak yarının görevi olarak belirir.
+  // Aynı hatırlatma notu varsa üzerine yazılır (tekrar tekrar birikmesin diye).
+  const handleAddCalendarReminderForTopic = async (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    const topic = devPath?.levels?.[levelIdx]?.topics[topicIdx];
+    if (!topic) return;
+
+    setDevPathTopicActionBusy({ levelIdx, topicIdx });
+    try {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const dueStr = tomorrow.toISOString().slice(0, 10);
+      const reminderPath = `${topic.folderPath}/Hatırlatma.md`;
+      const content = `# Hatırlatma\n\n- [ ] "${topic.title}" konusuna çalış (${devPath!.label}) [due:${dueStr}]\n`;
+      await handleSaveNote(reminderPath, content);
+      await loadAllData();
+      setDevPathTopicActionMessage({ levelIdx, topicIdx, text: 'Yarının takvimine eklendi 📅' });
+    } catch (err: any) {
+      setDevPathTopicActionMessage({ levelIdx, topicIdx, text: 'Takvime eklenemedi.' });
+    } finally {
+      setDevPathTopicActionBusy(null);
+      setTimeout(() => setDevPathTopicActionMessage(null), 4000);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Test Et" ÖNCESİ özet modalını açar — konu notu var ama özet henüz onaylanmamışsa çağrılır.
+  const handleOpenSummaryModal = (path: string, levelIdx: number, topicIdx: number) => {
+    setDevPathSummaryTarget({ path, levelIdx, topicIdx });
+    setDevPathSummaryText('');
+    setDevPathSummaryResult(null);
+    setDevPathSummaryError(null);
+    setDevPathSummaryBusy(false);
+  };
+
+  const handleSubmitTopicSummary = async () => {
+    if (!devPathSummaryTarget || !devPathSummaryText.trim()) return;
+    const { path, levelIdx, topicIdx } = devPathSummaryTarget;
+    const devPath = developmentPaths[path];
+    const topic = devPath?.levels?.[levelIdx]?.topics[topicIdx];
+    if (!topic) return;
+
+    setDevPathSummaryBusy(true);
+    setDevPathSummaryError(null);
+    try {
+      const notesContent = getUserNotesInTopicFolder(topic.folderPath, topic.systemNoteNames || [])
+        .map(n => fileContents[n.path] || '')
+        .join('\n\n---\n\n');
+      const result = await evaluateSummary(topic.title, topic.description, notesContent, devPathSummaryText);
+      setDevPathSummaryResult(result);
+      setDevPathSummaryBusy(false);
+      if (result.approved) {
+        const updatedTopics = devPath!.levels![levelIdx].topics.map((t, i) => i === topicIdx ? { ...t, summaryApproved: true } : t);
+        const updatedLevel = { ...devPath!.levels![levelIdx], topics: updatedTopics };
+        const updatedLevels = devPath!.levels!.map((l, i) => i === levelIdx ? updatedLevel : l);
+        setDevelopmentPaths(prev => ({
+          ...prev,
+          [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+        }));
+      }
+    } catch (err: any) {
+      setDevPathSummaryError(err?.message || 'Özet değerlendirilemedi.');
+      setDevPathSummaryBusy(false);
+    }
+  };
+
+  const handleOpenDevPathQuiz = async (path: string, levelIdx: number, topicIdx: number) => {
+    const devPath = developmentPaths[path];
+    if (!devPath || !devPath.levels) return;
+    const topic = devPath.levels[levelIdx]?.topics[topicIdx];
+    if (!topic) return;
+
+    setDevPathQuizTarget({ path, levelIdx, topicIdx });
+    setDevPathQuizQuestions([]);
+    setDevPathQuizAnswers([]);
+    setDevPathQuizResult(null);
+    setDevPathQuizError(null);
+    setDevPathQuizBusy(true);
+
+    try {
+      const notesContent = getUserNotesInTopicFolder(topic.folderPath, topic.systemNoteNames || [])
+        .map(n => fileContents[n.path] || '')
+        .join('\n\n---\n\n');
+      const quiz = await generateQuiz(topic.title, topic.description, notesContent);
+      setDevPathQuizQuestions(quiz.questions);
+      setDevPathQuizAnswers(new Array(quiz.questions.length).fill(''));
+      setDevPathQuizBusy(false);
+    } catch (err: any) {
+      setDevPathQuizError(err?.message || 'Sınav hazırlanamadı.');
+      setDevPathQuizBusy(false);
+    }
+  };
+
+  const handleSubmitDevPathQuiz = async () => {
+    if (!devPathQuizTarget) return;
+    const { path, levelIdx, topicIdx } = devPathQuizTarget;
+    const devPath = developmentPaths[path];
+    const topic = devPath?.levels?.[levelIdx]?.topics[topicIdx];
+    if (!topic) return;
+
+    setDevPathQuizBusy(true);
+    setDevPathQuizError(null);
+    try {
+      const qa = devPathQuizQuestions.map((q, i) => ({ question: q, answer: devPathQuizAnswers[i] || '' }));
+      const result = await gradeQuiz(topic.title, qa);
+      setDevPathQuizResult(result);
+      setDevPathQuizBusy(false);
+      if (result.passed) {
+        await handleTopicPassed(path, levelIdx, topicIdx);
+      } else {
+        const updatedTopics = devPath!.levels![levelIdx].topics.map((t, i) => i === topicIdx ? { ...t, status: 'testable' as const } : t);
+        const updatedLevel = { ...devPath!.levels![levelIdx], topics: updatedTopics };
+        const updatedLevels = devPath!.levels!.map((l, i) => i === levelIdx ? updatedLevel : l);
+        setDevelopmentPaths(prev => ({
+          ...prev,
+          [path]: { ...prev[path], levels: updatedLevels, updatedAt: new Date().toISOString() }
+        }));
+      }
+    } catch (err: any) {
+      setDevPathQuizError(err?.message || 'Sınav değerlendirilemedi.');
+      setDevPathQuizBusy(false);
+    }
+  };
+
   const handleRenamePath = async (oldPath: string, newPath: string) => {
     try {
       const res = await platform.renamePath(oldPath, newPath);
@@ -3398,6 +4345,27 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         } else if (selectedFolder && selectedFolder.startsWith(oldPath + '/')) {
           const rel = selectedFolder.substring(oldPath.length);
           setSelectedFolder(newPath + rel);
+        }
+
+        // Yeniden adlandırılan klasör (veya alt klasörlerinden biri) bir gelişim yoluysa,
+        // rütbe/XP verisi kaybolmasın diye anahtarı yeni yola taşı.
+        if (!isFile) {
+          setDevelopmentPaths(prev => {
+            let changed = false;
+            const next: Record<string, DevPath> = {};
+            Object.keys(prev).forEach(devPath => {
+              if (devPath === oldPath) {
+                next[newPath] = prev[devPath];
+                changed = true;
+              } else if (devPath.startsWith(oldPath + '/')) {
+                next[newPath + devPath.substring(oldPath.length)] = prev[devPath];
+                changed = true;
+              } else {
+                next[devPath] = prev[devPath];
+              }
+            });
+            return changed ? next : prev;
+          });
         }
 
         // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -3472,8 +4440,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 await handleLocalDelete(oldNotePath);
                 const content = await platform.readNote(file.path);
                 await handleLocalSave(file.path, content);
+              } else if (file.type === 'folder' && file.path.startsWith(newPath + '/')) {
+                const oldFolderPath = oldPath + file.path.substring(newPath.length);
+                await handleLocalFolderDelete(oldFolderPath);
+                await uploadFolderDirect(file.path);
               }
             }
+            // Klasörün kendisi (yeni yolu) de aktif olarak yüklenmeli, eski yolu tombstone'lanmalı.
+            await handleLocalFolderDelete(oldPath);
+            await uploadFolderDirect(newPath);
           }
         }
         
@@ -3992,8 +4967,22 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     }
   };
 
-  // Show sync loading overlay while initial reconciliation is running
-  if (!initialSyncDone && !isBrowser) {
+  // Show sync loading overlay ONLY while the app's FIRST (initial-launch) full
+  // reconciliation is running.
+  // BUG DÜZELTMESİ #1: Önceden bu overlay, senkron durumu netleşene kadar (aynı-cihaz
+  // kısayolu uygulanacak olsa bile) HER açılışta koşulsuz gösteriliyordu — kullanıcı
+  // "değişen bir şey yokken neden hâlâ görünüyor?" diye haklı olarak sordu. syncStatus'a
+  // bakmaya geçildi: kısayol alındığında durum hiç 'syncing' olmadan direkt 'synced'
+  // olur, bu yüzden overlay hiç görünmez.
+  // BUG DÜZELTMESİ #2: Ama syncStatus yalnızca AÇILIŞTA değil, OTURUM BOYUNCA da
+  // 'syncing' olabiliyor (ör. bir klasör silinirken içindeki HER not ayrı ayrı
+  // triggerRemoteSync tetikleyip durumu 'syncing'<->'synced' arasında hızla
+  // gidip getiriyordu) — bu da tam ekran engelleme ekranının silme işlemi
+  // boyunca sürekli yanıp sönmesine yol açıyordu. hasCompletedFirstSyncRef,
+  // İLK çözümlemeden sonra kalıcı olarak true kalır; overlay yalnızca bu HENÜZ
+  // olmamışken (yani gerçekten uygulama yeni açılmışken) gösterilir — sonraki
+  // hiçbir arka plan senkronu bu tam ekran ekranı bir daha tetiklemez.
+  if (syncStatus === 'syncing' && !hasCompletedFirstSyncRef.current && !isBrowser) {
     return (
       <div className="sync-loading-overlay">
         <div className="sync-loading-card">
@@ -4025,6 +5014,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           onCreateNote={() => Promise.resolve()}
           readNoteContent={handleReadNoteContent}
           onRenameNote={() => Promise.resolve()}
+          onRequestConfirm={requestConfirm}
           hideSidebar={true}
           pinnedWidgetLists={pinnedWidgetLists}
           pinnedWidgetList={pinnedWidgetList}
@@ -4223,6 +5213,38 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         )}
       </div>
 
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Bir gelişim yolu rütbe atladığında kısa süreliğine gösterilen kutlama banner'ı
+          (eski pet özelliğinin "EVRİMLEŞİYOR!" ekranının yerini alır, bkz. rankUpCelebration state'i). */}
+      {rankUpCelebration && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10000,
+            background: 'var(--bg-tertiary)',
+            border: '1px solid var(--accent-color)',
+            borderRadius: '10px',
+            padding: '14px 22px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            animation: 'fadeIn 0.3s ease'
+          }}
+        >
+          <span style={{ fontSize: '22px' }}>🎖️</span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>TERFİ ETTİN!</span>
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              {rankUpCelebration.label}: {rankUpCelebration.rankName}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="main-viewport">
         {/* Sidebar Left */}
         <Sidebar
@@ -4243,6 +5265,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           setSelectedTag={setSelectedTag}
           onCreateFolder={handleCreateFolder}
           onDeleteFolder={handleDeleteFolder}
+          onRequestConfirm={requestConfirm}
           syncStatus={syncStatus}
           isSidebarOpen={isSidebarOpen}
           setIsSidebarOpen={setIsSidebarOpen}
@@ -4269,10 +5292,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             });
           }}
           isNoteCityEnabled={isNoteCityEnabled}
-          isFocusPetEnabled={isFocusPetEnabled}
+          isDevPathsEnabled={isDevPathsEnabled}
+          developmentPaths={developmentPaths}
+          onOpenPathDetail={(path) => setDevPathDetailTarget(path)}
           fileContents={fileContents}
           notes={notes}
-          onSavePetData={handleSavePetData}
         />
 
         {/* Mobile touch backdrop overlay to dismiss sidebar */}
@@ -4318,6 +5342,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 setIsPomodoroRunning(false);
                 setPomodoroSeconds(25 * 60);
               }}
+              onRequestConfirm={requestConfirm}
             />
           )}
 
@@ -4332,6 +5357,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               loadAllData={loadAllData}
               setActiveTab={setActiveTab}
               setActiveNotePath={handleSetActiveNotePath}
+              onRequestConfirm={requestConfirm}
             />
           )}
 
@@ -4342,6 +5368,38 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               {panes.map((pane, idx) => {
                 const isFocused = idx === activePaneIdx;
                 const activePath = pane.tabs[pane.activeTabIdx] || null;
+                // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                // NotesView'a prop olarak geçilen ile "son görüntülenenler" breadcrumb'ından
+                // tıklanınca çağrılan AYNI mantık olsun diye isimlendirilmiş bir fonksiyona
+                // çıkarıldı (öncesinde bu satır içi (inline) bir closure'dı).
+                const setPaneActiveNotePath = (path: string | null) => {
+                  setPanes(prev => {
+                    const newPanes = [...prev];
+                    const activePane = { ...newPanes[idx] };
+                    if (path) {
+                      const existingIdx = activePane.tabs.indexOf(path);
+                      if (existingIdx !== -1) {
+                        activePane.activeTabIdx = existingIdx;
+                      } else {
+                        activePane.tabs[activePane.activeTabIdx] = path;
+                      }
+                    } else {
+                      activePane.tabs = activePane.tabs.filter((_, i) => i !== activePane.activeTabIdx);
+                      activePane.activeTabIdx = Math.max(0, activePane.activeTabIdx - 1);
+
+                      if (activePane.tabs.length === 0 && newPanes.length > 1) {
+                        newPanes.splice(idx, 1);
+                        setActivePaneIdx(Math.max(0, idx - 1));
+                        return newPanes;
+                      }
+                    }
+                    newPanes[idx] = activePane;
+                    return newPanes;
+                  });
+                  if (idx === activePaneIdx) {
+                    setActiveNotePath(path);
+                  }
+                };
                 return (
                   <Fragment key={pane.id}>
                   <div
@@ -4425,6 +5483,68 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       >
                         <Plus size={12} />
                       </button>
+                      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                          "Breadcrumb gibi bir şey — az önce açtığım nota dönmek istiyorum" isteği:
+                          açık sekmelerden bağımsız olarak son görüntülenen notlara hızlı dönüş. */}
+                      <div style={{ position: 'relative' }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setHistoryDropdownPaneIdx(historyDropdownPaneIdx === idx ? null : idx);
+                          }}
+                          className="pane-tab-add"
+                          title="Son Görüntülenen Notlar"
+                        >
+                          <Clock size={12} />
+                        </button>
+                        {historyDropdownPaneIdx === idx && (
+                          <>
+                            <div
+                              onClick={() => setHistoryDropdownPaneIdx(null)}
+                              style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+                            />
+                            <div
+                              className="context-menu-container"
+                              style={{ position: 'absolute', top: '100%', right: 0, marginTop: '4px', minWidth: '220px', maxWidth: '280px', zIndex: 50 }}
+                            >
+                              {(() => {
+                                const recentPaths = noteViewHistory.filter(p => p !== activePath && notes.some(n => n.path === p));
+                                if (recentPaths.length === 0) {
+                                  return (
+                                    <div style={{ padding: '10px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                                      Henüz görüntülenen başka not yok
+                                    </div>
+                                  );
+                                }
+                                return recentPaths.map(path => {
+                                  const parts = path.split('/');
+                                  const name = parts.pop()?.replace(/\.(md|excalidraw|drawio)$/, '') || path;
+                                  const folder = parts.join('/');
+                                  return (
+                                    <ContextMenuItem
+                                      key={path}
+                                      onClick={() => {
+                                        setPaneActiveNotePath(path);
+                                        setHistoryDropdownPaneIdx(null);
+                                      }}
+                                    >
+                                      <Clock size={14} />
+                                      <span style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                                        {folder && (
+                                          <span style={{ fontSize: '10px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {folder}
+                                          </span>
+                                        )}
+                                      </span>
+                                    </ContextMenuItem>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
 
                     <NotesView
@@ -4433,40 +5553,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       fileContents={fileContents}
                       notes={notes}
                       activeNotePath={activePath}
-                      setActiveNotePath={(path) => {
-                        setPanes(prev => {
-                          const newPanes = [...prev];
-                          const activePane = { ...newPanes[idx] };
-                          if (path) {
-                            const existingIdx = activePane.tabs.indexOf(path);
-                            if (existingIdx !== -1) {
-                              activePane.activeTabIdx = existingIdx;
-                            } else {
-                              activePane.tabs[activePane.activeTabIdx] = path;
-                            }
-                          } else {
-                            activePane.tabs = activePane.tabs.filter((_, i) => i !== activePane.activeTabIdx);
-                            activePane.activeTabIdx = Math.max(0, activePane.activeTabIdx - 1);
-                            
-                            if (activePane.tabs.length === 0 && newPanes.length > 1) {
-                              newPanes.splice(idx, 1);
-                              setActivePaneIdx(Math.max(0, idx - 1));
-                              return newPanes;
-                            }
-                          }
-                          newPanes[idx] = activePane;
-                          return newPanes;
-                        });
-                        if (idx === activePaneIdx) {
-                          setActiveNotePath(path);
-                        }
-                      }}
+                      setActiveNotePath={setPaneActiveNotePath}
                       onSaveNote={handleSaveNote}
                       onDeletePath={handleDeletePath}
                       onCreateNote={handleCreateNote}
                       readNoteContent={handleReadNoteContent}
                       onRenameNote={handleRenameNote}
                       onNoteContextMenu={handleNoteContextMenu}
+                      onRequestConfirm={requestConfirm}
                       onSearchWeb={(query) => {
                         setBrowserInitialQuery(query);
                         setActiveTab('browser');
@@ -4644,6 +5738,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               setActiveTab={setActiveTab}
               selectedTag={selectedTag}
               selectedFolder={selectedFolder}
+              onRequestConfirm={requestConfirm}
             />
           )}
 
@@ -4729,6 +5824,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 setActiveTab('notes');
               }}
               onSaveNote={handleSaveNote}
+              onRequestConfirm={requestConfirm}
             />
           )}
 
@@ -4881,6 +5977,539 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           </div>
         </div>
       )}
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Gelişim yolu AI sihirbazı: kendini tanımlama -> (gerekirse) netleştirme sorusu
+          döngüsü -> seviye/konu klasörlerinin oluşturulması. Faz 1'in isFolderModalOpen
+          şablonuyla aynı .modal-overlay/.modal-content deseni kullanılır. */}
+      {devPathWizardTarget && (
+        <div className="modal-overlay animate-fade">
+          <div className="modal-content animate-pop" style={devPathWizardPreview ? { maxWidth: '520px', maxHeight: '82vh', display: 'flex', flexDirection: 'column' } : undefined}>
+            <div className="modal-header">
+              <h3>AI Gelişim Mentoru</h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                "{devPathWizardTarget.split('/').pop()}" için seviyeni belirleyelim
+              </p>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: devPathWizardPreview ? 'auto' : undefined }}>
+              {devPathWizardError && (
+                <div style={{ padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                  {devPathWizardError}
+                </div>
+              )}
+              {devPathWizardPreview ? (
+                // BUG DÜZELTMESİ (yanlış anlaşılan hedef): AI'nin ürettiği sonucu diske
+                // yazmadan ÖNCE burada gösteriyoruz — kullanıcı alakasız konuları tek tek
+                // kaldırabilir VEYA "bu yanlış" deyip düzeltme yazıp yeniden ürettirebilir.
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(99,102,241,0.08)', border: '1px solid var(--accent-color)' }}>
+                    <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Belirlenen Seviye</span>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--accent-color)' }}>{devPathWizardPreview.levelTitle}</div>
+                  </div>
+                  {devPathWizardPreview.priorLevels.length > 0 && (
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      + {devPathWizardPreview.priorLevels.length} önceki seviye de (geçilmiş olarak) otomatik oluşturulacak.
+                    </span>
+                  )}
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Konular ({devPathWizardPreview.topics.length})
+                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {devPathWizardPreview.topics.map((topic, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', padding: '8px 10px', borderRadius: '6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{topic.title}</span>
+                          <span style={{ fontSize: '10.5px', color: 'var(--text-secondary)' }}>{topic.description}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePreviewTopic(idx)}
+                          disabled={devPathWizardBusy}
+                          title="Bu konuyu kaldır"
+                          style={{ flexShrink: 0, width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-muted)', cursor: devPathWizardBusy ? 'default' : 'pointer', fontSize: '11px' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {!devPathWizardShowCorrection ? (
+                    <button
+                      type="button"
+                      onClick={() => setDevPathWizardShowCorrection(true)}
+                      disabled={devPathWizardBusy}
+                      style={{ alignSelf: 'flex-start', fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(234,179,8,0.4)', background: 'transparent', color: '#eab308', cursor: devPathWizardBusy ? 'default' : 'pointer' }}
+                    >
+                      Bu yanlış anlaşılmış, düzelt
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px', borderRadius: '8px', background: 'rgba(234,179,8,0.06)', border: '1px solid rgba(234,179,8,0.25)' }}>
+                      <label style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Ne kastettiğini/neyin yanlış olduğunu yaz, aynı bağlamla yeniden üretilsin:</label>
+                      <textarea
+                        value={devPathWizardCorrectionText}
+                        onChange={(e) => setDevPathWizardCorrectionText(e.target.value)}
+                        placeholder="ör. Framework detaylarına değil, gerçek sistem tasarımı/mimari konularına odaklan..."
+                        className="modal-input"
+                        rows={3}
+                        style={{ resize: 'vertical', width: '100%' }}
+                        disabled={devPathWizardBusy}
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={handleDevPathWizardRegenerateWithCorrection}
+                        disabled={!devPathWizardCorrectionText.trim() || devPathWizardBusy}
+                        style={{ alignSelf: 'flex-start', fontSize: '11px', padding: '6px 12px', borderRadius: '6px', border: 'none', background: '#eab308', color: '#1c1400', fontWeight: 600, cursor: (!devPathWizardCorrectionText.trim() || devPathWizardBusy) ? 'default' : 'pointer' }}
+                      >
+                        Yeniden Oluştur
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : !devPathWizardQuestion ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Şu an ne iş yapıyorsun / deneyimin nedir?
+                    </label>
+                    <textarea
+                      value={devPathWizardCurrentDesc}
+                      onChange={(e) => setDevPathWizardCurrentDesc(e.target.value)}
+                      placeholder="ör. Mid-level ASP.NET yazılım mühendisiyim / Yeni başlıyorum, hiç deneyimim yok..."
+                      className="modal-input"
+                      rows={3}
+                      style={{ resize: 'vertical', width: '100%' }}
+                      autoFocus
+                      disabled={devPathWizardBusy}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Hangi role/seviyeye doğru gitmek istiyorsun?
+                    </label>
+                    <textarea
+                      value={devPathWizardGoalDesc}
+                      onChange={(e) => setDevPathWizardGoalDesc(e.target.value)}
+                      placeholder="ör. Yazılım mimarı olmak istiyorum, bu konuda yeni başlıyorum..."
+                      className="modal-input"
+                      rows={3}
+                      style={{ resize: 'vertical', width: '100%' }}
+                      disabled={devPathWizardBusy}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Not oluşturma modu (bu alandaki tüm seviyeler için geçerli)
+                    </label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {([
+                        { value: 'basic' as const, title: 'Basic', desc: 'Her konu için tek bir başlangıç notu.' },
+                        { value: 'advanced' as const, title: 'Advance', desc: 'Ana not + wikilink ile bağlı birden fazla alt-not.' },
+                        { value: 'complete' as const, title: 'Complete', desc: 'Advance + notlardan otomatik üretilen soru kartları.' }
+                      ]).map(opt => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          disabled={devPathWizardBusy}
+                          onClick={() => setDevPathWizardNoteMode(opt.value)}
+                          style={{
+                            textAlign: 'left', padding: '8px 10px', borderRadius: '8px',
+                            border: `1px solid ${devPathWizardNoteMode === opt.value ? 'var(--accent-color)' : 'var(--border-color)'}`,
+                            background: devPathWizardNoteMode === opt.value ? 'rgba(99,102,241,0.08)' : 'var(--bg-tertiary)',
+                            cursor: devPathWizardBusy ? 'default' : 'pointer'
+                          }}
+                        >
+                          <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)' }}>{opt.title}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{opt.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: 600 }}>{devPathWizardQuestion.question}</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {devPathWizardQuestion.options.map(opt => (
+                      <button
+                        key={opt}
+                        type="button"
+                        disabled={devPathWizardBusy}
+                        onClick={() => handleDevPathWizardSelectOption(opt)}
+                        style={{ textAlign: 'left', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', cursor: devPathWizardBusy ? 'default' : 'pointer', fontSize: '12.5px' }}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {devPathWizardBusy && (
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>AI düşünüyor...</span>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-modal-cancel" onClick={() => setDevPathWizardTarget(null)}>
+                İptal
+              </button>
+              {devPathWizardPreview ? (
+                <button
+                  type="button"
+                  className="btn-modal-confirm"
+                  disabled={devPathWizardBusy || devPathWizardPreview.topics.length === 0}
+                  onClick={handleDevPathWizardConfirmPreview}
+                >
+                  Onayla ve Oluştur
+                </button>
+              ) : !devPathWizardQuestion && (
+                <button
+                  type="button"
+                  className="btn-modal-confirm"
+                  disabled={(!devPathWizardCurrentDesc.trim() && !devPathWizardGoalDesc.trim()) || devPathWizardBusy}
+                  onClick={handleDevPathWizardSubmitDescription}
+                >
+                  Devam Et
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Özet modalı — "Test Et" ÖNCESİ ön koşul. Kullanıcı konuyu kendi cümleleriyle
+          özetler, AI onaylarsa konu 'summaryApproved' olur ve quiz açılır. */}
+      {devPathSummaryTarget && (() => {
+        const summaryTopic = developmentPaths[devPathSummaryTarget.path]?.levels?.[devPathSummaryTarget.levelIdx]?.topics[devPathSummaryTarget.topicIdx];
+        return (
+          <div className="modal-overlay animate-fade">
+            <div className="modal-content animate-pop">
+              <div className="modal-header">
+                <h3>Konuyu Özetle</h3>
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  "{summaryTopic?.title}" — notlarını okuyup kendi cümlelerinle özetle
+                </p>
+              </div>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {devPathSummaryError && (
+                  <div style={{ padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                    {devPathSummaryError}
+                  </div>
+                )}
+                {devPathSummaryResult ? (
+                  <div style={{
+                    padding: '12px', borderRadius: '8px',
+                    background: devPathSummaryResult.approved ? 'rgba(34,197,94,0.1)' : 'rgba(234,179,8,0.1)',
+                    border: `1px solid ${devPathSummaryResult.approved ? 'rgba(34,197,94,0.3)' : 'rgba(234,179,8,0.3)'}`
+                  }}>
+                    <strong style={{ display: 'block', marginBottom: '6px', color: devPathSummaryResult.approved ? '#22c55e' : '#eab308' }}>
+                      {devPathSummaryResult.approved ? '✅ Onaylandı!' : '📝 Henüz Değil'}
+                    </strong>
+                    <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>{devPathSummaryResult.feedback}</span>
+                  </div>
+                ) : (
+                  <textarea
+                    value={devPathSummaryText}
+                    onChange={(e) => setDevPathSummaryText(e.target.value)}
+                    placeholder="Bu konuda öğrendiklerini kendi cümlelerinle özetle..."
+                    className="modal-input"
+                    rows={6}
+                    style={{ resize: 'vertical', width: '100%' }}
+                    autoFocus
+                    disabled={devPathSummaryBusy}
+                  />
+                )}
+                {devPathSummaryBusy && (
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>AI değerlendiriyor...</span>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-modal-cancel" onClick={() => setDevPathSummaryTarget(null)}>
+                  {devPathSummaryResult ? 'Kapat' : 'Vazgeç'}
+                </button>
+                {!devPathSummaryResult && (
+                  <button
+                    type="button"
+                    className="btn-modal-confirm"
+                    disabled={!devPathSummaryText.trim() || devPathSummaryBusy}
+                    onClick={handleSubmitTopicSummary}
+                  >
+                    Gönder
+                  </button>
+                )}
+                {devPathSummaryResult && !devPathSummaryResult.approved && (
+                  <button
+                    type="button"
+                    className="btn-modal-confirm"
+                    onClick={() => { setDevPathSummaryResult(null); setDevPathSummaryError(null); }}
+                  >
+                    Tekrar Dene
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Konu testi (quiz) modalı — AI'nin ürettiği soruları gösterir, cevaplar
+          gönderilince AI değerlendirir ve geçilirse konu 'passed' olur. */}
+      {devPathQuizTarget && (
+        <div className="modal-overlay animate-fade">
+          <div className="modal-content animate-pop">
+            <div className="modal-header">
+              <h3>Konu Testi</h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                {developmentPaths[devPathQuizTarget.path]?.levels?.[devPathQuizTarget.levelIdx]?.topics[devPathQuizTarget.topicIdx]?.title}
+              </p>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxHeight: '50vh', overflowY: 'auto' }}>
+              {devPathQuizError && (
+                <div style={{ padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                  {devPathQuizError}
+                </div>
+              )}
+              {devPathQuizBusy && !devPathQuizResult && devPathQuizQuestions.length === 0 && (
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Sınav hazırlanıyor...</span>
+              )}
+              {devPathQuizResult ? (
+                <div style={{
+                  padding: '12px', borderRadius: '8px',
+                  background: devPathQuizResult.passed ? 'rgba(34,197,94,0.1)' : 'rgba(234,179,8,0.1)',
+                  border: `1px solid ${devPathQuizResult.passed ? 'rgba(34,197,94,0.3)' : 'rgba(234,179,8,0.3)'}`
+                }}>
+                  <strong style={{ display: 'block', marginBottom: '6px', color: devPathQuizResult.passed ? '#22c55e' : '#eab308' }}>
+                    {devPathQuizResult.passed ? '✅ Geçtin!' : '📝 Henüz Değil'}
+                  </strong>
+                  <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>{devPathQuizResult.feedback}</span>
+                  {devPathQuizResult.weakAreas && devPathQuizResult.weakAreas.length > 0 && (
+                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${devPathQuizResult.passed ? 'rgba(34,197,94,0.2)' : 'rgba(234,179,8,0.2)'}` }}>
+                      <strong style={{ display: 'block', marginBottom: '6px', fontSize: '11.5px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                        {devPathQuizResult.passed ? 'Gözden geçirmen faydalı olur:' : 'Öncelikle şunları tekrar çalış:'}
+                      </strong>
+                      <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {devPathQuizResult.weakAreas.map((area, i) => (
+                          <li key={i} style={{ fontSize: '12.5px', color: 'var(--text-primary)' }}>{area}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                devPathQuizQuestions.map((q, i) => (
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>{i + 1}. {q}</label>
+                    <textarea
+                      value={devPathQuizAnswers[i] || ''}
+                      onChange={(e) => setDevPathQuizAnswers(prev => prev.map((a, idx) => idx === i ? e.target.value : a))}
+                      className="modal-input"
+                      rows={2}
+                      style={{ width: '100%' }}
+                      disabled={devPathQuizBusy}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-modal-cancel" onClick={() => setDevPathQuizTarget(null)}>
+                {devPathQuizResult ? 'Kapat' : 'Vazgeç'}
+              </button>
+              {!devPathQuizResult && devPathQuizQuestions.length > 0 && (
+                <button
+                  type="button"
+                  className="btn-modal-confirm"
+                  disabled={devPathQuizBusy || devPathQuizAnswers.some(a => !a.trim())}
+                  onClick={handleSubmitDevPathQuiz}
+                >
+                  Gönder
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          "Gelişim Yolu Detayı" paneli — tüm seviyeleri ve konularını listeler; önceki
+          seviyelerden geçilmiş bir konu "Bunu Bilmiyorum" ile tekrar açığa alınabilir. */}
+      {devPathDetailTarget && developmentPaths[devPathDetailTarget] && (
+        <div className="modal-overlay animate-fade" onClick={() => setDevPathDetailTarget(null)}>
+          <div
+            className="modal-content animate-pop"
+            style={{ maxWidth: '540px', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>{developmentPaths[devPathDetailTarget].label}</h3>
+            </div>
+            <div className="modal-body" style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {(developmentPaths[devPathDetailTarget].levels || []).map((level, levelIdx) => {
+                const isCurrent = levelIdx === (developmentPaths[devPathDetailTarget].currentLevelIndex ?? 0);
+                return (
+                  <div key={levelIdx} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <strong style={{ fontSize: '13px', color: isCurrent ? 'var(--accent-color)' : 'var(--text-secondary)' }}>
+                      Seviye {levelIdx + 1}: {level.title} {isCurrent && '(Mevcut)'}
+                    </strong>
+                    {level.topics.map((topic, topicIdx) => {
+                      const hasNotes = getUserNotesInTopicFolder(topic.folderPath, topic.systemNoteNames || []).length > 0;
+                      const daysSince = getFolderLastActivityDays(topic.folderPath, topic.systemNoteNames || []);
+                      const isStale = topic.status !== 'passed' && (daysSince === null || daysSince >= 3);
+                      const isBusyHere = devPathTopicActionBusy?.levelIdx === levelIdx && devPathTopicActionBusy?.topicIdx === topicIdx;
+                      const messageHere = devPathTopicActionMessage?.levelIdx === levelIdx && devPathTopicActionMessage?.topicIdx === topicIdx ? devPathTopicActionMessage.text : null;
+                      const activityLabel = daysSince === null ? 'Henüz not yok' : daysSince === 0 ? 'Bugün çalışıldı 🔥' : daysSince === 1 ? 'Dün çalışıldı' : `Son çalışma: ${daysSince} gün önce`;
+                      return (
+                        <div key={topicIdx} style={{ padding: '8px 10px', borderRadius: '8px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                              {topic.status === 'passed' ? '✅' : topic.status === 'testable' ? '🟡' : topic.status === 'flagged_unknown' ? '⚠️' : '⬜'} {topic.title}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => { setSelectedFolder(topic.folderPath); setDevPathDetailTarget(null); }}
+                              style={{ fontSize: '10px', background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '2px 6px', color: 'var(--text-muted)', cursor: 'pointer' }}
+                            >
+                              Klasöre Git
+                            </button>
+                          </div>
+                          <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{topic.description}</span>
+                          {topic.status !== 'passed' && (
+                            <span style={{ fontSize: '10px', color: isStale ? '#f59e0b' : 'var(--text-muted)' }}>
+                              {activityLabel}
+                            </span>
+                          )}
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            {topic.status !== 'passed' && hasNotes && !topic.summaryApproved && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSummaryModal(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #22c55e', background: '#22c55e', color: '#fff', cursor: 'pointer' }}
+                                title="Konuyu kendi cümlelerinle özetle — AI onaylarsa Test Et açılır"
+                              >
+                                📝 Özet Gönder
+                              </button>
+                            )}
+                            {topic.status !== 'passed' && (
+                              <button
+                                type="button"
+                                disabled={!hasNotes || !topic.summaryApproved}
+                                onClick={() => handleOpenDevPathQuiz(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--accent-color)', background: (hasNotes && topic.summaryApproved) ? 'var(--accent-color)' : 'transparent', color: (hasNotes && topic.summaryApproved) ? '#fff' : 'var(--text-muted)', cursor: (hasNotes && topic.summaryApproved) ? 'pointer' : 'not-allowed' }}
+                                title={!hasNotes ? 'Önce bu konuda not almalısın' : !topic.summaryApproved ? 'Önce özetini gönderip onaylatmalısın' : ''}
+                              >
+                                Test Et
+                              </button>
+                            )}
+                            {topic.status !== 'passed' && (
+                              <button
+                                type="button"
+                                disabled={!hasNotes || isBusyHere}
+                                onClick={() => handleGenerateFlashcardsForTopic(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(139,92,246,0.4)', background: 'transparent', color: hasNotes ? '#a78bfa' : 'var(--text-muted)', cursor: hasNotes && !isBusyHere ? 'pointer' : 'not-allowed' }}
+                                title={hasNotes ? 'Bu konudaki notlardan ezber kartı üret' : 'Önce bu konuda not almalısın'}
+                              >
+                                🃏 {isBusyHere ? 'Üretiliyor...' : 'Kart Oluştur'}
+                              </button>
+                            )}
+                            {isStale && (
+                              <button
+                                type="button"
+                                disabled={isBusyHere}
+                                onClick={() => handleAddCalendarReminderForTopic(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(59,130,246,0.4)', background: 'transparent', color: '#60a5fa', cursor: isBusyHere ? 'not-allowed' : 'pointer' }}
+                                title="Yarının takvimine bu konuya çalışma hatırlatması ekle"
+                              >
+                                📅 Yarına Ekle
+                              </button>
+                            )}
+                            {topic.status === 'passed' && !isCurrent && (
+                              <button
+                                type="button"
+                                onClick={() => handleFlagTopicUnknown(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(234,179,8,0.4)', background: 'transparent', color: '#eab308', cursor: 'pointer' }}
+                              >
+                                Bunu Bilmiyorum
+                              </button>
+                            )}
+                            {/* BUG DÜZELTMESİ (yanlış anlaşılan hedef): AI mevcut seviyeye
+                                alakasız bir konu ürettiyse, kullanıcı bunu sonradan da
+                                (sadece sihirbaz önizlemesinde değil) kaldırabilsin diye. */}
+                            {isCurrent && topic.status !== 'passed' && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCurrentTopic(devPathDetailTarget, levelIdx, topicIdx)}
+                                style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.4)', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                              >
+                                Kaldır
+                              </button>
+                            )}
+                          </div>
+                          {messageHere && (
+                            <span style={{ fontSize: '10.5px', color: 'var(--text-secondary)' }}>{messageHere}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {/* BUG DÜZELTMESİ (yanlış anlaşılan hedef): müfredatta eksik olduğu
+                        fark edilen bir konuyu mevcut seviyeye sonradan da ekleyebilmek için. */}
+                    {isCurrent && (
+                      devPathAddTopicTarget?.path === devPathDetailTarget && devPathAddTopicTarget?.levelIdx === levelIdx ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.25)' }}>
+                          {devPathAddTopicError && (
+                            <span style={{ fontSize: '10.5px', color: '#ef4444' }}>{devPathAddTopicError}</span>
+                          )}
+                          <label style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Eksik olduğunu düşündüğün konuyu tarif et (boş bırakırsan AI kendisi karar verir):</label>
+                          <textarea
+                            value={devPathAddTopicHint}
+                            onChange={(e) => setDevPathAddTopicHint(e.target.value)}
+                            placeholder="ör. Kapasite planlama, sistem tasarımında ölçeklenme hesapları..."
+                            className="modal-input"
+                            rows={2}
+                            style={{ resize: 'vertical', width: '100%' }}
+                            disabled={devPathAddTopicBusy}
+                            autoFocus
+                          />
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            <button
+                              type="button"
+                              onClick={handleConfirmAddTopic}
+                              disabled={devPathAddTopicBusy}
+                              style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px', border: 'none', background: 'var(--accent-color)', color: '#fff', fontWeight: 600, cursor: devPathAddTopicBusy ? 'default' : 'pointer' }}
+                            >
+                              {devPathAddTopicBusy ? 'Ekleniyor...' : 'Konu Öner ve Ekle'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDevPathAddTopicTarget(null)}
+                              disabled={devPathAddTopicBusy}
+                              style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-secondary)', cursor: devPathAddTopicBusy ? 'default' : 'pointer' }}
+                            >
+                              Vazgeç
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAddTopic(devPathDetailTarget, levelIdx)}
+                          style={{ alignSelf: 'flex-start', fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px dashed var(--border-color)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+                        >
+                          + Konu Ekle
+                        </button>
+                      )
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-modal-cancel" onClick={() => setDevPathDetailTarget(null)}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Folder Customizer Modal */}
       {isCustomizerOpen && customizingFolder && (
         <div className="modal-overlay animate-fade">
@@ -5012,14 +6641,17 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       {/* Premium Glassmorphic Supabase Settings Modal */}
       {isSettingsModalOpen && (
         <div className="modal-overlay animate-fade" style={{ zIndex: 2000 }}>
-          <div className="modal-content animate-pop" style={{ 
-            maxWidth: '650px', 
-            width: '95%', 
-            padding: '0', 
-            display: 'flex', 
-            flexDirection: 'row', 
-            overflow: 'hidden', 
-            height: '460px',
+          <div className="modal-content animate-pop" style={{
+            maxWidth: '650px',
+            width: '95%',
+            padding: '0',
+            display: 'flex',
+            flexDirection: 'row',
+            overflow: 'hidden',
+            // Çöp Kutusu sekmesinde liste kısa sürede kaydırma gerektirdiği (aynı anda ~2
+            // öğe görünüyordu) için o sekmede modalı belirgin şekilde daha uzun yapıyoruz;
+            // diğer sekmelerin yerleşimini bozmamak için yalnızca 'trash' seçiliyken.
+            height: settingsTab === 'trash' ? '640px' : '460px',
             background: 'rgba(15, 23, 42, 0.95)',
             backdropFilter: 'blur(16px)',
             border: '1px solid rgba(255, 255, 255, 0.08)'
@@ -5062,7 +6694,30 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 <span>🔄</span> Senkronizasyon
               </button>
 
-              <button 
+              <button
+                type="button"
+                onClick={() => setSettingsTab('ai')}
+                style={{
+                  background: settingsTab === 'ai' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  border: 'none',
+                  color: settingsTab === 'ai' ? '#fff' : 'var(--text-muted)',
+                  borderLeft: settingsTab === 'ai' ? '3px solid var(--accent-color)' : '3px solid transparent',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: '12.5px',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span>🎖️</span> AI Mentor
+              </button>
+
+              <button
                 type="button"
                 onClick={() => setSettingsTab('appearance')}
                 style={{ 
@@ -5184,7 +6839,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       platform,
                       handleRemoteChange,
                       handleStatusChange,
-                      handleConflicts
+                      handleConflicts,
+                      handleDevPathsChange
                     );
                   }}
                   style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}
@@ -5343,6 +6999,90 @@ grant execute on function get_db_size() to anon;`}
                 </form>
               )}
 
+              {settingsTab === 'ai' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>AI Mentor (Gemini)</h3>
+                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.4, margin: 0 }}>
+                    Gelişim yollarınızda seviye/müfredat belirleme ve testler için Google Gemini'yi kullanır. Kendi ücretsiz API anahtarınızı{' '}
+                    <a href="https://aistudio.google.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-color)' }}>Google AI Studio</a>
+                    {' '}üzerinden alabilirsiniz. Anahtar yalnızca bu cihazda saklanır, hiçbir yere gönderilmez.
+                  </p>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Gemini API Anahtarı
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="AIza..."
+                      value={geminiApiKeyInput}
+                      onChange={(e) => setGeminiApiKeyInput(e.target.value)}
+                      className="modal-input"
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Model
+                    </label>
+                    <input
+                      type="text"
+                      list="gemini-model-options"
+                      placeholder="gemini-3.5-flash"
+                      value={geminiModelInput}
+                      onChange={(e) => setGeminiModelInput(e.target.value)}
+                      className="modal-input"
+                      style={{ width: '100%' }}
+                    />
+                    <datalist id="gemini-model-options">
+                      <option value="gemini-2.0-flash" />
+                      <option value="gemini-2.0-flash-lite" />
+                      <option value="gemini-2.5-flash" />
+                      <option value="gemini-2.5-flash-lite" />
+                      <option value="gemini-2.5-pro" />
+                      <option value="gemini-3-flash" />
+                      <option value="gemini-3.1-pro" />
+                      <option value="gemini-3.1-flash-lite" />
+                      <option value="gemini-3.5-flash" />
+                    </datalist>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '4px', lineHeight: 1.4 }}>
+                      Ücretsiz katmanda her modelin günlük istek kotası ayrı takip edilir — birinin kotası dolarsa (Google AI Studio "Rate Limit" panelinden görebilirsin) buradan başka bir modele geçebilirsin.
+                    </span>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
+                    <input
+                      type="checkbox"
+                      checked={isAiMentorEnabled}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        localStorage.setItem('setting_ai_mentor_enabled', String(checked));
+                        setIsAiMentorEnabled(checked);
+                      }}
+                      style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
+                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>AI Mentor Aktif</span>
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                        Kapalıyken veya anahtar girilmemişken gelişim yolu işaretleme basit rütbe/XP moduna döner.
+                      </span>
+                    </div>
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <button type="button" style={{ padding: '8px 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }} onClick={() => setIsSettingsModalOpen(false)}>Kapat</button>
+                    <button
+                      type="button"
+                      style={{ flex: 1, padding: '8px 16px', background: 'var(--accent-color)', border: 'none', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '12px' }}
+                      onClick={() => {
+                        setGeminiApiKey(geminiApiKeyInput);
+                        setGeminiModel(geminiModelInput);
+                        setIsSettingsModalOpen(false);
+                      }}
+                    >
+                      Kaydet
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {settingsTab === 'appearance' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
                   <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>Modül ve Görünüm Ayarları</h3>
@@ -5386,19 +7126,19 @@ grant execute on function get_db_size() to anon;`}
                     </label>
 
                     <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={isFocusPetEnabled}
+                      <input
+                        type="checkbox"
+                        checked={isDevPathsEnabled}
                         onChange={(e) => {
                           const checked = e.target.checked;
-                          localStorage.setItem('setting_focus_pet_enabled', String(checked));
-                          setIsFocusPetEnabled(checked);
+                          localStorage.setItem('setting_dev_paths_enabled', String(checked));
+                          setIsDevPathsEnabled(checked);
                         }}
                         style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
                       />
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Odak Evcil Hayvanı (Tamagotchi)</span>
-                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Sol menünün altında yaşayan, görevlerle beslenen piksel sanal evcil hayvanı gösterir.</span>
+                        <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Gelişim Yolları (Rütbe)</span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Bir klasörü işaretleyip o alandaki gelişimini rütbe olarak takip et (Er → General).</span>
                       </div>
                     </label>
 
@@ -5551,10 +7291,10 @@ grant execute on function get_db_size() to anon;`}
                   <button
                     type="button"
                     onClick={() => {
-                      if (confirm('Tüm kısayolları varsayılan fabrika ayarlarına döndürmek istediğinize emin misiniz?')) {
+                      requestConfirm('Tüm kısayolları varsayılan fabrika ayarlarına döndürmek istediğinize emin misiniz?', () => {
                         setShortcuts(DEFAULT_SHORTCUTS);
                         localStorage.setItem('desktop_shortcuts', JSON.stringify(DEFAULT_SHORTCUTS));
-                      }
+                      });
                     }}
                     style={{
                       alignSelf: 'flex-start',
@@ -5573,110 +7313,206 @@ grant execute on function get_db_size() to anon;`}
                 </div>
               )}
 
-              {settingsTab === 'trash' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0 }}>
+              {settingsTab === 'trash' && (() => {
+                const query = trashSearchQuery.trim().toLowerCase();
+                const filteredLocal = query
+                  ? localTrashEntries.filter(e => e.name.toLowerCase().includes(query) || e.originalPath.toLowerCase().includes(query))
+                  : localTrashEntries;
+                const filteredRemote = query
+                  ? remoteTrashEntries.filter(e => e.name.toLowerCase().includes(query) || e.path.toLowerCase().includes(query))
+                  : remoteTrashEntries;
+                const filteredKeys = [
+                  ...filteredLocal.map(e => `local:${e.id}`),
+                  ...filteredRemote.map(e => `remote:${e.path}`)
+                ];
+                const allFilteredSelected = filteredKeys.length > 0 && filteredKeys.every(k => selectedTrashKeys.has(k));
+
+                return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, height: '100%' }}>
                   <h3 style={{ margin: 0, fontSize: '16px', color: '#fff' }}>Çöp Kutusu</h3>
                   <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
                     Sildiğin notların son hâli burada tutulur. "Uzak" olarak işaretlenenler yalnızca Supabase'de duruyor
                     (yerelde kopyası yok) — muhtemelen başka bir cihazda veya bu özellik eklenmeden önce silinmiş.
                   </p>
 
+                  {(localTrashEntries.length > 0 || remoteTrashEntries.length > 0) && (
+                    <input
+                      type="text"
+                      value={trashSearchQuery}
+                      onChange={(e) => setTrashSearchQuery(e.target.value)}
+                      placeholder="Ara (ad veya yol)..."
+                      className="modal-input"
+                      style={{ width: '100%' }}
+                    />
+                  )}
+
                   {isTrashLoading ? (
                     <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Yükleniyor...</div>
                   ) : (localTrashEntries.length === 0 && remoteTrashEntries.length === 0) ? (
                     <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Çöp kutusu boş.</div>
+                  ) : (filteredLocal.length === 0 && filteredRemote.length === 0) ? (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Aramayla eşleşen öğe bulunamadı.</div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' }}>
-                      {localTrashEntries.map(entry => (
-                        <div
-                          key={entry.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: 'rgba(255, 255, 255, 0.02)',
-                            padding: '10px 14px',
-                            borderRadius: '8px',
-                            border: '1px solid rgba(255, 255, 255, 0.05)'
+                    <>
+                      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                          Toplu işlem araç çubuğu — tek tek "Kalıcı Sil"e basmak yerine birden
+                          fazla öğeyi işaretleyip tek seferde silebilme/geri getirebilme. "Tümünü
+                          Seç" arama filtresi uygulanmışsa yalnızca FİLTRELENMİŞ öğeleri seçer. */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTrashKeys(prev => {
+                              if (allFilteredSelected) {
+                                const next = new Set(prev);
+                                filteredKeys.forEach(k => next.delete(k));
+                                return next;
+                              }
+                              return new Set([...prev, ...filteredKeys]);
+                            });
                           }}
+                          style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '5px 10px', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '11.5px' }}
                         >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: '600', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                              {entry.originalPath} · {new Date(entry.deletedAt).toLocaleString('tr-TR')}
-                            </div>
-                          </div>
-                          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                          {allFilteredSelected ? 'Seçimi Kaldır' : query ? 'Filtrelenenleri Seç' : 'Tümünü Seç'}
+                        </button>
+                        {selectedTrashKeys.size > 0 && (
+                          <>
+                            <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>{selectedTrashKeys.size} öğe seçili</span>
                             <button
                               type="button"
-                              onClick={() => handleRestoreLocalTrash(entry)}
-                              style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                              onClick={handleBulkRestoreTrash}
+                              style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '5px 10px', color: '#10b981', cursor: 'pointer', fontSize: '11.5px', fontWeight: '600' }}
                             >
-                              Geri Getir
+                              Seçilenleri Geri Getir
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                if (confirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`)) {
-                                  handlePermanentlyDeleteLocalTrash(entry.id);
-                                }
-                              }}
-                              style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                              onClick={handleBulkDeleteTrash}
+                              style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '5px 10px', color: '#ef4444', cursor: 'pointer', fontSize: '11.5px', fontWeight: '600' }}
                             >
-                              Kalıcı Sil
+                              Seçilenleri Kalıcı Sil
                             </button>
-                          </div>
-                        </div>
-                      ))}
+                          </>
+                        )}
+                      </div>
 
-                      {remoteTrashEntries.map(entry => (
-                        <div
-                          key={entry.path}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: 'rgba(255, 255, 255, 0.02)',
-                            padding: '10px 14px',
-                            borderRadius: '8px',
-                            border: '1px solid rgba(255, 255, 255, 0.05)'
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: '600', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
-                              <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--accent-color)', background: 'rgba(99, 102, 241, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>UZAK</span>
-                            </div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                              {entry.path} · {new Date(entry.updated_at).toLocaleString('tr-TR')}
-                            </div>
-                          </div>
-                          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                            <button
-                              type="button"
-                              onClick={() => handleRestoreRemoteTrash(entry)}
-                              style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
-                            >
-                              Geri Getir
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (confirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`)) {
-                                  handlePermanentlyDeleteRemoteTrash(entry.path);
-                                }
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1 }}>
+                        {filteredLocal.map(entry => {
+                          const key = `local:${entry.id}`;
+                          const isSelected = selectedTrashKeys.has(key);
+                          return (
+                            <div
+                              key={entry.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                background: 'rgba(255, 255, 255, 0.02)',
+                                padding: '10px 14px',
+                                borderRadius: '8px',
+                                border: `1px solid ${isSelected ? 'var(--accent-color)' : 'rgba(255, 255, 255, 0.05)'}`
                               }}
-                              style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
                             >
-                              Kalıcı Sil
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleTrashSelection(key)}
+                                  style={{ flexShrink: 0, cursor: 'pointer' }}
+                                />
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: '600', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</div>
+                                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                                    {entry.originalPath} · {new Date(entry.deletedAt).toLocaleString('tr-TR')}
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRestoreLocalTrash(entry)}
+                                  style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                                >
+                                  Geri Getir
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    requestConfirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`, () => {
+                                      handlePermanentlyDeleteLocalTrash(entry.id);
+                                    });
+                                  }}
+                                  style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                                >
+                                  Kalıcı Sil
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {filteredRemote.map(entry => {
+                          const key = `remote:${entry.path}`;
+                          const isSelected = selectedTrashKeys.has(key);
+                          return (
+                            <div
+                              key={entry.path}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                background: 'rgba(255, 255, 255, 0.02)',
+                                padding: '10px 14px',
+                                borderRadius: '8px',
+                                border: `1px solid ${isSelected ? 'var(--accent-color)' : 'rgba(255, 255, 255, 0.05)'}`
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleTrashSelection(key)}
+                                  style={{ flexShrink: 0, cursor: 'pointer' }}
+                                />
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: '600', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
+                                    <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--accent-color)', background: 'rgba(99, 102, 241, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>UZAK</span>
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                                    {entry.path} · {new Date(entry.updated_at).toLocaleString('tr-TR')}
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRestoreRemoteTrash(entry)}
+                                  style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '6px 12px', color: '#10b981', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                                >
+                                  Geri Getir
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    requestConfirm(`"${entry.name}" kalıcı olarak silinsin mi? Bu işlem geri alınamaz.`, () => {
+                                      handlePermanentlyDeleteRemoteTrash(entry.path);
+                                    });
+                                  }}
+                                  style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '6px 12px', color: '#ef4444', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+                                >
+                                  Kalıcı Sil
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
                 </div>
-              )}
+                );
+              })()}
 
               {settingsTab === 'about' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
@@ -5717,6 +7553,39 @@ grant execute on function get_db_size() to anon;`}
                 </div>
               )}
 
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Paylaşılan onay modalı — tüm silme/onay eylemlerinin native window.confirm()
+          yerine kullandığı tek modal (bkz. requestConfirm ve üstündeki BUG DÜZELTMESİ
+          yorumu). Diğer modallerin ÜZERİNDE görünmesi gerektiğinden (ör. bağlam
+          menüsünden tetiklenen bir silme onayı) yüksek bir z-index kullanılır. */}
+      {confirmDialogState && (
+        <div className="modal-overlay animate-fade" style={{ zIndex: 4000 }} onClick={() => setConfirmDialogState(null)}>
+          <div className="modal-content animate-pop" style={{ maxWidth: '380px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-body" style={{ padding: '22px 20px 4px' }}>
+              <p style={{ margin: 0, fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {confirmDialogState.message}
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-modal-cancel" onClick={() => setConfirmDialogState(null)}>
+                İptal
+              </button>
+              <button
+                type="button"
+                className="btn-modal-confirm"
+                style={{ background: '#ef4444', borderColor: '#ef4444' }}
+                onClick={() => {
+                  const cb = confirmDialogState.onConfirm;
+                  setConfirmDialogState(null);
+                  cb();
+                }}
+              >
+                Onayla
+              </button>
             </div>
           </div>
         </div>
@@ -5806,16 +7675,26 @@ grant execute on function get_db_size() to anon;`}
                 <Settings size={14} />
                 <span>Simge ve Renk Ayarla...</span>
               </ContextMenuItem>
+              <ContextMenuItem
+                onClick={() => {
+                  handleToggleDevPath(contextMenu.target);
+                  setContextMenu(null);
+                }}
+              >
+                <Award size={14} />
+                <span>{developmentPaths[contextMenu.target] ? 'Gelişim Yolunu Kaldır' : 'Gelişim Yolu Olarak İşaretle'}</span>
+              </ContextMenuItem>
               <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.06)', margin: '4px 0' }} />
               <ContextMenuItem
                 danger
                 onClick={() => {
                   const parts = contextMenu.target.split('/');
                   const name = parts[parts.length - 1];
-                  if (confirm(`"${name}" klasörünü ve içindeki tüm notları silmek istediğinize emin misiniz?`)) {
-                    handleDeleteFolder(contextMenu.target);
-                  }
+                  const targetPath = contextMenu.target;
                   setContextMenu(null);
+                  requestConfirm(`"${name}" klasörünü ve içindeki tüm notları silmek istediğinize emin misiniz?`, () => {
+                    handleDeleteFolder(targetPath);
+                  });
                 }}
               >
                 <Trash2 size={14} />
@@ -5889,24 +7768,11 @@ grant execute on function get_db_size() to anon;`}
               <ContextMenuItem
                 danger
                 onClick={() => {
-                  if (confirm('Bu notu silmek istediğinize emin misiniz?')) {
-                    handleDeletePath(contextMenu.target);
-                    // Remove from tabs too
-                    setPanes(prev => {
-                      return prev.map(p => {
-                        const tabs = p.tabs.filter(t => t !== contextMenu.target);
-                        return {
-                          ...p,
-                          tabs,
-                          activeTabIdx: Math.max(0, Math.min(p.activeTabIdx, tabs.length - 1))
-                        };
-                      }).filter(p => p.tabs.length > 0 || prev.length === 1);
-                    });
-                    if (activeNotePath === contextMenu.target) {
-                      setActiveNotePath(null);
-                    }
-                  }
+                  const targetPath = contextMenu.target;
                   setContextMenu(null);
+                  requestConfirm('Bu notu silmek istediğinize emin misiniz?', () => {
+                    handleDeletePath(targetPath);
+                  });
                 }}
               >
                 <Trash2 size={14} />

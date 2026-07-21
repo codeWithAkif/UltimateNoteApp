@@ -62,7 +62,93 @@ const assertSafeRelPath = (relativePath: string): string => {
 // özel bir izin ister. Bunun yerine hiçbir izin gerektirmeyen uygulamaya özel dahili
 // depolamayı (Directory.Data) kullanıyoruz; dosyalar başka bir dosya yöneticisiyle
 // görülemez ama uygulama + Supabase senkronu üzerinden tam olarak yönetilebilir.
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// BUG DÜZELTMESİ (veri kaybı): Directory.Documents -> Directory.Data geçişi (yukarıdaki
+// açıklama) mevcut kullanıcıların notlarını eski konumda "yetim" bırakıyordu — hiçbir kod
+// bunları yeni konuma taşımıyordu. Sonuç: yeni konum boş görünüyor, senkron bunu "kullanıcı
+// tüm notları sildi" sanıp uzak tarafta da siliyordu. Bu yüzden uygulama ilk kez yeni
+// depolamayla açıldığında eski konumdaki dosyalar (varsa) TEK SEFERLİK olarak kopyalanır.
+// v2: v1 sadece kopyalıyor, eski dosyayı SİLMİYORDU — bu da widget'ın (native Android
+// kodu eski genel Documents konumunu da tarıyor) eski/boş yetim kopyaları bulup
+// göstermesine yol açıyordu. v1'i tamamlamış cihazlarda temizliğin gerçekten çalışması
+// için bayrak sürümü yükseltildi; böylece düzeltilmiş (silme yapan) mantık tekrar çalışır.
+const LEGACY_STORAGE_MIGRATION_FLAG = 'legacy_documents_storage_migrated_v2';
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// BUG DÜZELTMESİ (widget eski/boş içerik gösteriyor): bu fonksiyon önceden yalnızca
+// KOPYALIYOR, eski Documents kopyasını hiç SİLMİYORDU. Native Android widget kodu
+// (WidgetProvider/WidgetService/QuickAddActivity) hâlâ eski genel Documents konumunu da
+// tarıyor (izin yoksa erişemese de dosya "var" görünebiliyor) — bu yetim kopyalar orada
+// durdukça, widget'ın kendi tarama sırası değişse bile ileride tekrar karışıklığa yol
+// açabilir. Artık başarılı bir kopyadan SONRA (ya da hedefte zaten güncel bir kopya
+// varsa) eski dosya siliniyor; böylece cihazda her not için tek, tutarlı bir kopya kalır.
+const copyLegacyTree = async (relPath: string): Promise<void> => {
+  const oldPath = relPath ? `UltimateNotes/${relPath}` : 'UltimateNotes';
+  const result = await Filesystem.readdir({ path: oldPath, directory: Directory.Documents });
+  for (const file of result.files) {
+    if (file.name === '.git') continue;
+    const fileRelPath = relPath ? `${relPath}/${file.name}` : file.name;
+    const newPath = `UltimateNotes/${fileRelPath}`;
+    const legacyFilePath = `UltimateNotes/${fileRelPath}`;
+    if (file.type === 'directory') {
+      try {
+        await Filesystem.mkdir({ path: newPath, directory: Directory.Data, recursive: true });
+      } catch (_e) {
+        // Already exists
+      }
+      await copyLegacyTree(fileRelPath);
+    } else {
+      // Hedefte zaten bir dosya varsa (kullanıcı geçiş sonrası yeniden oluşturmuş
+      // veya sync zaten indirmiş olabilir) üzerine yazmıyoruz.
+      let destExists = false;
+      try {
+        await Filesystem.stat({ path: newPath, directory: Directory.Data });
+        destExists = true;
+      } catch (_e) {
+        destExists = false;
+      }
+      if (!destExists) {
+        try {
+          await Filesystem.copy({
+            from: legacyFilePath,
+            directory: Directory.Documents,
+            to: newPath,
+            toDirectory: Directory.Data
+          });
+          destExists = true;
+        } catch (_e) {
+          // Kopyalama başarısız oldu — eski dosya tek kopya olduğu için SİLİNMEZ.
+        }
+      }
+      // Hedefte artık güvenilir bir kopya olduğu doğrulandıysa (yeni kopyalandı ya da
+      // zaten oradaydı), eski Documents kopyası yalnızca native widget kodunu yanlış
+      // (güncel olmayan) dosyaya yönlendiren bir yetim haline gelir — kaldırılır.
+      if (destExists) {
+        try {
+          await Filesystem.deleteFile({ path: legacyFilePath, directory: Directory.Documents });
+        } catch (_e) {
+          // Silinemezse (izin vb.) sorun değil; artık tarama sırası da düzeltildiği
+          // için native taraf doğru (Directory.Data) kopyayı önce bulacak.
+        }
+      }
+    }
+  }
+};
+
+const migrateLegacyDocumentsStorage = async () => {
+  if (localStorage.getItem(LEGACY_STORAGE_MIGRATION_FLAG)) return;
+  try {
+    await Filesystem.readdir({ path: 'UltimateNotes', directory: Directory.Documents });
+    await copyLegacyTree('');
+  } catch (_e) {
+    // Eski konum yok/erişilemiyor — taşınacak bir şey yok.
+  } finally {
+    localStorage.setItem(LEGACY_STORAGE_MIGRATION_FLAG, 'true');
+  }
+};
+
 const ensureMobileRoot = async () => {
+  await migrateLegacyDocumentsStorage();
   try {
     await Filesystem.mkdir({
       path: 'UltimateNotes',

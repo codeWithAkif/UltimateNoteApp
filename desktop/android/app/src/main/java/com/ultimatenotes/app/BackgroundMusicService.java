@@ -326,12 +326,17 @@ public class BackgroundMusicService extends Service {
     }
 
     private File getTrackFile(String path) {
+        // BUG DÜZELTMESİ: uygulama artık dosyaları hep getFilesDir() (Directory.Data,
+        // app-private) altında tutuyor; eski genel Documents konumu yalnızca göç
+        // öncesinden kalmış YETİM kopyalar için bir yedek. Doğru/güncel konum artık
+        // ÖNCE taranıyor (bkz. WidgetProvider/WidgetService/QuickAddActivity'deki aynı
+        // düzeltme).
         File[] rootDirs = new File[]{
+            new File(getFilesDir(), "UltimateNotes"),
+            new File(getFilesDir(), "Documents/UltimateNotes"),
             new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
             new File(getExternalFilesDir(null), "Documents/UltimateNotes"),
-            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(getFilesDir(), "UltimateNotes"),
-            new File(getFilesDir(), "Documents/UltimateNotes")
+            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes")
         };
         for (File rootDir : rootDirs) {
             File file = new File(rootDir, path);

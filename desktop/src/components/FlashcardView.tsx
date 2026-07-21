@@ -121,13 +121,18 @@ interface FlashcardViewProps {
   fileContents: Record<string, string>;
   onSelectNote: (path: string) => void;
   onSaveNote: (path: string, content: string) => Promise<void>;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
+  // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
 }
 
 export default function FlashcardView({
   notes,
   fileContents,
   onSelectNote,
-  onSaveNote
+  onSaveNote,
+  onRequestConfirm
 }: FlashcardViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'review' | 'browse' | 'create' | 'palace'>('review');
   const [searchQuery, setSearchQuery] = useState('');
@@ -188,11 +193,17 @@ export default function FlashcardView({
     } else {
       const allLocusCards = getCardsForLocus(locus.id);
       if (allLocusCards.length > 0) {
-        if (confirm(`Bu konumdaki tüm kartlar güncel (tekrara hazır değil). Yine de hepsini (${allLocusCards.length} adet) tekrar etmek ister misiniz?`)) {
+        const message = `Bu konumdaki tüm kartlar güncel (tekrara hazır değil). Yine de hepsini (${allLocusCards.length} adet) tekrar etmek ister misiniz?`;
+        const startReview = () => {
           setLocusReviewQueue(allLocusCards);
           setLocusReviewIndex(0);
           setLocusReviewFlipped(false);
           setSelectedLocus(locus);
+        };
+        if (onRequestConfirm) {
+          onRequestConfirm(message, startReview);
+        } else if (confirm(message)) {
+          startReview();
         }
       } else {
         alert("Bu lokasyon boş! Not kartları listesinden buraya kart yerleştirebilirsiniz.");

@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Inbox, FileText, Calendar, Database, Folder, Tag, Plus, Settings, Trash2,
   Briefcase, Code, Heart, Star, BookOpen, Sparkles, Coffee, Rocket, Smile, HelpCircle,
-  ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout
+  ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout, Award
 } from 'lucide-react';
+import { type DevPath, getRankForXp, getAllSystemNoteNames } from '../devPaths';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
   Folder,
@@ -32,6 +33,11 @@ interface SidebarProps {
   setSelectedTag: (tag: string | null) => void;
   onCreateFolder: () => void;
   onDeleteFolder: (folder: string) => void;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır — bkz. App.tsx'teki requestConfirm üstündeki ayrıntılı yorum
+  // (confirm() gerçek bir pencere blur/focus olayı tetiklemediği için odağa dayalı
+  // temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
   syncStatus: 'synced' | 'syncing' | 'offline' | 'error';
   isSidebarOpen?: boolean;
   setIsSidebarOpen?: (open: boolean) => void;
@@ -44,413 +50,54 @@ interface SidebarProps {
   onToggleMiniMode?: () => void;
   isMiniMode?: boolean;
   isNoteCityEnabled?: boolean;
-  isFocusPetEnabled?: boolean;
+  isDevPathsEnabled?: boolean;
+  developmentPaths?: Record<string, DevPath>;
+  onOpenPathDetail?: (path: string) => void;
   fileContents?: Record<string, string>;
   notes?: any[];
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
-  onSavePetData?: () => void;
+}
+
+interface DevPathsWidgetProps {
+  isCollapsed: boolean;
+  developmentPaths: Record<string, DevPath>;
+  onNavigateToPath: (path: string) => void;
+  onOpenPathDetail: (path: string) => void;
+  notes: any[];
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-// Retro 16x16 piksel çözünürlüklü evcil hayvanı canvas üzerine piksel piksel çizen çizim motoru.
-const drawPet = (ctx: CanvasRenderingContext2D, type: string, stage: number, frame: number, isCelebrating: boolean) => {
-  ctx.clearRect(0, 0, 32, 32);
-  ctx.imageSmoothingEnabled = false;
-  
-  // Kutlama veya nefes alma durumuna göre zıplama hareketi (frame hızı)
-  const hop = isCelebrating ? (Math.floor(Date.now() / 120) % 2 === 0 ? 3 : 0) : (frame === 0 ? 0 : 1);
-  
-  // Elementlere göre renk paletinin ayarlanması
-  let color = '#ef4444'; // Ateş: Kırmızı
-  let lightColor = '#f97316'; // Ateş: Turuncu
-  
-  if (type === 'water') {
-    color = '#2563eb'; // Su: Derin mavi
-    lightColor = '#60a5fa'; // Su: Açık mavi
-  } else if (type === 'electric') {
-    color = '#ca8a04'; // Elektrik: Altın sarısı
-    lightColor = '#facc15'; // Elektrik: Parlak sarı
-  } else if (type === 'earth') {
-    color = '#15803d'; // Toprak: Orman yeşili
-    lightColor = '#4ade80'; // Toprak: Açık fidan yeşili
-  } else if (type === 'wind') {
-    color = '#64748b'; // Hava: Rüzgar grisi
-    lightColor = '#cbd5e1'; // Hava: Bulut beyazı
-  }
-
-  // Çizim kalemi (Outline - Koyu mavi/siyah)
-  ctx.fillStyle = '#0f172a';
-
-  if (stage === 0) {
-    // AŞAMA 0: BEBEK (Ember, Aqualing, Sparki, Seedling, Zephyr)
-    // Yuvarlak, tatlı bir slime benzeri gövde çizimi
-    ctx.fillRect(9, 15 - hop, 14, 11);
-    ctx.fillRect(10, 14 - hop, 12, 13);
-    
-    ctx.fillStyle = color;
-    ctx.fillRect(10, 15 - hop, 12, 9);
-    ctx.fillRect(11, 14 - hop, 10, 11);
-    
-    // Yüz ışıması
-    ctx.fillStyle = lightColor;
-    ctx.fillRect(12, 16 - hop, 8, 7);
-
-    // Gözler
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(13, 17 - hop, 2, 2);
-    ctx.fillRect(17, 17 - hop, 2, 2);
-    
-    // Yanaklar
-    ctx.fillStyle = '#f43f5e';
-    ctx.fillRect(12, 19 - hop, 1, 1);
-    ctx.fillRect(19, 19 - hop, 1, 1);
-    
-    // Element Aksesuarları
-    if (type === 'earth') {
-      ctx.fillStyle = '#22c55e'; // Kafada küçük yaprak
-      ctx.fillRect(15, 11 - hop, 3, 2);
-      ctx.fillRect(17, 10 - hop, 2, 1);
-    } else if (type === 'fire') {
-      ctx.fillStyle = '#ef4444'; // Küçük alev kıvılcımı
-      ctx.fillRect(15, 12 - hop, 2, 2);
-    } else if (type === 'electric') {
-      ctx.fillStyle = '#facc15'; // Şimşek ucu
-      ctx.fillRect(15, 12 - hop, 2, 2);
-      ctx.fillRect(16, 10 - hop, 1, 2);
-    }
-  } else if (stage === 1) {
-    // AŞAMA 1: GENÇ (Pyrocot, Shellhop, Voltcat, Sprout, Gale)
-    // Kulaklı ve gövdeli canavar formu
-    ctx.fillRect(7, 11 - hop, 18, 14);
-    ctx.fillRect(8, 10 - hop, 16, 16);
-    
-    ctx.fillStyle = color;
-    ctx.fillRect(8, 11 - hop, 16, 12);
-    ctx.fillRect(9, 10 - hop, 14, 14);
-    
-    ctx.fillStyle = lightColor;
-    ctx.fillRect(10, 12 - hop, 12, 10);
-    
-    // Kulaklar ve gözler
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(7, 7 - hop, 3, 3);
-    ctx.fillRect(22, 7 - hop, 3, 3);
-    ctx.fillRect(11, 13 - hop, 2, 2);
-    ctx.fillRect(19, 13 - hop, 2, 2);
-    
-    if (type === 'water') {
-      ctx.fillStyle = '#1e3a8a'; // Kaplumbağa kabuğu
-      ctx.fillRect(6, 14 - hop, 2, 7);
-    } else if (type === 'wind') {
-      ctx.fillStyle = '#94a3b8'; // Rüzgar pelerini tüyleri
-      ctx.fillRect(5, 12 - hop, 3, 4);
-      ctx.fillRect(24, 12 - hop, 3, 4);
-    }
-  } else if (stage === 2) {
-    // AŞAMA 2: YETİŞKİN (Blazerax, Neptulon, Thunderwing, Stonehorn, Aerochord)
-    // İki ayak üzerinde dik duran, müzik kulaklığı takılı canavar formu
-    ctx.fillRect(7, 7 - hop, 18, 20);
-    ctx.fillRect(6, 25, 4, 3);
-    ctx.fillRect(22, 25, 4, 3);
-    
-    ctx.fillStyle = color;
-    ctx.fillRect(8, 8 - hop, 16, 18);
-    
-    ctx.fillStyle = lightColor;
-    ctx.fillRect(10, 13 - hop, 12, 12);
-    
-    // Müzik kulaklığı
-    ctx.fillStyle = '#334155';
-    ctx.fillRect(9, 5 - hop, 14, 2);
-    ctx.fillStyle = '#ec4899'; // Pembe kulaklık kapları
-    ctx.fillRect(7, 7 - hop, 2, 5);
-    ctx.fillRect(23, 7 - hop, 2, 5);
-    
-    // Gözler ve parıltı
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(11, 11 - hop, 2, 2);
-    ctx.fillRect(19, 11 - hop, 2, 2);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(12, 11 - hop, 1, 1);
-    ctx.fillRect(20, 11 - hop, 1, 1);
-  } else {
-    // AŞAMA 3: SİBER (Cyber-Vulkan, Cyber-Triton, Cyber-Zeus, Cyber-Gaia, Cyber-Tornado)
-    // Siber zırhlı kanatlı, parlayan gözlü mega ejderha/robot canavar formu
-    ctx.fillRect(5, 5, 22, 22);
-    ctx.fillStyle = color;
-    ctx.fillRect(6, 6, 20, 20);
-    
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(9, 9, 14, 14);
-    
-    // Mekanik çırpan kanatlar
-    const wingY = frame === 0 ? 6 : 4;
-    ctx.fillStyle = lightColor;
-    ctx.fillRect(1, wingY, 4, 10);
-    ctx.fillRect(27, wingY, 4, 10);
-    
-    // Siber vizör / parlayan göz bandı
-    ctx.fillStyle = '#38bdf8';
-    ctx.fillRect(9, 10, 14, 3);
-  }
+// Bir yolun kök klasörü altındaki notların en son ne zaman güncellendiğini bulur —
+// "Son çalışma: X gün önce" göstergesi için. Not yoksa null döner (henüz başlanmadı).
+// Sistem/AI tarafından otomatik yazılan notlar (Başlangıç Notu, Seviye Bilgisi, ve
+// 'advanced'/'complete' modda üretilen alt-notlar/Soru Kartları — bkz.
+// getAllSystemNoteNames) hariç tutulur — bunlar kullanıcı notu DEĞİL, klasörler
+// oluşturulur oluşturulmaz veya konu durumu her değiştiğinde otomatik yazılır;
+// dahil edilirse "Bugün çalışıldı" göstergesi kullanıcı hiçbir şey yazmadan
+// yanlışlıkla tetiklenir.
+const getPathLastActivityDays = (path: string, notes: any[], devPath: DevPath): number | null => {
+  const systemNoteNames = getAllSystemNoteNames(devPath);
+  const relevant = notes.filter(n =>
+    n.type !== 'folder' &&
+    n.path.startsWith(path + '/') &&
+    !systemNoteNames.has(n.path.split('/').pop() || '')
+  );
+  if (relevant.length === 0) return null;
+  const lastUpdated = Math.max(...relevant.map(n => n.updatedAt || 0));
+  if (!lastUpdated) return null;
+  return Math.floor((Date.now() - lastUpdated) / (1000 * 60 * 60 * 24));
 };
 
-interface FocusPetWidgetProps {
-  isCollapsed: boolean;
-  fileContents: Record<string, string>;
-  onSavePetData?: () => void;
-}
-
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-// Sol menünün altına yerleşen, Pomodoro ve yapılacaklar tamamlandıkça canavarı besleyen/büyüten bağımsız widget.
-function FocusPetWidget({ isCollapsed, fileContents, onSavePetData }: FocusPetWidgetProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+// Eski "Odak Evcil Hayvanı" widget'ının yerini alır. `mode: 'simple'` (Faz 1, AI'sız) için
+// eski rütbe/XP çubuğunu, `mode: 'ai'` (Faz 2, Gemini müfredatı) için o seviyenin unvanını
+// ve konu-bazlı ilerleme çubuğunu gösterir; tıklanınca detay paneli açılır.
+function DevPathsWidget({ isCollapsed, developmentPaths, onNavigateToPath, onOpenPathDetail, notes }: DevPathsWidgetProps) {
+  const paths = Object.keys(developmentPaths);
 
-  // Yerel hafızadan evcil hayvan durumlarını yükle
-  const [starter, setStarter] = useState<string | null>(() => localStorage.getItem('focus_pet_starter'));
-  const [exp, setExp] = useState<number>(() => Number(localStorage.getItem('focus_pet_exp') || '0'));
-  const [health, setHealth] = useState<number>(() => Number(localStorage.getItem('focus_pet_health') || '100'));
-  const [petName, setPetName] = useState<string>(() => localStorage.getItem('focus_pet_name') || 'Odak Dostu');
-
-  const [frame, setFrame] = useState(0);
-  const [isCelebrating, setIsCelebrating] = useState(false);
-  const [isEvolving, setIsEvolving] = useState(false);
-
-  // Evrim aşamasını hesaplayan yardımcı fonksiyon
-  const stage = useMemo(() => {
-    if (exp >= 1500) return 3; // Siber
-    if (exp >= 600) return 2;  // Yetişkin
-    if (exp >= 200) return 1;  // Genç
-    return 0;                  // Bebek
-  }, [exp]);
-
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Buluttan evcil hayvan verisi senkronize edildiğinde, widget durumlarını reaktif olarak günceller.
-  useEffect(() => {
-    const handlePetSynced = () => {
-      setStarter(localStorage.getItem('focus_pet_starter'));
-      setExp(Number(localStorage.getItem('focus_pet_exp') || '0'));
-      setHealth(Number(localStorage.getItem('focus_pet_health') || '100'));
-      setPetName(localStorage.getItem('focus_pet_name') || 'Odak Dostu');
-    };
-    window.addEventListener('focus_pet_synced', handlePetSynced);
-    return () => {
-      window.removeEventListener('focus_pet_synced', handlePetSynced);
-    };
-  }, []);
-
-  // Canavarın element tipine göre Türkçe ismini ve emojisini döndürür
-  const getPetInfo = () => {
-    switch (starter) {
-      case 'fire': return { label: 'Pyros', emoji: '🔥', color: '#ef4444' };
-      case 'water': return { label: 'Aquas', emoji: '💧', color: '#3b82f6' };
-      case 'electric': return { label: 'Volts', emoji: '⚡', color: '#eab308' };
-      case 'earth': return { label: 'Terra', emoji: '🌿', color: '#22c55e' };
-      case 'wind': return { label: 'Aetos', emoji: '💨', color: '#a855f7' };
-      default: return { label: 'Bilinmeyen', emoji: '❓', color: '#64748b' };
-    }
-  };
-
-  // Sağlık seviyesine göre ruh hali tespiti
-  const getStatusText = () => {
-    if (isEvolving) return 'EVRİMLEŞİYOR! ⚡';
-    if (isCelebrating) return 'MUTLU! 🎉';
-    if (health > 70) return 'Zinde / Odaklanmış 💪';
-    if (health > 30) return 'Uykulu / Yorgun 🥱';
-    if (health > 0) return 'Çok Aç / Halsiz 😢';
-    return 'Dijital Uyku Modunda 💤';
-  };
-
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Canavar nefes alma animasyonu (400ms kare hızı) ve olay dinleyicileri.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setFrame((f: number) => (f === 0 ? 1 : 0));
-    }, 450);
-
-    // Pomodoro bitiminde tetiklenecek ödül sistemi
-    const handlePomodoroCompleted = () => {
-      setExp((prev: number) => {
-        const next = prev + 50;
-        localStorage.setItem('focus_pet_exp', String(next));
-        return next;
-      });
-      setHealth((prev: number) => {
-        const next = Math.min(100, prev + 25);
-        localStorage.setItem('focus_pet_health', String(next));
-        return next;
-      });
-      setIsCelebrating(true);
-      setTimeout(() => setIsCelebrating(false), 3000);
-      onSavePetData?.();
-    };
-
-    window.addEventListener('pomodoro_completed', handlePomodoroCompleted);
-
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('pomodoro_completed', handlePomodoroCompleted);
-    };
-  }, [onSavePetData]);
-
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Offline geçen süreye göre canavarın sağlığını düşüren zaman kontrol mekanizması.
-  useEffect(() => {
-    const now = Date.now();
-    const lastActive = Number(localStorage.getItem('focus_pet_last_active') || String(now));
-    
-    const elapsedHours = (now - lastActive) / (1000 * 60 * 60);
-    const healthLoss = Math.floor(elapsedHours / 3); // Her 3 saatte 1 sağlık kaybeder
-
-    if (healthLoss > 0) {
-      setHealth((h: number) => {
-        const next = Math.max(0, h - healthLoss);
-        localStorage.setItem('focus_pet_health', String(next));
-        return next;
-      });
-    }
-    localStorage.setItem('focus_pet_last_active', String(now));
-    onSavePetData?.();
-  }, [onSavePetData]);
-
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Notlardaki tamamlanan görev (checklist) sayısını tarayarak canavarı otomatik geliştiren mekanizma.
-  useEffect(() => {
-    let completedCount = 0;
-    Object.keys(fileContents).forEach(path => {
-      const text = fileContents[path] || '';
-      const lines = text.split('\n');
-      let isInTable = false;
-      lines.forEach(line => {
-        const trimmed = line.trim();
-        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-        // Tablo başlangıcını algılar ve tablo bitene kadar satırları canavar gelişim görevlerinden muaf tutar.
-        if (trimmed.toLowerCase().startsWith('tablo:')) {
-          isInTable = true;
-          return;
-        }
-        if (isInTable) {
-          if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('---') || trimmed.toLowerCase().startsWith('tablo:')) {
-            isInTable = false;
-          } else {
-            return;
-          }
-        }
-        if (/^-\s*\[[xX]\]/.test(trimmed)) {
-          completedCount++;
-        }
-      });
-    });
-
-    const lastTaskCount = Number(localStorage.getItem('focus_pet_last_task_count') || '0');
-
-    if (completedCount > lastTaskCount) {
-      const diff = completedCount - lastTaskCount;
-      setExp((prev: number) => {
-        const next = prev + diff * 15; // Görev başına 15 EXP
-        localStorage.setItem('focus_pet_exp', String(next));
-        return next;
-      });
-      setHealth((prev: number) => {
-        const next = Math.min(100, prev + diff * 10); // Görev başına +10 Sağlık
-        localStorage.setItem('focus_pet_health', String(next));
-        return next;
-      });
-      setIsCelebrating(true);
-      setTimeout(() => setIsCelebrating(false), 3000);
-    }
-    localStorage.setItem('focus_pet_last_task_count', String(completedCount));
-    onSavePetData?.();
-  }, [fileContents, onSavePetData]);
-
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // EXP artışında Digimon tarzı evrim animasyonu tetikleme döngüsü.
-  useEffect(() => {
-    const savedStage = Number(localStorage.getItem('focus_pet_stage') || '0');
-    if (stage > savedStage) {
-      setIsEvolving(true);
-      setTimeout(() => {
-        localStorage.setItem('focus_pet_stage', String(stage));
-        setIsEvolving(false);
-        onSavePetData?.();
-      }, 2500);
-    }
-  }, [stage, onSavePetData]);
-
-  // Canvas üzerine canavarın piksel çizimini aktaran render efekti
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !starter) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    drawPet(ctx, starter, stage, frame, isCelebrating);
-  }, [starter, stage, frame, isCelebrating]);
-
-  // Canavarı ilk kez seçen başlangıç fonksiyonu
-  const selectStarter = (type: string) => {
-    localStorage.setItem('focus_pet_starter', type);
-    localStorage.setItem('focus_pet_exp', '0');
-    localStorage.setItem('focus_pet_health', '100');
-    localStorage.setItem('focus_pet_stage', '0');
-    
-    // Toplam görev sayısını eşitle
-    let completedCount = 0;
-    Object.keys(fileContents).forEach(path => {
-      const text = fileContents[path] || '';
-      const lines = text.split('\n');
-      let isInTable = false;
-      lines.forEach(line => {
-        const trimmed = line.trim();
-        if (trimmed.toLowerCase().startsWith('tablo:')) {
-          isInTable = true;
-          return;
-        }
-        if (isInTable) {
-          if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('---') || trimmed.toLowerCase().startsWith('tablo:')) {
-            isInTable = false;
-          } else {
-            return;
-          }
-        }
-        if (/^-\s*\[[xX]\]/.test(trimmed)) {
-          completedCount++;
-        }
-      });
-    });
-    localStorage.setItem('focus_pet_last_task_count', String(completedCount));
-
-    setStarter(type);
-    setExp(0);
-    setHealth(100);
-    onSavePetData?.();
-  };
-
-  // Evcil hayvanı yumurtaya geri döndürme (Reset)
-  const handleResetPet = () => {
-    if (window.confirm('Odak canavarınızı sıfırlayıp yumurtaya geri döndürmek ve yeni bir element seçmek istediğinize emin misiniz?')) {
-      localStorage.removeItem('focus_pet_starter');
-      localStorage.removeItem('focus_pet_exp');
-      localStorage.removeItem('focus_pet_health');
-      localStorage.removeItem('focus_pet_stage');
-      setStarter(null);
-      onSavePetData?.();
-    }
-  };
-
-  const info = getPetInfo();
-
-  // 1. STARTER SEÇİM EKRANI
-  if (!starter) {
-    if (isCollapsed) {
-      return (
-        <div style={{ padding: '8px', textAlign: 'center', color: '#94a3b8' }} title="Bir Odak Yoldaşı Seçin!">
-          🥚
-        </div>
-      );
-    }
+  if (paths.length === 0) {
+    if (isCollapsed) return null;
     return (
       <div style={{
         margin: '10px 14px',
@@ -458,142 +105,93 @@ function FocusPetWidget({ isCollapsed, fileContents, onSavePetData }: FocusPetWi
         borderRadius: '10px',
         background: 'rgba(255, 255, 255, 0.02)',
         border: '1px dashed rgba(255,255,255,0.08)',
-        color: '#fff',
         display: 'flex',
         flexDirection: 'column',
-        gap: '8px'
+        gap: '4px'
       }}>
-        <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>🥚 ODAK YOLDAŞI SEÇ:</span>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px' }}>
-          <button onClick={() => selectStarter('fire')} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '14px' }} title="Pyros (Ateş)">🔥</button>
-          <button onClick={() => selectStarter('water')} style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '14px' }} title="Aquas (Su)">💧</button>
-          <button onClick={() => selectStarter('electric')} style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.2)', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '14px' }} title="Volts (Elektrik)">⚡</button>
-          <button onClick={() => selectStarter('earth')} style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '14px' }} title="Terra (Toprak)">🌿</button>
-          <button onClick={() => selectStarter('wind')} style={{ background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '14px' }} title="Aetos (Hava)">💨</button>
-        </div>
+        <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>🎖️ GELİŞİM YOLLARIM</span>
+        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+          Bir klasöre sağ tıklayıp "Gelişim Yolu Olarak İşaretle" ile başla.
+        </span>
       </div>
     );
   }
 
-  // 2. DARALTILMIŞ (COLLAPSED) MOD
   if (isCollapsed) {
     return (
-      <div 
-        onClick={handleResetPet}
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          padding: '6px 0',
-          cursor: 'pointer',
-          borderTop: '1px solid rgba(255,255,255,0.03)'
-        }}
-        title={`${info.label} (Seviye ${stage + 1}) - Sağlık: %${health}`}
-      >
-        <canvas ref={canvasRef} width={32} height={32} style={{ width: '28px', height: '28px', imageRendering: 'pixelated' }} />
-        <div style={{
-          width: '6px',
-          height: '6px',
-          borderRadius: '50%',
-          background: health > 70 ? '#22c55e' : health > 30 ? '#eab308' : '#ef4444',
-          marginTop: '2px'
-        }} />
+      <div style={{ padding: '8px', textAlign: 'center', color: 'var(--text-muted)' }} title={`${paths.length} gelişim yolu`}>
+        <Award size={16} />
       </div>
     );
   }
 
-  // 3. TAM WIDGET EKRANI (Genişletilmiş Sidebar)
-  const maxExp = stage === 0 ? 200 : stage === 1 ? 600 : stage === 2 ? 1500 : 3000;
-  const expPercent = Math.min(100, Math.round((exp / maxExp) * 100));
-
   return (
-    <div 
-      className={`focus-pet-widget-card ${isEvolving ? 'focus-pet-evolving' : ''}`}
-      style={{
-        margin: '8px 12px',
-        padding: '10px 12px',
-        borderRadius: '10px',
-        background: 'var(--bg-tertiary)',
-        border: `1px solid ${isEvolving ? 'var(--text-primary)' : 'var(--border-color)'}`,
-        boxShadow: isCelebrating ? `0 0 12px ${info.color}33` : 'none',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '6px',
-        position: 'relative'
-      }}
-    >
-      {/* Reset Butonu (Sağ üst köşe) */}
-      <button 
-        onClick={handleResetPet}
-        style={{
-          position: 'absolute',
-          top: '8px',
-          right: '8px',
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--text-muted)',
-          fontSize: '11px',
-          cursor: 'pointer'
-        }}
-        title="Yumurtaya Geri Dönüştür"
-      >
-        🥚
-      </button>
+    <div style={{ margin: '8px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <span style={{ fontSize: '10px', fontWeight: 'bold', color: 'var(--text-muted)' }}>🎖️ GELİŞİM YOLLARIM</span>
+      {paths.map(path => {
+        const devPath = developmentPaths[path];
+        const isAiMode = (devPath.mode || 'simple') === 'ai' && devPath.levels && devPath.levels.length > 0;
 
-      {/* Üst Kısım Canavar Resmi ve İsim */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{
-          background: 'rgba(0,0,0,0.1)',
-          borderRadius: '6px',
-          padding: '2px',
-          border: `1px solid ${info.color}44`
-        }}>
-          <canvas 
-            ref={canvasRef} 
-            width={32} 
-            height={32} 
-            style={{ width: '40px', height: '40px', imageRendering: 'pixelated', display: 'block' }} 
-          />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-primary)' }}>{info.label}</span>
-            <span style={{ fontSize: '10px', color: info.color }}>{info.emoji}</span>
+        let titleLabel: string;
+        let progressPercent: number;
+        let onClick: () => void;
+
+        if (isAiMode) {
+          const levelIdx = devPath.currentLevelIndex ?? 0;
+          const level = devPath.levels![levelIdx];
+          const passedCount = level.topics.filter(t => t.status === 'passed').length;
+          titleLabel = level.title;
+          progressPercent = level.topics.length > 0 ? Math.round((passedCount / level.topics.length) * 100) : 0;
+          onClick = () => onOpenPathDetail(path);
+        } else {
+          const xp = devPath.xp ?? 0;
+          const rank = getRankForXp(xp);
+          titleLabel = rank.name;
+          progressPercent = rank.nextMinXp
+            ? Math.min(100, Math.round(((xp - rank.minXp) / (rank.nextMinXp - rank.minXp)) * 100))
+            : 100;
+          onClick = () => onNavigateToPath(path);
+        }
+
+        const daysSince = getPathLastActivityDays(path, notes, devPath);
+        const activityLabel = daysSince === null
+          ? 'Henüz başlanmadı'
+          : daysSince === 0
+          ? 'Bugün çalışıldı 🔥'
+          : daysSince === 1
+          ? 'Dün çalışıldı'
+          : `Son çalışma: ${daysSince} gün önce`;
+        const activityColor = daysSince !== null && daysSince <= 1 ? '#22c55e' : daysSince !== null && daysSince >= 3 ? '#f59e0b' : 'var(--text-muted)';
+
+        return (
+          <div
+            key={path}
+            onClick={onClick}
+            style={{
+              cursor: 'pointer',
+              padding: '8px 10px',
+              borderRadius: '8px',
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border-color)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px'
+            }}
+            title={devPath.label}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {devPath.label}
+              </span>
+              <span style={{ fontSize: '9.5px', color: 'var(--accent-color)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '110px' }}>{titleLabel}</span>
+            </div>
+            <div style={{ width: '100%', height: '4px', borderRadius: '2px', background: 'var(--bg-hover)', overflow: 'hidden' }}>
+              <div style={{ width: `${progressPercent}%`, height: '100%', borderRadius: '2px', background: 'var(--accent-color)', transition: 'width 0.3s ease' }} />
+            </div>
+            <span style={{ fontSize: '9px', color: activityColor }}>{activityLabel}</span>
           </div>
-          <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)' }}>
-            Evre {stage + 1}: {stage === 0 ? 'Bebek' : stage === 1 ? 'Genç' : stage === 2 ? 'Yetişkin' : 'Siber Mega'}
-          </span>
-        </div>
-      </div>
-
-      {/* Durum/Ruh Hali Bilgisi */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-        <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>DURUM</span>
-        <span style={{ fontSize: '9.5px', fontWeight: 600, color: isCelebrating ? info.color : 'var(--text-primary)' }}>{getStatusText()}</span>
-      </div>
-
-      {/* Sağlık Barı (HP) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text-muted)' }}>
-          <span>SAĞLIK (HP)</span>
-          <span style={{ color: health > 70 ? '#22c55e' : health > 30 ? '#eab308' : '#ef4444' }}>%{health}</span>
-        </div>
-        <div style={{ width: '100%', height: '4px', borderRadius: '2px', background: 'var(--bg-hover)', overflow: 'hidden' }}>
-          <div style={{ width: `${health}%`, height: '100%', borderRadius: '2px', background: health > 70 ? '#22c55e' : health > 30 ? '#eab308' : '#ef4444', transition: 'width 0.3s ease' }} />
-        </div>
-      </div>
-
-      {/* Tecrübe Puanı Barı (EXP) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text-muted)' }}>
-          <span>ODAK (EXP)</span>
-          <span>{exp}/{maxExp}</span>
-        </div>
-        <div style={{ width: '100%', height: '4px', borderRadius: '2px', background: 'var(--bg-hover)', overflow: 'hidden' }}>
-          <div style={{ width: `${expPercent}%`, height: '100%', borderRadius: '2px', background: info.color, transition: 'width 0.3s ease' }} />
-        </div>
-      </div>
-
+        );
+      })}
     </div>
   );
 }
@@ -609,6 +207,7 @@ export default function Sidebar({
   setSelectedTag,
   onCreateFolder,
   onDeleteFolder,
+  onRequestConfirm,
   syncStatus,
   isSidebarOpen,
   setIsSidebarOpen,
@@ -621,20 +220,37 @@ export default function Sidebar({
   onToggleMiniMode,
   isMiniMode = false,
   isNoteCityEnabled = true,
-  isFocusPetEnabled = true,
+  isDevPathsEnabled = true,
+  developmentPaths = {},
+  onOpenPathDetail,
   fileContents = {},
   notes = [],
   theme = 'dark',
-  onToggleTheme,
-  onSavePetData
+  onToggleTheme
 }: SidebarProps) {
   // Klasör ağacı Accordion durumu: alt klasörü olan bir klasör daraltıldığında
   // (collapsed) tüm alt öğeleri gizlenir. Seçim yapılabilirlik için localStorage'da saklanır.
+  //
+  // BUG DÜZELTMESİ (ilk denemede çalışmadı): `folders` prop'u ilk render'da HENÜZ BOŞ
+  // geliyor (App.tsx verileri diskten asenkron yüklüyor) — bu yüzden aşağıdaki gibi bir
+  // useState BAŞLANGIÇ DEĞERİ (`() => new Set(folders)`) sadece bir kez, o boş anda
+  // çalışıyor ve bir daha ASLA yeniden çalışmıyor; sonuç: collapsedFolders hep boş Set
+  // olarak kalıyor (= hiçbir şey kapalı değil). Kayıtlı bir tercih olup olmadığını mount
+  // anında sabitliyoruz, gerçek "hepsi kapalı" varsayılanını ise `folders` GERÇEKTEN
+  // dolduğunda (aşağıdaki effect'te) uyguluyoruz.
+  const hadSavedFolderPrefRef = useRef<boolean>(false);
+  const defaultCollapseAppliedRef = useRef<boolean>(false);
+
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => {
     try {
-      const saved = localStorage.getItem('sidebar_collapsed_folders');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
+      const saved = localStorage.getItem('sidebar_collapsed_folders_v2');
+      if (saved) {
+        hadSavedFolderPrefRef.current = true;
+        return new Set(JSON.parse(saved));
+      }
+      return new Set();
     } catch (e) {
+      hadSavedFolderPrefRef.current = true;
       return new Set();
     }
   });
@@ -644,10 +260,44 @@ export default function Sidebar({
       const next = new Set(prev);
       if (next.has(folder)) next.delete(folder);
       else next.add(folder);
-      localStorage.setItem('sidebar_collapsed_folders', JSON.stringify([...next]));
+      localStorage.setItem('sidebar_collapsed_folders_v2', JSON.stringify([...next]));
       return next;
     });
   };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: collapsedFolders girdileri klasör yeniden adlandırma/senkron sonrası
+  // yapı değişince ASLA temizlenmiyordu — eski bir yol string'i (ör. "Eğitim/Azure Studies")
+  // artık farklı bir klasörün yolu olsa bile "daraltılmış" kalabiliyor, bu da o klasörün
+  // okunun yanlış (ilgisiz) bir düğümü aç/kapa yapıyormuş gibi görünmesine yol açıyordu.
+  // Mevcut `folders` listesinde artık bulunmayan her girdiyi burada buduyoruz. Aynı effect,
+  // `folders` gerçekten ilk kez dolduğunda (ve kayıtlı bir tercih yoksa) "hepsi kapalı"
+  // varsayılanını da burada, TEK SEFERLİK olarak uyguluyor.
+  useEffect(() => {
+    if (folders.length === 0) return;
+
+    if (!hadSavedFolderPrefRef.current && !defaultCollapseAppliedRef.current) {
+      defaultCollapseAppliedRef.current = true;
+      setCollapsedFolders(new Set(folders));
+      return;
+    }
+
+    setCollapsedFolders(prev => {
+      const validFolders = new Set(folders);
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach(folder => {
+        if (validFolders.has(folder)) {
+          next.add(folder);
+        } else {
+          changed = true;
+        }
+      });
+      if (!changed) return prev;
+      localStorage.setItem('sidebar_collapsed_folders_v2', JSON.stringify([...next]));
+      return next;
+    });
+  }, [folders]);
 
   return (
     <aside className={`sidebar ${isSidebarOpen ? 'open' : ''} ${isCollapsed ? 'collapsed' : ''}`}>
@@ -656,7 +306,7 @@ export default function Sidebar({
         {!isCollapsed ? (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div className="brand-logo">▲</div>
+              <img src="/favicon.png" alt="Ultimate NoteFactory" className="brand-logo" />
               <div className="brand-title">
                 <span>Ultimate</span>
                 <span className="brand-subtitle">NoteFactory</span>
@@ -818,7 +468,10 @@ export default function Sidebar({
                       className="btn-delete-folder"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`"${name}" klasörünü ve içindeki tüm notları silmek istediğinize emin misiniz?`)) {
+                        const message = `"${name}" klasörünü ve içindeki tüm notları silmek istediğinize emin misiniz?`;
+                        if (onRequestConfirm) {
+                          onRequestConfirm(message, () => onDeleteFolder(folder));
+                        } else if (confirm(message)) {
                           onDeleteFolder(folder);
                         }
                       }}
@@ -883,12 +536,14 @@ export default function Sidebar({
       </div>
 
       {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-          Odak Evcil Hayvanı (Tamagotchi) modülü aktifse, sol menünün altına yerleştirilir. */}
-      {isFocusPetEnabled && (
-        <FocusPetWidget 
-          isCollapsed={isCollapsed} 
-          fileContents={fileContents} 
-          onSavePetData={onSavePetData}
+          Gelişim Yolları (rütbe) modülü aktifse, sol menünün altına yerleştirilir. */}
+      {isDevPathsEnabled && (
+        <DevPathsWidget
+          isCollapsed={isCollapsed}
+          developmentPaths={developmentPaths}
+          onNavigateToPath={(path) => setSelectedFolder(path)}
+          onOpenPathDetail={(path) => onOpenPathDetail?.(path)}
+          notes={notes}
         />
       )}
 

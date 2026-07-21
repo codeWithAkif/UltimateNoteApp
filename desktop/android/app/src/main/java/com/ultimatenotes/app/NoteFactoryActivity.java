@@ -284,12 +284,19 @@ public class NoteFactoryActivity extends AppCompatActivity {
     }
 
     private File getNotesRootDir() {
+        // BUG DÜZELTMESİ: uygulama artık notları hep getFilesDir() (Directory.Data,
+        // app-private) altında tutuyor; eski genel Documents konumu yalnızca göç
+        // öncesinden kalmış YETİM kopyalar için bir yedek. Bu metot rootDir.exists()
+        // ile "ilk var olan" kökü seçtiğinden, genel Documents klasörü (hep var olan,
+        // .git vb. içeren eski konum) ÖNCE taranınca hızlı yakalama notları oraya
+        // yazılıyor ama uygulamanın kendisi artık orayı hiç okumuyordu. Doğru/güncel
+        // konum artık ÖNCE taranıyor.
         File[] rootDirs = new File[]{
+            new File(getFilesDir(), "UltimateNotes"),
+            new File(getFilesDir(), "Documents/UltimateNotes"),
             new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
             new File(getExternalFilesDir(null), "Documents/UltimateNotes"),
-            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes"),
-            new File(getFilesDir(), "UltimateNotes"),
-            new File(getFilesDir(), "Documents/UltimateNotes")
+            new File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "UltimateNotes")
         };
         for (File rootDir : rootDirs) {
             if (rootDir.exists()) {

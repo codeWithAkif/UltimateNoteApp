@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import NoteFactoryView from './NoteFactoryView';
 import type { Track } from './MusicPlayerView';
 import {
-  Play, Pause, RotateCcw, Clock, CheckSquare, FileText, BarChart2, GripVertical, Music, Plus, Check, SkipForward, SkipBack, AlertTriangle, Sun
+  Play, Pause, RotateCcw, Clock, CheckSquare, FileText, BarChart2, GripVertical, Music, Plus, Check, SkipForward, SkipBack, AlertTriangle, Sun, Sparkles, RefreshCw
 } from 'lucide-react';
+import { generateWeeklySummary, isGeminiConfigured } from '../services/geminiMentor';
 
 interface DashboardViewProps {
   onProcessInput: (input: any) => Promise<any>;
@@ -27,6 +28,10 @@ interface DashboardViewProps {
   isPomodoroRunning: boolean;
   onTogglePomodoro: () => void;
   onResetPomodoro: () => void;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
+  // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
 }
 
 export default function DashboardView({
@@ -45,17 +50,24 @@ export default function DashboardView({
   pomodoroSeconds,
   isPomodoroRunning,
   onTogglePomodoro,
-  onResetPomodoro
+  onResetPomodoro,
+  onRequestConfirm
 }: DashboardViewProps) {
   
   // Widget sıralama durumunu localStorage'dan al veya varsayılanı kullan
   const [widgetOrder, setWidgetOrder] = useState<string[]>(() => {
     const saved = localStorage.getItem('dashboard_widget_order_v2');
-    const order = saved ? JSON.parse(saved) : ['todayReview', 'pomodoro', 'recentNotes', 'taskSummary', 'productivity', 'musicPlayer'];
+    const order = saved ? JSON.parse(saved) : ['todayReview', 'weeklySummary', 'pomodoro', 'recentNotes', 'taskSummary', 'productivity', 'musicPlayer'];
     const filtered = order.filter((id: string) => id !== 'notfactory');
     // Daha önce kaydedilmiş sıralamalarda yeni "todayReview" widget'ı yoksa başa ekle.
     if (!filtered.includes('todayReview')) {
       filtered.unshift('todayReview');
+    }
+    // Aynı şekilde, önceden kaydedilmiş sıralamalarda yeni "weeklySummary" widget'ı
+    // yoksa (mevcut kullanıcılar) todayReview'dan hemen sonraya ekle.
+    if (!filtered.includes('weeklySummary')) {
+      const idx = filtered.indexOf('todayReview');
+      filtered.splice(idx >= 0 ? idx + 1 : 0, 0, 'weeklySummary');
     }
     return filtered;
   });
@@ -177,6 +189,68 @@ export default function DashboardView({
     return { completed, pending, totalWords, totalNotes: notes.filter(n => n.type === 'note').length };
   }, [notes, fileContents]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Haftalık AI özeti için ham veri: son 7 gün içinde düzenlenen notlar + o notlardaki
+  // tamamlanmış görev sayısı. Bu SADECE yerel (API çağrısı olmayan) bir özet — asıl AI
+  // çağrısı bunun metne çevrilmiş halini (weeklyDigestText) TEK SEFER kullanır.
+  const weeklyDigest = useMemo(() => {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const recentlyEdited = notes.filter(n => n.type === 'note' && n.updatedAt >= sevenDaysAgo);
+    let completedTasksInRecent = 0;
+    recentlyEdited.forEach(n => {
+      const content = fileContents[n.path] || '';
+      content.split('\n').forEach(l => {
+        const trimmed = l.trim();
+        if (trimmed.startsWith('- [x]') || trimmed.startsWith('- [X]')) completedTasksInRecent++;
+      });
+    });
+    return { recentlyEdited, completedTasksInRecent };
+  }, [notes, fileContents]);
+
+  const weeklyDigestText = useMemo(() => {
+    const { recentlyEdited, completedTasksInRecent } = weeklyDigest;
+    if (recentlyEdited.length === 0) return '';
+    const noteList = recentlyEdited.slice(0, 20).map(n => n.name).join(', ');
+    return `Son 7 günde düzenlenen not sayısı: ${recentlyEdited.length}. Düzenlenen notlardan bazıları: ${noteList}. Bu notlar içindeki tamamlanmış (işaretlenmiş) görev sayısı: ${completedTasksInRecent}.`;
+  }, [weeklyDigest]);
+
+  const getWeekStartKey = (): string => {
+    const now = new Date();
+    const day = now.getDay();
+    const diff = (day === 0 ? -6 : 1) - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + diff);
+    monday.setHours(0, 0, 0, 0);
+    return monday.toISOString().split('T')[0];
+  };
+
+  const [weeklySummaryText, setWeeklySummaryText] = useState<string | null>(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('weekly_summary_cache') || 'null');
+      if (cached && cached.weekKey === getWeekStartKey()) return cached.summary;
+      return null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [isGeneratingWeeklySummary, setIsGeneratingWeeklySummary] = useState(false);
+  const [weeklySummaryError, setWeeklySummaryError] = useState<string | null>(null);
+
+  const handleGenerateWeeklySummary = async () => {
+    if (!weeklyDigestText || isGeneratingWeeklySummary) return;
+    setIsGeneratingWeeklySummary(true);
+    setWeeklySummaryError(null);
+    try {
+      const { summary } = await generateWeeklySummary(weeklyDigestText);
+      setWeeklySummaryText(summary);
+      localStorage.setItem('weekly_summary_cache', JSON.stringify({ weekKey: getWeekStartKey(), summary }));
+    } catch (err: any) {
+      setWeeklySummaryError(err?.message || 'Özet oluşturulamadı.');
+    } finally {
+      setIsGeneratingWeeklySummary(false);
+    }
+  };
+
   // Quick Todo form submit
   const handleQuickTodoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -284,6 +358,51 @@ export default function DashboardView({
                 </>
               )}
             </div>
+          </div>
+        );
+      }
+
+      case 'weeklySummary': {
+        if (!isGeminiConfigured()) return null;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Sparkles size={16} style={{ color: '#c084fc' }} />
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>Haftalık Özet</span>
+              </div>
+              {weeklySummaryText && (
+                <button
+                  onClick={handleGenerateWeeklySummary}
+                  disabled={isGeneratingWeeklySummary}
+                  title="Özeti yenile"
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                >
+                  <RefreshCw size={12} className={isGeneratingWeeklySummary ? 'animate-spin' : ''} />
+                </button>
+              )}
+            </div>
+
+            {weeklyDigest.recentlyEdited.length === 0 ? (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>Bu hafta henüz düzenlenen not yok.</div>
+            ) : weeklySummaryError ? (
+              <div style={{ fontSize: '11.5px', color: '#ef4444' }}>{weeklySummaryError}</div>
+            ) : weeklySummaryText ? (
+              <p style={{ margin: 0, fontSize: '12.5px', lineHeight: 1.6, color: 'var(--text-primary)' }}>{weeklySummaryText}</p>
+            ) : (
+              <button
+                onClick={handleGenerateWeeklySummary}
+                disabled={isGeneratingWeeklySummary}
+                style={{
+                  padding: '8px 14px', borderRadius: '6px', border: '1px dashed var(--border-color)',
+                  background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px'
+                }}
+              >
+                <Sparkles size={12} />
+                {isGeneratingWeeklySummary ? 'Oluşturuluyor...' : 'Bu Haftayı Özetle'}
+              </button>
+            )}
           </div>
         );
       }
@@ -440,11 +559,17 @@ export default function DashboardView({
               </div>
               <button
                 onClick={() => {
-                  if (confirm('Yazma hızı istatistiklerini sıfırlamak istediğinize emin misiniz?')) {
+                  const message = 'Yazma hızı istatistiklerini sıfırlamak istediğinize emin misiniz?';
+                  const resetStats = () => {
                     localStorage.removeItem('typing_max_wpm');
                     localStorage.removeItem('typing_total_time_ms');
                     localStorage.removeItem('typing_total_chars');
                     setResetTrigger(prev => prev + 1);
+                  };
+                  if (onRequestConfirm) {
+                    onRequestConfirm(message, resetStats);
+                  } else if (confirm(message)) {
+                    resetStats();
                   }
                 }}
                 style={{
@@ -570,6 +695,7 @@ export default function DashboardView({
         padding: '24px'
       }}>
         {widgetOrder.map((id) => {
+          if (id === 'weeklySummary' && !isGeminiConfigured()) return null;
           const isOver = draggedOverId === id;
           return (
             <div

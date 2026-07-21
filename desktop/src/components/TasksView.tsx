@@ -19,6 +19,10 @@ interface TasksViewProps {
   setActiveTab: (tab: string) => void;
   selectedTag: string | null;
   selectedFolder: string | null;
+  // BUG DÜZELTMESİ: native window.confirm() yerine App.tsx'teki paylaşılan uygulama-içi
+  // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
+  // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
 }
 
 export interface WorkspaceSubTask {
@@ -92,7 +96,8 @@ export default function TasksView({
   setActiveNotePath,
   setActiveTab,
   selectedTag,
-  selectedFolder
+  selectedFolder,
+  onRequestConfirm
 }: TasksViewProps) {
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -869,7 +874,10 @@ export default function TasksView({
             type="button"
             className="footer-action-btn delete-btn"
             onClick={() => {
-              if (confirm('Bu görevi ilgili not dosyasından tamamen silmek istediğinize emin misiniz?')) {
+              const message = 'Bu görevi ilgili not dosyasından tamamen silmek istediğinize emin misiniz?';
+              if (onRequestConfirm) {
+                onRequestConfirm(message, () => handleDeleteTask(task));
+              } else if (confirm(message)) {
                 handleDeleteTask(task);
               }
             }}
