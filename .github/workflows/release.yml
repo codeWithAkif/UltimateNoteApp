@@ -45,4 +45,13 @@ jobs:
         run: |
           cd desktop
           npm run build
+          Compress-Archive -Path dist/* -DestinationPath dist.zip -Force
           npx electron-builder --win nsis --publish always || npx electron-builder --win nsis --publish always
+
+      - name: Upload Mobile Web Bundle to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: desktop/dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

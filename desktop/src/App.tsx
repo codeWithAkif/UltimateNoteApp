@@ -23,6 +23,7 @@ import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
+import { initLiveUpdates } from './services/liveUpdate';
 import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
 import {
@@ -224,6 +225,7 @@ export default function App() {
   } | null>(null);
 
   useEffect(() => {
+    initLiveUpdates();
     if (isElectron && window.electron) {
       if (window.electron.getAppVersion) {
         window.electron.getAppVersion().then(v => setAppVersion(v)).catch(() => {});
