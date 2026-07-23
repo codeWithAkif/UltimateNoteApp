@@ -5,6 +5,7 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout, Award
 } from 'lucide-react';
 import { type DevPath, getRankForXp, getAllSystemNoteNames } from '../devPaths';
+import appLogo from '../assets/logo.png';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
   Folder,
@@ -317,7 +318,7 @@ export default function Sidebar({
         {!isCollapsed ? (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <img src="/logo.png" alt="Ultimate NoteFactory" className="brand-logo" />
+              <img src={appLogo} alt="Ultimate NoteFactory" className="brand-logo" />
               <div className="brand-title">
                 <span>Ultimate</span>
                 <span className="brand-subtitle">NoteFactory {appVersion ? `v${appVersion}` : ''}</span>
