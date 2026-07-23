@@ -23,6 +23,16 @@ jobs:
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Cache Electron Binaries & Builder Tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-cache-v1-${{ hashFiles('desktop/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-cache-v1-
+
       - name: Install Desktop Dependencies
         run: |
           cd desktop
@@ -34,4 +44,4 @@ jobs:
         run: |
           cd desktop
           npm run build
-          npx electron-builder --win nsis --publish always
+          npx electron-builder --win nsis --publish always || npx electron-builder --win nsis --publish always

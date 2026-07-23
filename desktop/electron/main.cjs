@@ -753,7 +753,7 @@ ipcMain.handle('check-for-updates', async () => {
   if (process.env.VITE_DEV_SERVER !== '1') {
     try {
       const res = await autoUpdater.checkForUpdatesAndNotify();
-      return { success: true, res };
+      return { success: true, version: res?.updateInfo?.version || null };
     } catch (err) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-status', { status: 'error', text: `Güncelleme hatası: ${err.message}` });
