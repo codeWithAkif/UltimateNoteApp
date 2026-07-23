@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, protocol, net, Menu } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
 protocol.registerSchemesAsPrivileged([
@@ -212,6 +213,16 @@ const getAudioMimeType = (filePath) => {
 };
 
 app.whenReady().then(() => {
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Otomatik Güncelleme (Auto-Updater): Uygulama başlatıldığında GitHub Releases
+  // üzerindeki en son sürümü kontrol eder. Yeni bir sürüm (.exe) varsa arka planda
+  // indirir ve uygulama kapatılıp açıldığında güncellemeyi otomatik olarak uygular.
+  if (process.env.VITE_DEV_SERVER !== '1') {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error('[AutoUpdater Error]:', err);
+    });
+  }
+
   Menu.setApplicationMenu(null);
   protocol.handle('app-media', (request) => {
     try {

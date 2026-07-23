@@ -38,6 +38,7 @@
     "@capacitor/preferences": "^8.0.1",
     "@supabase/supabase-js": "^2.108.2",
     "buffer": "^6.0.3",
+    "electron-updater": "^6.3.9",
     "highlight.js": "^11.11.1",
     "isomorphic-git": "^1.38.4",
     "react": "^19.2.6",
@@ -46,6 +47,11 @@
   "build": {
     "appId": "com.ultimatenotes.desktop",
     "productName": "Ultimate NoteFactory",
+    "publish": {
+      "provider": "github",
+      "owner": "codeWithAkif",
+      "repo": "UltimateNoteApp"
+    },
     "directories": {
       "output": "dist-packaged"
     },
@@ -55,7 +61,10 @@
       "package.json"
     ],
     "win": {
-      "target": "dir"
+      "target": [
+        "nsis",
+        "portable"
+      ]
     }
   }
 }
