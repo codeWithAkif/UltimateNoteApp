@@ -7634,8 +7634,8 @@ grant execute on function get_db_size() to anon;`}
                   </div>
 
                   <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <span>Bu proje, <strong>Google DeepMind Advanced Engineering Team</strong> tarafından geliştirilen tamamen yerel, Git-tabanlı, şifrelenmiş ve çevrimdışı öncelikli (offline-first) bir not alma ve verimlilik asistanıdır.</span>
-                    <span>Tüm verileriniz yerel cihazınızda tutulur ve Supabase entegrasyonu sayesinde uçtan uca şifrelenmiş (End-to-End Encrypted) WebSocket hatlarıyla güvenle senkronize edilir.</span>
+                    <span><strong>Ultimate NoteFactory</strong>, karmaşık menülerden uzak, hıza ve günlük kullanım pratikliğine odaklanarak geliştirilmiş çevrimdışı öncelikli (offline-first) bir kişisel not alma ve verimlilik platformudur.</span>
+                    <span>Notlarınıza, görevlerinize ve fikirlerinize anında ulaşmanız için tasarlanan bu dijital çalışma alanında tüm verileriniz doğrudan kendi cihazınızda saklanır; ihtiyaç duyduğunuzda Supabase entegrasyonu sayesinde cihazlarınız arasında güvenli (SSL/TLS) WebSocket hatlarıyla senkronize edilir.</span>
                   </div>
 
                   <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
