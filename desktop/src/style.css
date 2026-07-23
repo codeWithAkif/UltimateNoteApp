@@ -289,7 +289,8 @@ input:focus, textarea:focus, select:focus {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  object-fit: cover;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .brand-title {

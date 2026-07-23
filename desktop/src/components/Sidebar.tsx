@@ -317,7 +317,7 @@ export default function Sidebar({
         {!isCollapsed ? (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <img src="/favicon.png" alt="Ultimate NoteFactory" className="brand-logo" />
+              <img src="/logo.png" alt="Ultimate NoteFactory" className="brand-logo" />
               <div className="brand-title">
                 <span>Ultimate</span>
                 <span className="brand-subtitle">NoteFactory {appVersion ? `v${appVersion}` : ''}</span>
