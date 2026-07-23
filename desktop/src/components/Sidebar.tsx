@@ -57,6 +57,14 @@ interface SidebarProps {
   notes?: any[];
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  appVersion?: string;
+  updateStatus?: {
+    status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+    version?: string;
+    percent?: number;
+    text?: string;
+  } | null;
+  onRestartAndInstall?: () => void;
 }
 
 interface DevPathsWidgetProps {
@@ -226,7 +234,10 @@ export default function Sidebar({
   fileContents = {},
   notes = [],
   theme = 'dark',
-  onToggleTheme
+  onToggleTheme,
+  appVersion,
+  updateStatus,
+  onRestartAndInstall
 }: SidebarProps) {
   // Klasör ağacı Accordion durumu: alt klasörü olan bir klasör daraltıldığında
   // (collapsed) tüm alt öğeleri gizlenir. Seçim yapılabilirlik için localStorage'da saklanır.
@@ -309,7 +320,7 @@ export default function Sidebar({
               <img src="/favicon.png" alt="Ultimate NoteFactory" className="brand-logo" />
               <div className="brand-title">
                 <span>Ultimate</span>
-                <span className="brand-subtitle">NoteFactory</span>
+                <span className="brand-subtitle">NoteFactory {appVersion ? `v${appVersion}` : ''}</span>
               </div>
             </div>
             {onToggleCollapse && (
@@ -550,6 +561,60 @@ export default function Sidebar({
       {/* Footer / Settings & Sync Status */}
       <div className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '10px', alignItems: isCollapsed ? 'center' : 'stretch' }}>
         
+        {/* Live Auto-Updater Status Banner */}
+        {updateStatus && updateStatus.status === 'downloading' && (
+          <div style={{
+            padding: isCollapsed ? '6px' : '8px 10px',
+            background: 'rgba(99, 102, 241, 0.12)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+            borderRadius: '8px',
+            fontSize: '11px',
+            color: '#a5b4fc',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px'
+          }}>
+            {!isCollapsed && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold' }}>
+                <span>⬇️ Sürüm v{updateStatus.version || ''} İndiriliyor</span>
+                <span>%{updateStatus.percent || 0}</span>
+              </div>
+            )}
+            <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ width: `${updateStatus.percent || 0}%`, height: '100%', background: 'var(--accent-color)', transition: 'width 0.2s ease' }} />
+            </div>
+          </div>
+        )}
+
+        {updateStatus && updateStatus.status === 'downloaded' && (
+          <div 
+            onClick={onRestartAndInstall}
+            style={{
+              padding: isCollapsed ? '6px' : '8px 12px',
+              background: 'linear-gradient(135deg, #10b981, #059669)',
+              color: '#ffffff',
+              borderRadius: '8px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isCollapsed ? 'center' : 'space-between',
+              boxShadow: '0 4px 14px rgba(16, 185, 129, 0.4)'
+            }}
+            title="Tıklayarak uygulamayı yeniden başlatın ve güncellemeyi yükleyin"
+          >
+            {!isCollapsed ? (
+              <>
+                <span>🚀 v{updateStatus.version} Hazır! Yükle</span>
+                <span>➔</span>
+              </>
+            ) : (
+              <span>🚀</span>
+            )}
+          </div>
+        )}
+
         {/* Glowing Sync Status Indicator */}
         <div 
           className="sync-status-indicator"

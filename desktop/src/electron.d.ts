@@ -24,6 +24,9 @@ export interface ElectronAPI {
   fileExists: (relativePath: string) => Promise<boolean>;
   toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>;
   setTitleBarTheme: (theme: 'dark' | 'light') => Promise<{ success: boolean }>;
+  getAppVersion: () => Promise<string>;
+  restartAndInstall: () => Promise<{ success: boolean }>;
+  onUpdateStatus: (callback: (data: { status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'; version?: string; percent?: number; text?: string }) => void) => () => void;
 }
 
 declare global {

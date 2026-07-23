@@ -214,6 +214,35 @@ export default function App() {
     }
   }, [theme]);
 
+  // Auto Updater & App Version States
+  const [appVersion, setAppVersion] = useState<string>('');
+  const [updateStatus, setUpdateStatus] = useState<{
+    status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+    version?: string;
+    percent?: number;
+    text?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (isElectron && window.electron) {
+      if (window.electron.getAppVersion) {
+        window.electron.getAppVersion().then(v => setAppVersion(v)).catch(() => {});
+      }
+      if (window.electron.onUpdateStatus) {
+        const unsub = window.electron.onUpdateStatus((data: any) => {
+          setUpdateStatus(data);
+        });
+        return () => { unsub(); };
+      }
+    }
+  }, []);
+
+  const handleRestartAndInstall = () => {
+    if (isElectron && window.electron && window.electron.restartAndInstall) {
+      window.electron.restartAndInstall();
+    }
+  };
+
   // Music Player States
   const [tracks, setTracks] = useState<Track[]>(() => {
     const saved = localStorage.getItem('music_tracks');
@@ -5297,6 +5326,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           onOpenPathDetail={(path) => setDevPathDetailTarget(path)}
           fileContents={fileContents}
           notes={notes}
+          appVersion={appVersion}
+          updateStatus={updateStatus}
+          onRestartAndInstall={handleRestartAndInstall}
         />
 
         {/* Mobile touch backdrop overlay to dismiss sidebar */}
@@ -8754,6 +8786,49 @@ grant execute on function get_db_size() to anon;`}
               <SkipForward size={14} />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Floating Update Notification Toast */}
+      {updateStatus && updateStatus.status === 'downloaded' && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            zIndex: 99999,
+            background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+            color: '#ffffff',
+            padding: '14px 20px',
+            borderRadius: '12px',
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.5), 0 0 20px rgba(16, 185, 129, 0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '16px',
+            animation: 'fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: '13px', fontWeight: 'bold' }}>🎉 Yeni Sürüm (v{updateStatus.version}) İndirildi!</span>
+            <span style={{ fontSize: '11px', opacity: 0.9 }}>Güncellemeyi tamamlamak için uygulamayı şimdi yeniden başlatın.</span>
+          </div>
+          <button
+            onClick={handleRestartAndInstall}
+            style={{
+              background: '#ffffff',
+              color: '#059669',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '8px 14px',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              transition: 'transform 0.15s ease'
+            }}
+          >
+            Yeniden Başlat ve Yükle
+          </button>
         </div>
       )}
     </div>

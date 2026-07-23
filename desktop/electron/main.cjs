@@ -735,3 +735,49 @@ ipcMain.handle('toggle-mini-mode', async (event, { isMini }) => {
   }
   return { success: true };
 });
+
+ipcMain.handle('get-app-version', () => {
+  return app.getVersion();
+});
+
+ipcMain.handle('restart-and-install', () => {
+  autoUpdater.quitAndInstall();
+  return { success: true };
+});
+
+autoUpdater.on('checking-for-update', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'checking', text: 'Güncelleme kontrol ediliyor...' });
+  }
+});
+
+autoUpdater.on('update-available', (info) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'available', version: info.version, text: `Yeni sürüm v${info.version} bulundu!` });
+  }
+});
+
+autoUpdater.on('update-not-available', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'not-available', text: 'Uygulama güncel.' });
+  }
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  const percent = Math.round(progressObj.percent);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'downloading', percent, text: `Yeni sürüm indiriliyor: %${percent}` });
+  }
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'downloaded', version: info.version, text: `Sürüm v${info.version} hazır! Yüklemek için tıklayın.` });
+  }
+});
+
+autoUpdater.on('error', (err) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status: 'error', text: `Güncelleme hatası: ${err.message}` });
+  }
+});

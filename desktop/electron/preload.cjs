@@ -19,9 +19,16 @@ contextBridge.exposeInMainWorld('electron', {
   fileExists: (relativePath) => ipcRenderer.invoke('file-exists', relativePath),
   toggleMiniMode: (isMini) => ipcRenderer.invoke('toggle-mini-mode', { isMini }),
   setTitleBarTheme: (theme) => ipcRenderer.invoke('set-titlebar-theme', theme),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);
     return () => ipcRenderer.removeListener('sync-status-changed', subscription);
+  },
+  onUpdateStatus: (callback) => {
+    const subscription = (event, data) => callback(data);
+    ipcRenderer.on('update-status', subscription);
+    return () => ipcRenderer.removeListener('update-status', subscription);
   }
 });
