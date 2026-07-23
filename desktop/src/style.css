@@ -4953,10 +4953,12 @@ input:focus, textarea:focus, select:focus {
   flex: 1;
   display: flex;
   overflow: hidden;
+  min-width: 0;
 }
 
 .allday-col-cell {
   flex: 1;
+  min-width: 0;
   border-right: 1px solid var(--border-color);
   padding: 4px;
   display: flex;
@@ -4986,6 +4988,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: flex-start;
   gap: 6px;
+  min-width: 0;
   background: linear-gradient(135deg, rgba(var(--card-priority-rgb), 0.12) 0%, rgba(var(--card-priority-rgb), 0.03) 100%);
   border: 1px solid rgba(var(--card-priority-rgb), 0.22);
   border-left: 3px solid rgba(var(--card-priority-rgb), 0.8);
@@ -5057,8 +5060,10 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-primary);
   white-space: normal;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.35;
   flex: 1;
+  min-width: 0;
   cursor: pointer;
 }
 
