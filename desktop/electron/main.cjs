@@ -72,6 +72,16 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!isDev) {
+      setTimeout(() => {
+        autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+          console.error('[AutoUpdater Error]:', err);
+        });
+      }, 1500);
+    }
+  });
+
   // Forward frontend console messages to terminal
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
     console.log(`[Frontend Console] [Level ${level}]: ${message} (Source: ${sourceId}:${line})`);
@@ -213,15 +223,9 @@ const getAudioMimeType = (filePath) => {
 };
 
 app.whenReady().then(() => {
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Otomatik Güncelleme (Auto-Updater): Uygulama başlatıldığında GitHub Releases
-  // üzerindeki en son sürümü kontrol eder. Yeni bir sürüm (.exe) varsa arka planda
-  // indirir ve uygulama kapatılıp açıldığında güncellemeyi otomatik olarak uygular.
-  if (process.env.VITE_DEV_SERVER !== '1') {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-      console.error('[AutoUpdater Error]:', err);
-    });
-  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.logger = console;
 
   Menu.setApplicationMenu(null);
   protocol.handle('app-media', (request) => {
@@ -743,6 +747,21 @@ ipcMain.handle('get-app-version', () => {
 ipcMain.handle('restart-and-install', () => {
   autoUpdater.quitAndInstall();
   return { success: true };
+});
+
+ipcMain.handle('check-for-updates', async () => {
+  if (process.env.VITE_DEV_SERVER !== '1') {
+    try {
+      const res = await autoUpdater.checkForUpdatesAndNotify();
+      return { success: true, res };
+    } catch (err) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-status', { status: 'error', text: `Güncelleme hatası: ${err.message}` });
+      }
+      return { success: false, error: err.message };
+    }
+  }
+  return { success: false, error: 'Geliştirme modunda güncellemeler devre dışıdır.' };
 });
 
 autoUpdater.on('checking-for-update', () => {

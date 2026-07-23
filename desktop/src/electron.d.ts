@@ -26,6 +26,7 @@ export interface ElectronAPI {
   setTitleBarTheme: (theme: 'dark' | 'light') => Promise<{ success: boolean }>;
   getAppVersion: () => Promise<string>;
   restartAndInstall: () => Promise<{ success: boolean }>;
+  checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
   onUpdateStatus: (callback: (data: { status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'; version?: string; percent?: number; text?: string }) => void) => () => void;
 }
 

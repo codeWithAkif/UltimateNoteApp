@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
   setTitleBarTheme: (theme) => ipcRenderer.invoke('set-titlebar-theme', theme),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);

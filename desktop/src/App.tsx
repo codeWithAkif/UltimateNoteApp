@@ -7591,7 +7591,44 @@ grant execute on function get_db_size() to anon;`}
                   }}>
                     <div style={{ fontSize: '32px', filter: 'drop-shadow(0 0 10px var(--accent-color))' }}>▲</div>
                     <strong style={{ fontSize: '16px', color: '#fff' }}>Ultimate NoteFactory</strong>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Version 1.4.0-Premium (Desktop & Mobile)</span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      Version {appVersion ? `v${appVersion}` : '1.4.0-Premium (Desktop & Mobile)'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (isElectron && window.electron && window.electron.checkForUpdates) {
+                          setUpdateStatus({ status: 'checking', text: 'Güncellemeler kontrol ediliyor...' });
+                          const res = await window.electron.checkForUpdates();
+                          if (!res.success && res.error) {
+                            setUpdateStatus({ status: 'error', text: `Güncelleme kontrolü: ${res.error}` });
+                          }
+                        } else {
+                          alert('Güncelleme kontrolü yalnızca masaüstü uygulamasında çalışır.');
+                        }
+                      }}
+                      style={{
+                        marginTop: '6px',
+                        padding: '6px 14px',
+                        background: 'rgba(99, 102, 241, 0.2)',
+                        border: '1px solid rgba(99, 102, 241, 0.4)',
+                        color: '#a5b4fc',
+                        borderRadius: '6px',
+                        fontSize: '11.5px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <span>🔄 Güncellemeleri Kontrol Et</span>
+                    </button>
+                    {updateStatus && updateStatus.text && (
+                      <span style={{ fontSize: '11px', color: 'var(--accent-color)', fontWeight: '600', marginTop: '2px' }}>
+                        {updateStatus.text}
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: '8px' }}>
