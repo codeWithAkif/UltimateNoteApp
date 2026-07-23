@@ -225,6 +225,8 @@ const getAudioMimeType = (filePath) => {
 app.whenReady().then(() => {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = true;
+  autoUpdater.allowDowngrade = true;
   autoUpdater.logger = console;
 
   Menu.setApplicationMenu(null);
@@ -796,7 +798,15 @@ autoUpdater.on('update-downloaded', (info) => {
 });
 
 autoUpdater.on('error', (err) => {
+  let friendlyMsg = 'Güncelleme sunucusuna ulaşılamadı veya henüz yeni yayın bulunamadı.';
+  if (err && err.message) {
+    if (err.message.includes('404') || err.message.includes('406') || err.message.includes('latest')) {
+      friendlyMsg = 'Yeni yayınlanan sürüm henüz GitHub üzerinde aktifleşmedi (Lütfen 1-2 dk bekleyin).';
+    } else if (err.message.includes('net::ERR_INTERNET_DISCONNECTED')) {
+      friendlyMsg = 'İnternet bağlantısı kurulamadı.';
+    }
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('update-status', { status: 'error', text: `Güncelleme hatası: ${err.message}` });
+    mainWindow.webContents.send('update-status', { status: 'error', text: friendlyMsg });
   }
 });
