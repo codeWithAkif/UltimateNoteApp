@@ -6672,8 +6672,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       )}
       {/* Premium Glassmorphic Supabase Settings Modal */}
       {isSettingsModalOpen && (
-        <div className="modal-overlay animate-fade" style={{ zIndex: 2000 }}>
-          <div className="modal-content animate-pop" style={{
+        <div className="modal-overlay animate-fade" onClick={() => setIsSettingsModalOpen(false)} style={{ zIndex: 2000 }}>
+          <div className="modal-content animate-pop" onClick={(e) => e.stopPropagation()} style={{
             maxWidth: '650px',
             width: '95%',
             padding: '0',
@@ -6686,8 +6686,35 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             height: settingsTab === 'trash' ? '640px' : '460px',
             background: 'rgba(15, 23, 42, 0.95)',
             backdropFilter: 'blur(16px)',
-            border: '1px solid rgba(255, 255, 255, 0.08)'
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            position: 'relative'
           }}>
+            {/* Top-Right Close Button (X) */}
+            <button
+              type="button"
+              onClick={() => setIsSettingsModalOpen(false)}
+              style={{
+                position: 'absolute',
+                top: '12px',
+                right: '12px',
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                background: 'rgba(255, 255, 255, 0.06)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s ease',
+                zIndex: 50
+              }}
+              className="btn-modal-close-x"
+              title="Kapat"
+            >
+              <X size={16} />
+            </button>
             {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                 Çok sayfalı ayarlar paneli için sol taraftaki kategori/sekme barı. */}
             <div className="settings-sidebar" style={{ 
