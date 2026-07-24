@@ -4752,22 +4752,30 @@ export default function NotesView({
 
 
   const handleToggleCheckboxInEditor = async (lineIdx: number) => {
-    const linesArr = editorContent.split('\n');
-    if (lineIdx < 0 || lineIdx >= linesArr.length) return;
+    // BUG DÜZELTMESİ: `editorContent` state'ini closure'dan (render anındaki değerinden)
+    // okuyup değiştirmek, kullanıcı art arda hızlıca birden çok checkbox'a tıkladığında
+    // "kaybolan güncelleme" (lost update) yarışına yol açıyordu — React birden fazla
+    // tıklamayı aynı batch'te işleyebildiğinden, ikinci tıklamanın handler'ı hâlâ
+    // BİRİNCİ tıklamadan ÖNCEKİ (bayat) içeriği görüyor, üzerine yazınca ilk işaretlenen
+        // görev "tamamlanmadı" durumuna geri dönüyordu. Fonksiyonel setState formu her
+    // zaman en güncel, henüz commit edilmemiş state üzerinden çalışmayı garanti eder.
+    setEditorContent(prevContent => {
+      const linesArr = prevContent.split('\n');
+      if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
 
-    const line = linesArr[lineIdx];
-    const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
-    if (!checklistMatch) return;
+      const line = linesArr[lineIdx];
+      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+      if (!checklistMatch) return prevContent;
 
-    const prefix = checklistMatch[1];
-    const currentStatus = checklistMatch[2];
-    const suffix = checklistMatch[3];
+      const prefix = checklistMatch[1];
+      const currentStatus = checklistMatch[2];
+      const suffix = checklistMatch[3];
 
-    const newStatus = currentStatus.toLowerCase() === 'x' ? ' ' : 'x';
-    linesArr[lineIdx] = `${prefix}${newStatus}${suffix}`;
+      const newStatus = currentStatus.toLowerCase() === 'x' ? ' ' : 'x';
+      linesArr[lineIdx] = `${prefix}${newStatus}${suffix}`;
 
-    const newContent = linesArr.join('\n');
-    setEditorContent(newContent);
+      return linesArr.join('\n');
+    });
   };
 
   const handleUpdateTaskMetadata = async (
@@ -4778,56 +4786,60 @@ export default function NotesView({
     dueDate: string,
     repeat: string
   ) => {
-    const linesArr = editorContent.split('\n');
-    if (lineIdx < 0 || lineIdx >= linesArr.length) return;
+    // BUG DÜZELTMESİ: bkz. handleToggleCheckboxInEditor — aynı "kaybolan güncelleme"
+    // yarışını önlemek için fonksiyonel setState kullanılıyor.
+    setEditorContent(prevContent => {
+      const linesArr = prevContent.split('\n');
+      if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
 
-    let cleanText = originalContent
-      .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
-      .replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/gi, '')
-      .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+      let cleanText = originalContent
+        .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+        .replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/gi, '')
+        .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-    let priorityStr = '';
-    if (isImportant && isUrgent) {
-      priorityStr = '[p:critical]';
-    } else if (isUrgent) {
-      priorityStr = '[p:high]';
-    } else if (isImportant) {
-      priorityStr = '[p:medium]';
-    }
+      let priorityStr = '';
+      if (isImportant && isUrgent) {
+        priorityStr = '[p:critical]';
+      } else if (isUrgent) {
+        priorityStr = '[p:high]';
+      } else if (isImportant) {
+        priorityStr = '[p:medium]';
+      }
 
-    let dueStr = dueDate ? `[due:${dueDate}]` : '';
+      let dueStr = dueDate ? `[due:${dueDate}]` : '';
 
-    let repeatStr = '';
-    if (repeat && repeat !== 'none') {
-      repeatStr = `[repeat:${repeat}]`;
-    }
+      let repeatStr = '';
+      if (repeat && repeat !== 'none') {
+        repeatStr = `[repeat:${repeat}]`;
+      }
 
-    const suffixParts = [];
-    if (priorityStr) suffixParts.push(priorityStr);
-    if (dueStr) suffixParts.push(dueStr);
-    if (repeatStr) suffixParts.push(repeatStr);
+      const suffixParts = [];
+      if (priorityStr) suffixParts.push(priorityStr);
+      if (dueStr) suffixParts.push(dueStr);
+      if (repeatStr) suffixParts.push(repeatStr);
 
-    const suffix = suffixParts.length > 0 ? ' ' + suffixParts.join(' ') : '';
-    const fullLine = linesArr[lineIdx];
-    const chkMatch = fullLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s*)/);
-    if (!chkMatch) return;
+      const suffix = suffixParts.length > 0 ? ' ' + suffixParts.join(' ') : '';
+      const fullLine = linesArr[lineIdx];
+      const chkMatch = fullLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s*)/);
+      if (!chkMatch) return prevContent;
 
-    linesArr[lineIdx] = `${chkMatch[1]}${cleanText}${suffix}`;
+      linesArr[lineIdx] = `${chkMatch[1]}${cleanText}${suffix}`;
 
-    const newContent = linesArr.join('\n');
-    setEditorContent(newContent);
+      return linesArr.join('\n');
+    });
   };
 
   const handleDeleteTaskLine = async (lineIdx: number) => {
-    const linesArr = editorContent.split('\n');
-    if (lineIdx < 0 || lineIdx >= linesArr.length) return;
+    // BUG DÜZELTMESİ: bkz. handleToggleCheckboxInEditor — aynı yarış durumu önleniyor.
+    setEditorContent(prevContent => {
+      const linesArr = prevContent.split('\n');
+      if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
 
-    linesArr.splice(lineIdx, 1);
-
-    const newContent = linesArr.join('\n');
-    setEditorContent(newContent);
+      linesArr.splice(lineIdx, 1);
+      return linesArr.join('\n');
+    });
     setExpandedTaskIdx(null);
     setFocusedLineIdx(null);
   };
@@ -7121,12 +7133,30 @@ export default function NotesView({
       e.preventDefault();
       const closingChar = autoClosePairs[e.key];
       const selectedText = val.substring(caret, textarea.selectionEnd);
-      const newText = val.substring(0, caret) + e.key + selectedText + closingChar + val.substring(textarea.selectionEnd);
-      
+      const newValue = val.substring(0, caret) + e.key + selectedText + closingChar + val.substring(textarea.selectionEnd);
+
+      // BUG DÜZELTMESİ: checklist/bullet/ordered-list satırlarında textarea'nın `value`'su
+      // yalnızca İÇERİK kısmıdır (- [ ]/- /1. öneki, JSX'te value={isChecklist.content} vb.
+      // ile ayrıca render edilir) — ama `lines[idx]` (fullLine) öneği de içerir. Burada
+      // doğrudan `newLines[idx] = newValue` yazmak öneği tamamen siliyordu: bir todo
+      // satırında parantez/tırnak/köşeli parantez açmak "- [ ] " önekini yok edip satırı
+      // düz paragrafa çeviriyordu. Enter/Backspace/ok tuşu handler'larındaki gibi öneği
+      // koruyup yeniden ekliyoruz.
+      const clInfo = getChecklistInfo(fullLine);
+      const blInfo = !clInfo ? getBulletInfo(fullLine) : null;
+      const olInfo = !clInfo && !blInfo ? getOrderedListInfo(fullLine) : null;
+      const linePrefix = clInfo
+        ? `${clInfo.prefix}${clInfo.status}${clInfo.spacer}`
+        : blInfo
+        ? blInfo.prefix
+        : olInfo
+        ? olInfo.prefix
+        : '';
+
       const newLines = [...lines];
-      newLines[idx] = newText;
+      newLines[idx] = `${linePrefix}${newValue}`;
       setEditorContent(newLines.join('\n'));
-      
+
       setTimeout(() => {
         textarea.focus();
         textarea.selectionStart = caret + 1;
@@ -7455,16 +7485,27 @@ export default function NotesView({
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       const isSameRow = (a: number, b: number) => Math.abs(a - b) < 2;
       const caretTop = getCaretCoordinates(textarea, caret).top;
+      // BUG DÜZELTMESİ: "Oluşturuldu:"/gizli tarih satırı gibi normalde render edilmeyen
+      // satırlar, SADECE odaklandıklarında (getHiddenLineIndices bunu bilerek dışlıyor)
+      // görünür/düzenlenebilir hale geliyordu — ama bu ok tuşu satır-atlama mantığı hiç
+      // gizlilik kontrolü yapmadan idx±1'e atlıyordu, yani yukarı/aşağı ok ile kullanıcı
+      // "hiç görünmemesi gereken" bu satıra kazara gelip yazı yazabiliyordu. Artık gizli
+      // satırlar (katlanmış başlıklar, tablo satırları, toggle detayları, meta/tarih
+      // satırları) ok tuşu ile ASLA hedef olamaz — bir sonraki görünür satıra kadar atlanır.
+      const hidden = getHiddenLineIndices();
 
       if (e.key === 'ArrowUp') {
         const firstRowTop = getCaretCoordinates(textarea, 0).top;
         if (isSameRow(caretTop, firstRowTop) && idx > 0) {
           e.preventDefault();
-          const prevLineText = lines[idx - 1];
+          let targetIdx = idx - 1;
+          while (targetIdx > 0 && hidden.has(targetIdx)) targetIdx--;
+          if (hidden.has(targetIdx)) return;
+          const prevLineText = lines[targetIdx];
           const prevInfo = getChecklistInfo(prevLineText) || getBulletInfo(prevLineText) || getOrderedListInfo(prevLineText);
           const prevContent = prevInfo ? prevInfo.content : prevLineText;
-          setFocusedLineIdx(idx - 1);
-          setCaretPos({ lineIdx: idx - 1, charIdx: Math.min(caret, prevContent.length) });
+          setFocusedLineIdx(targetIdx);
+          setCaretPos({ lineIdx: targetIdx, charIdx: Math.min(caret, prevContent.length) });
         }
         return;
       }
@@ -7473,11 +7514,14 @@ export default function NotesView({
       const lastRowTop = getCaretCoordinates(textarea, val.length).top;
       if (isSameRow(caretTop, lastRowTop) && idx < lines.length - 1) {
         e.preventDefault();
-        const nextLineText = lines[idx + 1];
+        let targetIdx = idx + 1;
+        while (targetIdx < lines.length - 1 && hidden.has(targetIdx)) targetIdx++;
+        if (hidden.has(targetIdx)) return;
+        const nextLineText = lines[targetIdx];
         const nextInfo = getChecklistInfo(nextLineText) || getBulletInfo(nextLineText) || getOrderedListInfo(nextLineText);
         const nextContent = nextInfo ? nextInfo.content : nextLineText;
-        setFocusedLineIdx(idx + 1);
-        setCaretPos({ lineIdx: idx + 1, charIdx: Math.min(caret, nextContent.length) });
+        setFocusedLineIdx(targetIdx);
+        setCaretPos({ lineIdx: targetIdx, charIdx: Math.min(caret, nextContent.length) });
       }
       return;
     }
@@ -7496,9 +7540,20 @@ export default function NotesView({
           const filename = `${getCleanFilename(cleanTitle)}.md`;
           parts[parts.length - 1] = filename;
           const newPath = parts.join('/');
-          
+
           if (newPath !== activeNotePath) {
-            onRenameNote(activeNotePath, newPath);
+            // BUG DÜZELTMESİ: başlık satırına (0. satır) imleç kazara gelip (ör. ok tuşu
+            // taşması) tek bir karakter bile değiştirilse, buradan çıkışta SESSİZCE ve
+            // GERİ ALINAMAZ şekilde dosya adı değişiyordu. Artık gerçek bir rename her
+            // zaman kullanıcıya onaylatılıyor — yanlışlıkla değişen bir başlık artık
+            // fark edilmeden dosyayı yeniden adlandırmıyor.
+            const doRename = () => onRenameNote(activeNotePath, newPath);
+            const message = `Not başlığını "${activeName}" yerine "${cleanTitle}" olarak değiştirmek (dosyayı yeniden adlandırmak) istediğinize emin misiniz?`;
+            if (onRequestConfirm) {
+              onRequestConfirm(message, doRename);
+            } else if (confirm(message)) {
+              doRename();
+            }
           }
         }
       }
@@ -8068,8 +8123,92 @@ export default function NotesView({
     );
   };
 
+  // BUG DÜZELTMESİ: bu fonksiyon önceden yalnızca `return null;` yapan bir taslaktı —
+  // metin seçimini izleyen state (selectionInfo/checkSelection) zaten mevcut ve doğru
+  // çalışıyordu ama seçim yapıldığında gerçekten görünen bir araç çubuğu hiç render
+  // edilmiyordu. Seçili kelime/metin üzerinde kalın/italik/kod ve renkli vurgu (highlight)
+  // uygulayabilen gerçek araç çubuğunu ekliyoruz — renderWikiSuggestions ile aynı
+  // konumlandırma tekniğini (getCaretCoordinates tabanlı top/left) kullanır.
   const renderContextualToolbar = (idx: number) => {
-    return null;
+    if (!selectionInfo || selectionInfo.lineIdx !== idx) return null;
+    if (selectionInfo.start === selectionInfo.end) return null;
+
+    const highlightColors: { key: string; color: string; label: string }[] = [
+      { key: 'highlight-yellow', color: '#facc15', label: 'Sarı vurgu' },
+      { key: 'highlight-red', color: '#f87171', label: 'Kırmızı vurgu' },
+      { key: 'highlight-green', color: '#4ade80', label: 'Yeşil vurgu' },
+      { key: 'highlight-blue', color: '#60a5fa', label: 'Mavi vurgu' },
+      { key: 'highlight-purple', color: '#c084fc', label: 'Mor vurgu' },
+    ];
+
+    // Araç çubuğu tıklanınca textarea'nın seçimi/odağı kaybolup formatı yanlış
+    // (boş) metne uygulamasını önlemek için mousedown'da preventDefault şart.
+    const preventBlur = (e: React.MouseEvent) => e.preventDefault();
+
+    return (
+      <div
+        className="contextual-selection-toolbar animate-pop"
+        onMouseDown={preventBlur}
+        style={{
+          position: 'absolute',
+          top: `${selectionInfo.top + 6}px`,
+          left: `${Math.min(Math.max(10, selectionInfo.left), 400)}px`,
+          transform: 'translateX(-50%)',
+          zIndex: 1001,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '2px',
+          padding: '4px',
+          background: 'rgba(20, 20, 25, 0.97)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        <button
+          type="button"
+          title="Kalın"
+          onMouseDown={preventBlur}
+          onClick={() => applyFormat('bold')}
+          className="contextual-toolbar-btn"
+        >
+          <Bold size={13} />
+        </button>
+        <button
+          type="button"
+          title="İtalik"
+          onMouseDown={preventBlur}
+          onClick={() => applyFormat('italic')}
+          className="contextual-toolbar-btn"
+        >
+          <Italic size={13} />
+        </button>
+        <button
+          type="button"
+          title="Kod"
+          onMouseDown={preventBlur}
+          onClick={() => applyFormat('code')}
+          className="contextual-toolbar-btn"
+        >
+          <Code size={13} />
+        </button>
+        <div style={{ width: '1px', height: '18px', background: 'var(--border-color)', margin: '0 2px' }} />
+        {highlightColors.map(({ key, color, label }) => (
+          <button
+            key={key}
+            type="button"
+            title={label}
+            onMouseDown={preventBlur}
+            onClick={() => applyFormat(key)}
+            className="contextual-toolbar-btn contextual-toolbar-color-btn"
+            style={{ color }}
+          >
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: color }} />
+          </button>
+        ))}
+      </div>
+    );
   };
 
 

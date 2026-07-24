@@ -5155,6 +5155,29 @@ input:focus, textarea:focus, select:focus {
   opacity: 0.5;
 }
 
+/* --- CONTEXTUAL SELECTION TOOLBAR (metin seçince altta çıkan biçimlendirme araç çubuğu) --- */
+.contextual-toolbar-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  height: 26px;
+  width: 26px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.contextual-toolbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.contextual-toolbar-color-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* --- ACCORDION HEADING FOLDING --- */
 .heading-fold-chevron-wrapper {
   display: inline-flex;

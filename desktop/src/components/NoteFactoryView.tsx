@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Folder, FileText, CheckSquare, Hash, Zap, Send, Calendar, Clock, X, Sparkles } from 'lucide-react';
 import { extractDateFromText, isGeminiConfigured } from '../services/geminiMentor';
 
@@ -86,6 +86,15 @@ export default function NoteFactoryView({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // BUG DÜZELTMESİ: @ klasör listesi ".templates"/".versions"/".trash" gibi uygulamanın
+  // kendi sistem klasörlerini de gösteriyordu — kullanıcı bunları asla göremez (Sidebar'da
+  // da gizli), Hızlı Not Fabrikası'nda da görünmemeli. Yol içindeki HERHANGİ bir segment
+  // "." ile başlıyorsa (ör. "Proje/.templates") o klasör tamamen filtrelenir.
+  const visibleFolders = useMemo(
+    () => folders.filter(f => !f.split('/').some(seg => seg.startsWith('.'))),
+    [folders]
+  );
+
   const [shortcuts, setShortcuts] = useState<Array<{ id: string; label: string; syntax: string }>>(() => {
     const cached = localStorage.getItem('note_factory_shortcuts');
     if (cached) {
@@ -116,6 +125,8 @@ export default function NoteFactoryView({
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlighterRef = useRef<HTMLDivElement>(null);
+  const quickInsertToolbarRef = useRef<HTMLDivElement>(null);
+  const mobilePopoverRef = useRef<HTMLDivElement>(null);
 
   const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
     if (highlighterRef.current) {
@@ -127,7 +138,9 @@ export default function NoteFactoryView({
   const renderHighlightedText = (text: string) => {
     if (!text) return null;
     
-    const regex = /(@(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ\/-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ\/-]+\])|!(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ-]+\])|#(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}\]|\[time:\d{2}:\d{2}-\d{2}:\d{2}\])/g;
+    // BUG DÜZELTMESİ: bkz. parseShortcutSyntax — emoji içeren klasör/not adları eski
+    // Latin+Türkçe izin listesiyle vurgulanamıyordu, negatif karakter sınıfına geçildi.
+    const regex = /(@(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|!(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|#(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}\]|\[time:\d{2}:\d{2}-\d{2}:\d{2}\])/g;
     const textToRender = text.endsWith('\n') ? text + ' ' : text;
     const parts = textToRender.split(regex);
     
@@ -185,6 +198,29 @@ export default function NoteFactoryView({
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
 
   const [activePopover, setActivePopover] = useState<'@' | '!' | '#' | 'priority' | 'due' | 'time' | null>(null);
+
+  // BUG DÜZELTMESİ: "dışına tıklayınca kapat" için tüm ekranı kaplayan görünmez bir
+  // backdrop <div> kullanılıyordu. `.input-card` üzerindeki `backdrop-filter` kendi
+  // stacking context'ini oluşturduğundan, popover'ın kendi z-index'i (20002) bu
+  // context İÇİNDE hapsoluyor ve dışarıdaki backdrop (z-index 1999) tüm popover'ın
+  // ÜZERİNDE render ediliyordu — popover görsel olarak görünse de üzerine tıklamalar
+  // aslında görünmez backdrop'a gidiyor, popover'ı kapatmaktan başka bir şey yapmıyordu
+  // (örn. "@Klasör" popover'ından bir klasöre tıklamak hiçbir şey eklemiyordu). Çözüm:
+  // stacking context / z-index yarışına hiç girmeyen, gerçek document seviyesinde
+  // "dışına tıklama" dinleyicisi kullanmak.
+  useEffect(() => {
+    if (activePopover === null) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const insideToolbar = quickInsertToolbarRef.current?.contains(target);
+      const insideMobilePopover = mobilePopoverRef.current?.contains(target);
+      if (!insideToolbar && !insideMobilePopover) {
+        setActivePopover(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [activePopover]);
 
   // AI tarih/saat algılama: metindeki "yarın öğlen" gibi doğal dil ifadelerini
   // [due:]/[time:] etiketine çevirir — kullanıcı elle tarih seçmek zorunda kalmaz.
@@ -262,10 +298,10 @@ export default function NoteFactoryView({
           <span>Klasör Seçin</span>
           <button type="button" onClick={() => setActivePopover(null)} className="popover-close-btn"><X size={14} /></button>
         </div>
-        {folders.length === 0 ? (
+        {visibleFolders.length === 0 ? (
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Mevcut klasör yok.</div>
         ) : (
-          folders.map(f => (
+          visibleFolders.map(f => (
             <div
               key={f}
               onClick={() => {
@@ -294,7 +330,16 @@ export default function NoteFactoryView({
   };
 
   const renderNotePopover = () => {
-    const noteItems = notes.filter(n => n.type === 'note');
+    // BUG DÜZELTMESİ: kullanıcı önce bir klasör (@) girmişse, hedef not (!) listesi
+    // SADECE o klasörün notlarını göstermeli — aksi halde alakasız yüzlerce not arasından
+    // arama yapmak zorunda kalıyordu. Klasör henüz seçilmemişse tüm notlar gösterilir.
+    const noteItems = notes.filter(n => {
+      if (n.type !== 'note') return false;
+      if (parsed.folder) {
+        return n.path.startsWith(`${parsed.folder}/`);
+      }
+      return true;
+    });
     return (
       <div className="factory-dropdown-popover" onClick={(e) => e.stopPropagation()}>
         <div className="popover-header-row">
@@ -617,13 +662,18 @@ export default function NoteFactoryView({
       }
     }
     const isTodo = syntax.toLowerCase().includes('#todo') || syntax.includes('[ ]');
-    const folderRegex = /@([a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ/-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ/-]+\])/g;
+    // BUG DÜZELTMESİ: eski regex yalnızca Latin+Türkçe harfleri kabul eden bir izin
+    // listesi kullanıyordu — klasör/not adı emoji içerdiğinde (ör. "🚀 Başlangıç",
+    // "👋 Hoş Geldin") hiç eşleşmiyor, parsed.folder/note null kalıyor ve klasöre
+    // özel not listesi sessizce TÜM notları gösteriyordu. Artık izin listesi yerine
+    // ayraç olmayan HER karakteri kabul eden bir negatif karakter sınıfı kullanılıyor.
+    const folderRegex = /@(\[[^\]\r\n]+\]|[^\s\[\]@!#]+)/g;
     let folder: string | null = null;
     const folderMatch = folderRegex.exec(syntax);
     if (folderMatch) {
       folder = folderMatch[1].startsWith('[') ? folderMatch[1].slice(1, -1) : folderMatch[1];
     }
-    const noteRegex = /!([a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ-]+\])/g;
+    const noteRegex = /!(\[[^\]\r\n]+\]|[^\s\[\]@!#]+)/g;
     let note: string | null = null;
     const noteMatch = noteRegex.exec(syntax);
     if (noteMatch) {
@@ -648,16 +698,18 @@ export default function NoteFactoryView({
 
     const isTodo = raw.toLowerCase().includes('#todo') || raw.includes('[ ]');
 
-    const folderRegex = /@([a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ/-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ/-]+\])/g;
+    // BUG DÜZELTMESİ: bkz. parseShortcutSyntax üzerindeki not — emoji içeren klasör/not
+    // adları (ör. "🚀 Başlangıç") eski Latin+Türkçe izin listesiyle hiç eşleşmiyordu.
+    const folderRegex = /@(\[[^\]\r\n]+\]|[^\s\[\]@!#]+)/g;
     let folder: string | null = null;
     const folderMatch = folderRegex.exec(raw);
     if (folderMatch) {
-      folder = folderMatch[1].startsWith('[') 
-        ? folderMatch[1].slice(1, -1) 
+      folder = folderMatch[1].startsWith('[')
+        ? folderMatch[1].slice(1, -1)
         : folderMatch[1];
     }
 
-    const noteRegex = /!([a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ-]+|\[[a-zA-Z0-9_ ğüşıöçĞÜŞİÖÇ-]+\])/g;
+    const noteRegex = /!(\[[^\]\r\n]+\]|[^\s\[\]@!#]+)/g;
     let note: string | null = null;
     const noteMatch = noteRegex.exec(raw);
     if (noteMatch) {
@@ -736,11 +788,11 @@ export default function NoteFactoryView({
     const search = suggestionSearch.toLowerCase();
     
     if (suggestionTrigger === '@') {
-      return folders.filter(f => f.toLowerCase().includes(search));
+      return visibleFolders.filter(f => f.toLowerCase().includes(search));
     }
     if (suggestionTrigger === '!') {
       return notes
-        .filter(n => n.type === 'note')
+        .filter(n => n.type === 'note' && (!parsed.folder || n.path.startsWith(`${parsed.folder}/`)))
         .map(n => n.name)
         .filter(name => name.toLowerCase().includes(search));
     }
@@ -982,11 +1034,11 @@ export default function NoteFactoryView({
             </div>
 
             {/* Quick Insert Symbol Buttons Toolbar - Swipeable on mobile */}
-            <div className="inbox-quick-insert-toolbar">
+            <div className="inbox-quick-insert-toolbar" ref={quickInsertToolbarRef}>
               <span className="toolbar-label">
                 EKLE:
               </span>
-              
+
               <div className="toolbar-scrollable-wrapper">
                 {/* Folder Button */}
                 <div style={{ position: 'relative' }}>
@@ -1302,29 +1354,16 @@ export default function NoteFactoryView({
           </div>
         </div>
       </form>
-      {/* Quick Insert Overlay backdrop for closing popovers on click outside (rendered at root context to avoid container constraints) */}
-      {activePopover !== null && (
-        <div 
-          onClick={() => setActivePopover(null)} 
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 1999,
-            background: 'transparent'
-          }}
-        />
-      )}
 
       {/* Render mobile popover sheet modals at root level (escapes container overflows and backdrop-filters) */}
-      {isMobile && activePopover === '@' && renderFolderPopover()}
-      {isMobile && activePopover === '!' && renderNotePopover()}
-      {isMobile && activePopover === '#' && renderTagPopover()}
-      {isMobile && activePopover === 'priority' && renderPriorityPopover()}
-      {isMobile && activePopover === 'due' && renderDuePopover()}
-      {isMobile && activePopover === 'time' && renderTimePopover()}
+      <div ref={mobilePopoverRef}>
+        {isMobile && activePopover === '@' && renderFolderPopover()}
+        {isMobile && activePopover === '!' && renderNotePopover()}
+        {isMobile && activePopover === '#' && renderTagPopover()}
+        {isMobile && activePopover === 'priority' && renderPriorityPopover()}
+        {isMobile && activePopover === 'due' && renderDuePopover()}
+        {isMobile && activePopover === 'time' && renderTimePopover()}
+      </div>
 
       {/* Add Shortcut Custom Modal */}
       {showAddShortcutModal && (

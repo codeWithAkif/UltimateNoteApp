@@ -3227,7 +3227,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       } else if (initialContent) {
         header = initialContent;
       } else {
-        header = `# ${name}\n\nOluşturuldu: ${new Date().toLocaleString('tr-TR')}\n\n`;
+        // BUG DÜZELTMESİ: "Oluşturuldu: ..." satırı notun GÖVDESİNE gerçek, düzenlenebilir
+        // bir metin satırı olarak yazılıyordu — bu hem her zaman görünür kalıyordu hem de
+        // (gizlenmiş olsa bile) ok tuşuyla kazara odaklanılıp değiştirilebiliyordu. Oluşturma
+        // tarihi zaten dosya sisteminden (note.createdAt, bkz. Not Özellikleri paneli) doğru
+        // şekilde biliniyor — notun gövdesinde tekrar yazılmasına hiç gerek yok.
+        header = `# ${name}\n\n`;
       }
       await platform.writeNote(relativePath, header);
       handleLocalSave(relativePath, header);
@@ -4594,9 +4599,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     }
 
     // Prepare note content formatting
+    // BUG DÜZELTMESİ: görev satırının içine gömülen "[YYYY-MM-DD HH:mm]" oluşturma zaman
+    // damgası — NotesView'daki "gizli satır" mekanizmasının aksine, bu görevin KENDİ satırı
+    // içinde (ayrı bir satır değil) olduğundan gizlenemiyordu ve her zaman çıplak metin
+    // olarak görünüyordu. Hiçbir kod bu değeri okumadığından (yalnızca App.tsx'te
+    // üretiliyordu) kaldırılması güvenli. "### [...]" başlığı ise ayrı bir satır olduğu
+    // için zaten isTimestampOnlyLine ile gizleniyor, o yüzden dokunulmuyor.
     let contentAppend = '';
     if (parsed.isTodo) {
-      contentAppend = `\n- [ ] [${fullTimeStr}] ${parsed.cleanText} ${parsed.tags.map((t: string) => `#${t}`).join(' ')}`;
+      contentAppend = `\n- [ ] ${parsed.cleanText} ${parsed.tags.map((t: string) => `#${t}`).join(' ')}`;
     } else {
       contentAppend = `\n\n### [${fullTimeStr}]\n${parsed.cleanText}\n${parsed.tags.map((t: string) => `#${t}`).join(' ')}`;
     }

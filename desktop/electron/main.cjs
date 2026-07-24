@@ -101,7 +101,17 @@ function createWindow() {
     const hasSelection = !!params.selectionText && params.selectionText.trim().length > 0;
     const template = [];
 
-    if (params.isEditable) {
+    // BUG DÜZELTMESİ: notlardaki resimler üzerinde sağ tıklandığında (params.mediaType
+    // === 'image') hiçbir menü öğesi eklenmiyordu, bu yüzden "Resmi Kopyala" gibi bir
+    // seçenek hiç görünmüyordu — resimler hiçbir şekilde kopyalanamıyordu. copyImageAt,
+    // resmin kaynağından (data:/file:/http: farketmeksizin) bağımsız olarak o koordinattaki
+    // GERÇEK render edilmiş pikselleri panoya kopyalar.
+    if (params.mediaType === 'image') {
+      template.push(
+        { label: 'Resmi Kopyala', click: () => mainWindow.webContents.copyImageAt(params.x, params.y) },
+        { label: 'Resmi Farklı Kaydet...', click: () => mainWindow.webContents.downloadURL(params.srcURL) }
+      );
+    } else if (params.isEditable) {
       template.push(
         { label: 'Kes', role: 'cut', enabled: hasSelection },
         { label: 'Kopyala', role: 'copy', enabled: hasSelection },
