@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -43,7 +43,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award
+  Award, Link2
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -780,7 +780,7 @@ export default function App() {
 
   // Notlar ekranındaki sağ hızlı erişim paneli (Search / Takvim): açılır-kapanır ve yeniden boyutlandırılabilir
   const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
-  const [rightPanelView, setRightPanelView] = useState<'search' | 'calendar'>('search');
+  const [rightPanelView, setRightPanelView] = useState<'search' | 'calendar' | 'links'>('search');
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
   const isResizingRightPanel = useRef(false);
   const rightPanelResizeRaf = useRef<number | null>(null);
@@ -813,6 +813,107 @@ export default function App() {
       if (rightPanelResizeRaf.current) cancelAnimationFrame(rightPanelResizeRaf.current);
     };
   }, []);
+
+  // İSTEK: "Akıllı Bağlantı Önerileri" ve "Bağlantılı Notlar" (backlinks) eskiden
+  // not gövdesinin altında render ediliyordu — kullanıcı bunların not içeriğine
+  // karışmasını istemediği için, sağ hızlı erişim paneline (Arama/Takvim'in yanına)
+  // "Bağlantılar" sekmesi olarak taşındı. Hesaplama mantığı NotesView.tsx'te zaten
+  // vardı, buraya aynen taşındı (aynı girdiler: notes/fileContents/activeNotePath).
+  const rightPanelSmartSuggestions = useMemo(() => {
+    const stopWords = new Set([
+      'bir', 've', 'veya', 'ile', 'da', 'de', 'icin', 'için', 'olan', 'bu', 'su', 'şu', 'o', 'ne', 'kadar', 'gibi', 'mi', 'mu', 'mü', 'mi', 'sonra', 'once', 'önce', 'daha', 'cok', 'çok', 'en', 'her', 'hiç', 'hic', 'ama', 'fakat', 'ancak', 'lakin', 'yani', 'ise',
+      'the', 'and', 'for', 'with', 'that', 'this', 'your', 'from', 'about', 'with', 'here', 'there', 'they', 'them', 'these', 'those'
+    ]);
+
+    if (!activeNotePath || !notes || notes.length <= 1) return [];
+    const activeContent = fileContents[activeNotePath] || '';
+    if (!activeContent.trim()) return [];
+
+    const activeWords = new Set(
+      activeContent.toLowerCase()
+        .split(/[^a-z0-9ğüşıöç]/)
+        .filter(w => w.length > 4 && !stopWords.has(w))
+    );
+
+    const suggestions: { note: any; score: number }[] = [];
+
+    notes.forEach(note => {
+      if (note.path === activeNotePath) return;
+
+      const otherNoteNameClean = note.name.replace(/\.md$/, '').toLowerCase();
+
+      if (activeContent.toLowerCase().includes(otherNoteNameClean) && otherNoteNameClean.length > 2) {
+        suggestions.push({ note, score: 10 });
+        return;
+      }
+
+      const otherContent = fileContents[note.path] || '';
+      if (!otherContent.trim()) return;
+
+      const otherWords = new Set(
+        otherContent.toLowerCase()
+          .split(/[^a-z0-9ğüşıöç]/)
+          .filter(w => w.length > 4 && !stopWords.has(w))
+      );
+
+      let overlapCount = 0;
+      activeWords.forEach(w => {
+        if (otherWords.has(w)) overlapCount++;
+      });
+
+      if (overlapCount >= 2) {
+        suggestions.push({ note, score: overlapCount });
+      }
+    });
+
+    return suggestions
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+      .map(s => s.note);
+  }, [activeNotePath, fileContents, notes]);
+
+  const rightPanelBacklinks = useMemo(() => {
+    if (!activeNotePath || !notes || notes.length === 0) return [];
+
+    const activeNote = notes.find(n => n.path === activeNotePath);
+    if (!activeNote) return [];
+
+    const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+    const results: { note: any; snippet: string }[] = [];
+
+    notes.forEach(note => {
+      if (note.path === activeNotePath) return;
+      const content = fileContents[note.path] || '';
+      if (!content.includes('[[')) return;
+
+      linkRegex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = linkRegex.exec(content)) !== null) {
+        const linkTarget = match[1].trim().toLowerCase();
+        const nameLower = activeNote.name.toLowerCase();
+        const pathLower = activeNote.path.toLowerCase().replace('.md', '').replace('.excalidraw', '');
+        const isMatch = nameLower === linkTarget || pathLower === linkTarget || pathLower.endsWith('/' + linkTarget);
+
+        if (isMatch) {
+          const lineStart = content.lastIndexOf('\n', match.index) + 1;
+          const lineEnd = content.indexOf('\n', match.index);
+          const line = content.substring(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
+          results.push({ note, snippet: line.length > 120 ? line.slice(0, 120) + '…' : line });
+          break;
+        }
+      }
+    });
+
+    return results;
+  }, [activeNotePath, fileContents, notes]);
+
+  const handleInsertSmartLinkFromPanel = async (noteName: string) => {
+    if (!activeNotePath) return;
+    const currentContent = fileContents[activeNotePath] || '';
+    const divider = currentContent.trim() === '' ? '' : (currentContent.endsWith('\n') ? '' : '\n');
+    const newContent = `${currentContent}${divider}[[${noteName.replace(/\.md$/, '')}]]`;
+    await handleSaveNote(activeNotePath, newContent);
+  };
 
   // İki (veya üç) not paneli arasındaki genişlik oranları — sürüklenerek ayarlanabilir bölücü
   const [paneWidths, setPaneWidths] = useState<number[]>([100]);
@@ -5159,7 +5260,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           >
             <span style={{ fontSize: '18px', fontWeight: 'bold', display: 'flex', alignItems: 'center', lineHeight: 1 }}>☰</span>
           </button>
-          <span className="titlebar-lbl">Ultimate NoteFactory</span>
+          <span className="titlebar-lbl titlebar-lbl-full">Ultimate NoteFactory</span>
+          <span className="titlebar-lbl titlebar-lbl-short">UNF</span>
         </div>
 
         {/* Ana gezinme: sol menüdeki klasör listesine daha çok yer bırakmak için üst başlık çubuğuna taşındı */}
@@ -5710,11 +5812,77 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 >
                   <Calendar size={18} />
                 </button>
+                <button
+                  className={`notes-quick-rail-btn ${rightPanelExpanded && rightPanelView === 'links' ? 'active' : ''}`}
+                  title="Bağlantılar"
+                  onClick={() => {
+                    if (rightPanelExpanded && rightPanelView === 'links') {
+                      setRightPanelExpanded(false);
+                    } else {
+                      setRightPanelView('links');
+                      setRightPanelExpanded(true);
+                    }
+                  }}
+                >
+                  <Link2 size={18} />
+                </button>
               </div>
 
               {rightPanelExpanded && (
                 <div className="notes-quick-panel-content">
-                  {rightPanelView === 'search' ? (
+                  {rightPanelView === 'links' ? (
+                    <div className="notes-quick-links">
+                      {!activeNotePath ? (
+                        <div className="notes-quick-panel-empty">Bağlantıları görmek için bir not açın.</div>
+                      ) : rightPanelSmartSuggestions.length === 0 && rightPanelBacklinks.length === 0 ? (
+                        <div className="notes-quick-panel-empty">Bu not için önerilen veya gelen bağlantı bulunamadı.</div>
+                      ) : (
+                        <>
+                          {rightPanelSmartSuggestions.length > 0 && (
+                            <div className="notes-quick-links-section">
+                              <div className="notes-quick-links-section-title">
+                                <Sparkles size={12} />
+                                <span>Akıllı Bağlantı Önerileri</span>
+                              </div>
+                              <div className="notes-quick-links-chips">
+                                {rightPanelSmartSuggestions.map((note: any) => (
+                                  <button
+                                    key={note.path}
+                                    type="button"
+                                    className="notes-quick-links-chip"
+                                    onClick={() => handleInsertSmartLinkFromPanel(note.name)}
+                                    title={`"${note.name}" bağlantısını nota ekle`}
+                                  >
+                                    + {note.name}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {rightPanelBacklinks.length > 0 && (
+                            <div className="notes-quick-links-section">
+                              <div className="notes-quick-links-section-title">
+                                <Link2 size={12} />
+                                <span>Bağlantılı Notlar ({rightPanelBacklinks.length})</span>
+                              </div>
+                              <div className="notes-quick-links-list">
+                                {rightPanelBacklinks.map(({ note, snippet }: { note: any; snippet: string }) => (
+                                  <div
+                                    key={note.path}
+                                    className="notes-quick-links-item"
+                                    onClick={() => handleSetActiveNotePath(note.path)}
+                                  >
+                                    <span className="notes-quick-links-item-title">📄 {note.name}</span>
+                                    {snippet && <span className="notes-quick-links-item-snippet">{snippet}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : rightPanelView === 'search' ? (
                     <div className="notes-quick-search">
                       <input
                         type="text"

@@ -163,6 +163,24 @@ input:focus, textarea:focus, select:focus {
   text-transform: uppercase;
   letter-spacing: 0.15em;
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* BUG DÜZELTMESİ: "Ultimate NoteFactory" yazısı dar (telefon) ekranlarda üst
+   çubuktaki gezinme ikonlarını (Hızlı Giriş/Gösterge Paneli/Inbox/... ) sağa
+   itip bir kısmının ekran dışına/sağ kenara taşmasına yol açıyordu. Telefonda
+   yazının kısaltılmış "UNF" hâlini gösterip yer açıyoruz.
+*/
+.titlebar-lbl-short {
+  display: none;
+}
+@media (max-width: 768px) {
+  .titlebar-lbl-full {
+    display: none;
+  }
+  .titlebar-lbl-short {
+    display: inline;
+  }
 }
 
 /* Ana gezinme ikonları artık üst başlık çubuğunda — Electron'da pencere sürükleme
@@ -8120,9 +8138,118 @@ input:focus, textarea:focus, select:focus {
   height: 100%;
 }
 
+/* Sağ hızlı erişim paneli — "Bağlantılar" sekmesi (Akıllı Öneriler + Bağlantılı Notlar) */
+.notes-quick-links {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 2px;
+}
+.notes-quick-links-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.notes-quick-links-section-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.notes-quick-links-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.notes-quick-links-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 3px 9px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 11px;
+}
+.notes-quick-links-chip:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.2);
+  color: var(--text-primary, #f4f4f5);
+}
+.notes-quick-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.notes-quick-links-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.notes-quick-links-item:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+.notes-quick-links-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #f4f4f5);
+}
+.notes-quick-links-item-snippet {
+  font-size: 11px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 768px) {
+  /* BUG DÜZELTMESİ: sağ hızlı erişim paneli (Arama/Takvim/Bağlantılar) mobilde
+     tamamen gizleniyordu — "Akıllı Bağlantı Önerileri"/"Bağlantılı Notlar" artık
+     not gövdesinden kaldırılıp SADECE bu panele taşındığından, bu panel mobilde
+     yoksa özellik telefonda tamamen erişilemez hale geliyordu. Sabit dar bir yan
+     çubuk telefon ekranında yer kaplamayacağından/kullanışsız olacağından, kapalı
+     haldeyken ince bir simge şeridi (dock) olarak sağda sabit kalıyor, açılınca ise
+     tüm ekranı kaplayan bir panel haline geliyor (yatay alan olmadığı için).
+     */
   .notes-quick-panel {
+    display: flex !important;
+    width: 44px !important;
+    position: fixed;
+    top: 0;
+    /* BUG DÜZELTMESİ: gerçek telefonlarda ikon şeridi `right: 0` ile ekranın tam
+       kenarına yapışıyordu — kenardan kenara (edge-to-edge) ekranlı, yuvarlak
+       köşeli veya gezinme çentiği olan cihazlarda bu, ikonların bir kısmının kenarın
+       arkasında/görünmez kalmasına yol açabiliyor. Küçük bir tampon boşluk bırakarak
+       şeridi kenardan biraz içeri alıyoruz — env(safe-area-inset-right) için
+       index.html'de viewport-fit=cover gerekir ve bu tüm uygulamanın kenardan kenara
+       düzenini etkileyecek çok daha kapsamlı bir değişiklik olacağından, bunun
+       yerine güvenli, sabit bir boşluk tercih edildi. */
+    right: 6px;
+    bottom: 0;
+    z-index: 60;
+  }
+  .notes-quick-panel.expanded {
+    width: 100% !important;
+    left: 0;
+  }
+  .notes-quick-panel-resize {
     display: none;
+  }
+  .notes-quick-panel-content {
+    width: 100%;
   }
 }
 

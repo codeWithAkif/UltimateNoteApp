@@ -220,8 +220,20 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
     }
     return fileList;
   } catch (err) {
+    // BUG DÜZELTMESİ (silinen dosyaların "geri gelmesi"): burada hata yutulup boş
+    // dizi [] döndürülüyordu — sync katmanı bunu "kasa gerçekten boş/neredeyse boş"
+    // sanıp, önceden senkronlanmış ama artık yerelde "görünmeyen" notları TOPLU
+    // SİLİNMİŞ zannedip güvenlik sarkacı (suspicious-mass-deletion guard) devreye
+    // giriyor ve uzakta hâlâ aktif olan içeriği yeniden İNDİRİYORDU — kullanıcının
+    // "telefonda her açtığımda eski silinmiş dosyalar geri geliyor" şikayetinin kök
+    // nedeni tam olarak buydu. Android'de app resume anında native Filesystem
+        // köprüsünün henüz tam bağlanmamış olması gibi GEÇİCİ okuma hataları da bu
+    // yola giriyordu. Artık hatayı yutmak yerine fırlatıyoruz — tüm çağıranlar
+    // (syncFolders/startSync) zaten kendi try/catch'leri içinde bu tür hataları
+    // "bu senkron denemesini güvenle iptal et, hiçbir şeye dokunma" şeklinde ele
+    // alıyor; böylece geçici bir okuma hatası asla "boş kasa" gibi yorumlanamaz.
     console.error('Error listing mobile files:', err);
-    return [];
+    throw err;
   }
 };
 
@@ -301,14 +313,31 @@ const mobilePlatform: PlatformAPI = {
       directory: Directory.Data
     });
     // Convert to base64 Data URL
+    // BUG DÜZELTMESİ: bu eşleme yalnızca png/webm/wav/mp3/m4a'yı biliyordu — jpg,
+    // jpeg, gif, webp gibi ÇOK YAYGIN resim biçimleri ve mp4/ogg/flac/opus/aac
+    // "application/octet-stream" olarak damgalanıyordu, bu da tarayıcının/WebView'in
+    // data URL'i resim/video olarak tanımayıp göstermeyi reddetmesine yol açabiliyordu
+    // — telefonda hiç görünmeyen resimlerin bir kısmı aslında bu yüzdendi. Artık
+    // MEDIA_EXTENSIONS'daki (main.cjs ile aynı) TÜM biçimler doğru MIME türüne eşleniyor.
     const ext = relativePath.split('.').pop()?.toLowerCase();
-    let mimeType = 'application/octet-stream';
-    if (ext === 'png') mimeType = 'image/png';
-    else if (ext === 'webm') mimeType = 'audio/webm';
-    else if (ext === 'wav') mimeType = 'audio/wav';
-    else if (ext === 'mp3') mimeType = 'audio/mpeg';
-    else if (ext === 'm4a') mimeType = 'audio/x-m4a';
-    
+    const mimeMap: Record<string, string> = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      mp3: 'audio/mpeg',
+      m4a: 'audio/x-m4a',
+      wav: 'audio/wav',
+      webm: 'audio/webm',
+      ogg: 'audio/ogg',
+      flac: 'audio/flac',
+      opus: 'audio/opus',
+      aac: 'audio/aac',
+      mp4: 'video/mp4'
+    };
+    const mimeType = (ext && mimeMap[ext]) || 'application/octet-stream';
+
     return `data:${mimeType};base64,${res.data}`;
   },
   writeNote: async (relativePath, content) => {

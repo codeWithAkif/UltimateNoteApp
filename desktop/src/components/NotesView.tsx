@@ -9,7 +9,7 @@ import {
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
   DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search
 } from 'lucide-react';
-import { platform, isElectron, isBrowser } from '../services/platform';
+import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
 import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
@@ -1370,6 +1370,53 @@ const AlarmWidget: React.FC<AlarmWidgetProps> = ({
   );
 };
 
+interface ResolvedMediaProps {
+  tag: 'img' | 'video';
+  rawSrc: string;
+  computedSrc: string;
+  alt?: string;
+  style: React.CSSProperties;
+}
+
+// BUG DÜZELTMESİ (telefonda resim/video görünmüyor): notlara gömülü medya, Electron'da
+// özel "app-media://" protokolüyle senkron olarak çözülüyordu (bkz. finalSrc hesaplaması),
+// ama Capacitor (Android) için hiç bir eşleniği yoktu — ham "assets/xxx.png" göreli yolu
+// doğrudan <img>/<video> src'sine veriliyordu. Capacitor WebView bunu KENDİ paket
+// kökenine göre çözmeye çalışıyor (dosyalar aslında Directory.Data altında saklı
+// olduğundan asla bulunamıyor) ve <img>'in onError'ı sessizce gizliyordu — kullanıcı
+// senkronun çalışıp çalışmadığını hiç ayırt edemiyordu. VoiceRecorderWidget bu sorunu
+// zaten platform.readMedia() ile data URL'e çevirerek çözmüştü (bkz. yukarısı); aynı
+// deseni burada img/video için de uyguluyoruz.
+const ResolvedMedia: React.FC<ResolvedMediaProps> = ({ tag, rawSrc, computedSrc, alt, style }) => {
+  const [src, setSrc] = useState<string | null>(isCapacitor ? null : computedSrc);
+
+  useEffect(() => {
+    if (!isCapacitor || !rawSrc || rawSrc.startsWith('http') || rawSrc.startsWith('data:')) {
+      setSrc(computedSrc);
+      return;
+    }
+    let cancelled = false;
+    platform.readMedia(rawSrc).then(dataUrl => {
+      if (!cancelled) setSrc(dataUrl || null);
+    }).catch(err => {
+      console.error('Error resolving media for mobile:', rawSrc, err);
+      if (!cancelled) setSrc(null);
+    });
+    return () => { cancelled = true; };
+  }, [rawSrc, computedSrc]);
+
+  if (!src) return null;
+
+  const handleError = (e: React.SyntheticEvent<HTMLElement>) => {
+    (e.target as HTMLElement).style.display = 'none';
+  };
+
+  if (tag === 'video') {
+    return <video src={src} controls style={style} onError={handleError} />;
+  }
+  return <img src={src} alt={alt} style={style} onError={handleError} />;
+};
+
 interface VoiceRecorderWidgetProps {
   lineIdx: number;
   initialPath: string;
@@ -2275,8 +2322,12 @@ export default function NotesView({
   };
   // Not listesi sütunu: bir not açıldığında otomatik daralır, kullanıcı ok ile tekrar genişletebilir.
   const [isFileListCollapsed, setIsFileListCollapsed] = useState<boolean>(!!activeNotePath);
+  // BUG DÜZELTMESİ: eskiden yalnızca "not açılınca daralt" durumu ele alınıyordu — not
+  // KAPANDIĞINDA (activeNotePath null olduğunda, ör. Android geri tuşuyla) listenin
+  // tekrar AÇILMASI hiç tetiklenmiyordu, bu yüzden geri tuşuna basınca kullanıcı boş/
+  // daralmış bir panelle karşılaşıyordu. Artık her iki yönde de senkronize ediliyor.
   useEffect(() => {
-    if (activeNotePath) setIsFileListCollapsed(true);
+    setIsFileListCollapsed(!!activeNotePath);
   }, [activeNotePath]);
   // Sol menüden bir klasöre tıklanınca, daralmış olsa bile not listesini tekrar açar.
   useEffect(() => {
@@ -2418,98 +2469,11 @@ export default function NotesView({
     return [...baseOptions, ...templateOptions];
   }, [templateNotes]);
 
-  const smartSuggestions = useMemo(() => {
-    const stopWords = new Set([
-      'bir', 've', 'veya', 'ile', 'da', 'de', 'icin', 'için', 'olan', 'bu', 'su', 'şu', 'o', 'ne', 'kadar', 'gibi', 'mi', 'mu', 'mü', 'mi', 'sonra', 'once', 'önce', 'daha', 'cok', 'çok', 'en', 'her', 'hiç', 'hic', 'ama', 'fakat', 'ancak', 'lakin', 'yani', 'ise', 
-      'the', 'and', 'for', 'with', 'that', 'this', 'your', 'from', 'about', 'with', 'here', 'there', 'they', 'them', 'these', 'those'
-    ]);
-
-    if (!activeNotePath || !notes || notes.length <= 1) return [];
-    const activeContent = fileContents[activeNotePath] || '';
-    if (!activeContent.trim()) return [];
-
-    const activeNoteNameClean = notes.find(n => n.path === activeNotePath)?.name.replace(/\.md$/, '').toLowerCase() || '';
-
-    const activeWords = new Set(
-      activeContent.toLowerCase()
-        .split(/[^a-z0-9ğüşıöç]/)
-        .filter(w => w.length > 4 && !stopWords.has(w))
-    );
-
-    const suggestions: { note: any; score: number }[] = [];
-
-    notes.forEach(note => {
-      if (note.path === activeNotePath) return;
-
-      const otherNoteNameClean = note.name.replace(/\.md$/, '').toLowerCase();
-      
-      if (activeContent.toLowerCase().includes(otherNoteNameClean) && otherNoteNameClean.length > 2) {
-        suggestions.push({ note, score: 10 });
-        return;
-      }
-
-      const otherContent = fileContents[note.path] || '';
-      if (!otherContent.trim()) return;
-
-      const otherWords = new Set(
-        otherContent.toLowerCase()
-          .split(/[^a-z0-9ğüşıöç]/)
-          .filter(w => w.length > 4 && !stopWords.has(w))
-      );
-
-      let overlapCount = 0;
-      activeWords.forEach(w => {
-        if (otherWords.has(w)) overlapCount++;
-      });
-
-      if (overlapCount >= 2) {
-        suggestions.push({ note, score: overlapCount });
-      }
-    });
-
-    return suggestions
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 4)
-      .map(s => s.note);
-  }, [activeNotePath, fileContents, notes]);
-
-  // Backlink'ler: [[Not Adı]] sözdizimiyle aktif nota referans veren diğer
-  // notları bulur (GraphView'daki çözümleme mantığıyla aynı).
-  const backlinks = useMemo(() => {
-    if (!activeNotePath || !notes || notes.length === 0) return [];
-
-    const activeNote = notes.find(n => n.path === activeNotePath);
-    if (!activeNote) return [];
-
-    const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-    const results: { note: any; snippet: string }[] = [];
-
-    notes.forEach(note => {
-      if (note.path === activeNotePath) return;
-      const content = fileContents[note.path] || '';
-      if (!content.includes('[[')) return;
-
-      linkRegex.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = linkRegex.exec(content)) !== null) {
-        const linkTarget = match[1].trim().toLowerCase();
-        const nameLower = activeNote.name.toLowerCase();
-        const pathLower = activeNote.path.toLowerCase().replace('.md', '').replace('.excalidraw', '');
-        const isMatch = nameLower === linkTarget || pathLower === linkTarget || pathLower.endsWith('/' + linkTarget);
-
-        if (isMatch) {
-          // Bağlantının geçtiği satırı kısa bir önizleme olarak al
-          const lineStart = content.lastIndexOf('\n', match.index) + 1;
-          const lineEnd = content.indexOf('\n', match.index);
-          const line = content.substring(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
-          results.push({ note, snippet: line.length > 120 ? line.slice(0, 120) + '…' : line });
-          break; // Aynı not için tek bir referans yeterli
-        }
-      }
-    });
-
-    return results;
-  }, [activeNotePath, fileContents, notes]);
+  // BUG DÜZELTMESİ / İSTEK: "Akıllı Bağlantı Önerileri" ve "Bağlantılı Notlar" (backlinks)
+  // artık not gövdesinin/altının içinde render edilmiyor — App.tsx'teki sağ hızlı erişim
+  // panelinde (Arama/Takvim'in yanına eklenen "Bağlantılar" sekmesi) birleşik olarak
+  // gösteriliyor. Hesaplama mantığı orada tekrarlanıyor (aynı girdiler: notes/fileContents/
+  // activeNotePath zaten App.tsx'te de mevcut).
 
   // Sürüm Geçmişini Aç: notun kaydedilmiş önceki içerik anlık görüntülerini
   // `.versions/<notPath>.json` dosyasından okuyup en yeniden en eskiye sıralar.
@@ -2541,16 +2505,6 @@ export default function NotesView({
     await onSaveNote(activeNotePath, version.content);
     setIsHistoryModalOpen(false);
     setPreviewVersion(null);
-  };
-
-  const handleInsertSmartLink = (noteName: string) => {
-    const linesArr = editorContent.split('\n');
-    const targetIdx = focusedLineIdx !== null ? focusedLineIdx : linesArr.length - 1;
-    const currentLine = linesArr[targetIdx] || '';
-    const divider = currentLine.trim() === '' ? '' : ' ';
-    linesArr[targetIdx] = currentLine + divider + `[[${noteName.replace(/\.md$/, '')}]]`;
-    setEditorContent(linesArr.join('\n'));
-    setCaretPos({ lineIdx: targetIdx, charIdx: linesArr[targetIdx].length });
   };
 
   const executeSlashCommand = (opt: any, lineIdx: number) => {
@@ -4386,21 +4340,41 @@ export default function NotesView({
         setSyncStatus('saved');
         
         // Restore focus and caret position if previously stored for this note path
+        // BUG DÜZELTMESİ: hem "kaydedilmiş konum" hem "varsayılan" dalı, notu her
+        // açışta BAŞLIĞA (0. satır) ya da gizli bir metadata satırına (etiket-only,
+        // "Oluşturuldu:" vb.) sessizce odaklanabiliyordu — bu satırlar normalde
+        // gizli/salt-görünüm olsa da, odaklanan satır getHiddenLineIndices'te bilerek
+        // hariç tutulduğundan HAM haliyle (ör. "#iş #önemli") görünür oluyordu. Kullanıcı
+        // hiçbir şey yapmadan notu açar açmaz "başlık/etiketler gövdeye karışmış" hissi
+        // buradan kaynaklanıyordu. Artık başlığa veya gizli metadata satırlarına ASLA
+        // otomatik odaklanmıyoruz; onlar yalnızca kullanıcı bizzat tıklarsa görünür olur.
+        const freshLines = (cachedDraft !== null ? cachedDraft : content).split('\n');
+        const isAutoFocusOffLimits = (i: number): boolean => {
+          const l = freshLines[i];
+          if (l === undefined) return true;
+          const t = l.trim();
+          return t.startsWith('Oluşturuldu:') || t.startsWith('Oluşturulma Tarihi:') || isTimestampOnlyLine(l) || isTagsOnlyLine(l);
+        };
+
         const savedFocusStr = localStorage.getItem(`active_note_focused_line_${activeNotePath}`);
-        if (savedFocusStr !== null) {
-          const savedFocus = parseInt(savedFocusStr, 10);
+        const savedFocus = savedFocusStr !== null ? parseInt(savedFocusStr, 10) : null;
+
+        if (savedFocus !== null && savedFocus > 0 && !isAutoFocusOffLimits(savedFocus)) {
           setFocusedLineIdx(savedFocus);
-          
           const savedCaretStr = localStorage.getItem(`active_note_caret_char_${activeNotePath}`);
           if (savedCaretStr !== null) {
             setCaretPos({ lineIdx: savedFocus, charIdx: parseInt(savedCaretStr, 10) });
           }
-        } else {
-          // Bu not için daha önce kaydedilmiş bir imleç konumu yok (ör. silinen bir
-          // sekmeden sonra otomatik geçilen sekme). Odağı hiç uygulamadan null
-          // bırakmak, hiçbir satırın focus almamasına ve kullanıcının tıklamadan
-          // yazamamasına yol açıyordu — bu yüzden ilk satıra odaklanıyoruz.
+        } else if (freshLines.length <= 1) {
+          // Notta başlıktan başka satır yok — odaklanacak başka yer olmadığından
+          // istisnai olarak başlığa odaklanıyoruz (aksi halde kullanıcı hiçbir yere
+          // tıklamadan yazamaz).
           setFocusedLineIdx(0);
+          setCaretPos(null);
+        } else {
+          let fallbackIdx = 1;
+          while (fallbackIdx < freshLines.length - 1 && isAutoFocusOffLimits(fallbackIdx)) fallbackIdx++;
+          setFocusedLineIdx(fallbackIdx);
           setCaretPos(null);
         }
 
@@ -6392,13 +6366,11 @@ export default function NotesView({
         if (isVideo) {
           return (
             <div key={i} className="preview-media-container" style={{ ...floatStyle, width: width === '100%' ? '320px' : width, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
-              <video
-                src={finalSrc}
-                controls
+              <ResolvedMedia
+                tag="video"
+                rawSrc={imgUrl}
+                computedSrc={finalSrc}
                 style={{ width: '100%', height: height === 'auto' ? 'auto' : height, maxHeight: height === 'auto' ? '240px' : 'none', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'block' }}
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
-                }}
               />
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>🎥 {cleanAlt || 'Video'}</span>
               
@@ -6422,17 +6394,21 @@ export default function NotesView({
                 render ettiriyor ve bu sabit 180px sınırı resmi tekrar küçültüp
                 "eski boyutuna dönmüş" gibi gösteriyordu. Artık kaydedilmiş
                 boyut varsa onu, yoksa varsayılan 180px sınırını kullanıyoruz. */}
-            <img src={finalSrc} alt={cleanAlt} style={{
-              width: height !== 'auto' ? '100%' : 'auto',
-              height: height !== 'auto' ? height : 'auto',
-              maxHeight: height !== 'auto' ? 'none' : '180px',
-              maxWidth: '100%',
-              borderRadius: '6px',
-              border: '1px solid var(--border-color)',
-              display: 'block'
-            }} onError={(e) => {
-              (e.target as HTMLElement).style.display = 'none';
-            }} />
+            <ResolvedMedia
+              tag="img"
+              rawSrc={imgUrl}
+              computedSrc={finalSrc}
+              alt={cleanAlt}
+              style={{
+                width: height !== 'auto' ? '100%' : 'auto',
+                height: height !== 'auto' ? height : 'auto',
+                maxHeight: height !== 'auto' ? 'none' : '180px',
+                maxWidth: '100%',
+                borderRadius: '6px',
+                border: '1px solid var(--border-color)',
+                display: 'block'
+              }}
+            />
             <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '2px' }}>✨ {cleanAlt || 'Görsel'}</span>
             
             {lineIdx !== undefined && (
@@ -7450,6 +7426,14 @@ export default function NotesView({
       }
 
       // Join with previous line
+      // BUG DÜZELTMESİ: idx===1 iken Backspace, önceki satır olan BAŞLIĞA (0. satır)
+      // gövde metnini sessizce ekleyip başlığı büyütüyordu — "başlık büyük problem"
+      // şikayetinin bir diğer kaynağı buydu. Başlık satırıyla asla otomatik birleştirme
+      // yapılmaz; kullanıcı hâlâ başlığa tıklayıp kasıtlı olarak (onaylı) düzenleyebilir.
+      if (idx === 1) {
+        e.preventDefault();
+        return;
+      }
       if (idx > 0) {
         e.preventDefault();
         const prevLine = lines[idx - 1];
@@ -7501,6 +7485,12 @@ export default function NotesView({
           let targetIdx = idx - 1;
           while (targetIdx > 0 && hidden.has(targetIdx)) targetIdx--;
           if (hidden.has(targetIdx)) return;
+          // BUG DÜZELTMESİ: not başlığı (0. satır) artık normal bir gövde satırı gibi
+          // ok tuşuyla girilebilir olmamalı — kullanıcı istemeden yukarı ok'a bastığında
+          // başlığa "düşüp" kazara değiştirmesi ("başlık büyük problem" şikayeti) buradan
+          // kaynaklanıyordu. Başlık hâlâ tıklanarak kasıtlı düzenlenebilir (rename onayı
+          // zaten var), ama ok tuşuyla asla hedef olamaz.
+          if (targetIdx === 0) return;
           const prevLineText = lines[targetIdx];
           const prevInfo = getChecklistInfo(prevLineText) || getBulletInfo(prevLineText) || getOrderedListInfo(prevLineText);
           const prevContent = prevInfo ? prevInfo.content : prevLineText;
@@ -7688,6 +7678,57 @@ export default function NotesView({
     for (const file of files) {
       await insertMediaFile(file);
     }
+  };
+
+  // BUG DÜZELTMESİ: önizleme (preview) modundaki bir satırda **kalın**, `kod`, ==vurgu==
+  // gibi satır-içi markdown, gerçek DOM'da zaten stillenmiş elemanlara (b/code/mark vb.)
+  // dönüştürülüp render ediliyor — kullanıcı bu görünümden metin seçip kopyaladığında
+  // tarayıcı yalnızca GÖRÜNEN (markup'ı temizlenmiş) metni panoya koyuyordu, "**kalın**"
+  // yerine sadece "kalın" kopyalanıyordu. Seçimin kapsadığı satırları (editor-line-{idx}
+  // id'lerinden) tespit edip, kopyalanacak metni DOM'dan değil `lines` (ham markdown)
+  // dizisinden alarak orijinal söz dizimini koruyoruz.
+  // BUG DÜZELTMESİ (2. tur): burada eskiden "document.activeElement bir <textarea>'ysa
+  // hiç müdahale etme" gibi bir erken çıkış vardı — "kullanıcı aktif düzenlediği
+  // satırdan kopyalarken karışma" niyetiyle eklenmişti. Ama bu YANLIŞ bir varsayıma
+  // dayanıyordu: window.getSelection() bir <textarea>'nın İÇERİĞİNİ ZATEN HİÇBİR ZAMAN
+  // kapsayamaz (tarayıcı standardı — textarea seçimi selectionStart/End ile ayrı takip
+  // edilir, document Selection'a hiç dahil olmaz). Sonuç: sayfada BAŞKA bir satır hâlâ
+  // odaklıyken (ki bir not aç(ıl)dığında/bir satır düzenlendikten sonra bu neredeyse HER
+  // ZAMAN doğrudur) kullanıcı önizleme metninden seçip kopyalamaya çalıştığında bu erken
+  // çıkış devreye girip düzeltmeyi TAMAMEN devre dışı bırakıyordu. Kontrol tamamen
+  // kaldırıldı — zaten aşağıdaki selection kontrolü, seçim bir textarea içindeyse
+  // (ki imkansız) veya seçim yoksa doğal olarak hiçbir şey yapmıyor.
+  const handleCopy = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    const container = e.currentTarget;
+    if (!container.contains(range.commonAncestorContainer)) return;
+
+    const findLineIdx = (node: Node | null): number | null => {
+      let el: HTMLElement | null = node instanceof HTMLElement ? node : node?.parentElement || null;
+      while (el && el !== container) {
+        if (el.id && el.id.startsWith('editor-line-')) {
+          const idx = parseInt(el.id.slice('editor-line-'.length), 10);
+          return Number.isNaN(idx) ? null : idx;
+        }
+        el = el.parentElement;
+      }
+      return null;
+    };
+
+    const startIdx = findLineIdx(range.startContainer);
+    const endIdx = findLineIdx(range.endContainer);
+    if (startIdx === null || endIdx === null) return;
+
+    const lo = Math.min(startIdx, endIdx);
+    const hi = Math.max(startIdx, endIdx);
+    const rawText = lines.slice(lo, hi + 1).join('\n');
+    if (!rawText) return;
+
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', rawText);
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
@@ -8824,6 +8865,7 @@ export default function NotesView({
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onPaste={handlePaste}
+                    onCopy={!isSourceMode ? handleCopy : undefined}
                   >
                     <input
                       ref={imageFileInputRef}
@@ -10104,53 +10146,6 @@ export default function NotesView({
             </div>
           )}
 
-            {smartSuggestions.length > 0 && (
-              <div className="smart-suggestions-bar" style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '6px 16px',
-                background: 'rgba(99, 102, 241, 0.04)',
-                borderTop: '1px solid rgba(255, 255, 255, 0.05)',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-                fontSize: '11px'
-              }}>
-                <span style={{ color: 'var(--accent-color)', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: '600' }}>
-                  <Sparkles size={12} />
-                  <span>Akıllı Bağlantı Önerileri:</span>
-                </span>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {smartSuggestions.map(note => (
-                    <button
-                      key={note.path}
-                      type="button"
-                      onClick={() => handleInsertSmartLink(note.name)}
-                      style={{
-                        background: 'rgba(255, 255, 255, 0.04)',
-                        border: '1px solid rgba(255, 255, 255, 0.06)',
-                        borderRadius: '4px',
-                        padding: '2px 8px',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        transition: 'all 0.2s',
-                        fontSize: '10.5px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'rgba(99, 102, 241, 0.1)';
-                        e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.2)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-                        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)';
-                      }}
-                    >
-                      + {note.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {(() => {
               const stats = getEditorStats();
               return (
@@ -10175,48 +10170,6 @@ export default function NotesView({
               );
             })()}
 
-            {backlinks.length > 0 && (
-              <div className="backlinks-panel" style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-                padding: '10px 16px 14px 16px',
-                borderTop: '1px solid rgba(255, 255, 255, 0.05)'
-              }}>
-                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: '600', fontSize: '11px' }}>
-                  <Link2 size={12} />
-                  <span>Bağlantılı Notlar ({backlinks.length}):</span>
-                </span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  {backlinks.map(({ note, snippet }) => (
-                    <div
-                      key={note.path}
-                      onClick={() => setActiveNotePath(note.path)}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '2px',
-                        padding: '6px 10px',
-                        borderRadius: '6px',
-                        background: 'rgba(255, 255, 255, 0.02)',
-                        border: '1px solid rgba(255, 255, 255, 0.04)',
-                        cursor: 'pointer',
-                        transition: 'background 0.15s ease'
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(99, 102, 241, 0.06)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'; }}
-                    >
-                      <span style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--text-primary)' }}>📄 {note.name}</span>
-                      {snippet && (
-                        <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {snippet}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
               </>
             )}
 

@@ -638,6 +638,14 @@ const startSync = async () => {
         const devPathsData = await fetchDevPaths();
         if (devPathsData) onDevPathsChangeCallback(devPathsData);
       }
+      // BUG DÜZELTMESİ (telefonda resimler gelmiyor): bu kısayol not/klasör
+      // uzlaştırmasını atlıyordu ama medya senkronu SADECE tam uzlaştırmanın
+      // sonunda çağrılıyordu — yani "son senkronlayan yine bu cihaz" olduğu her
+      // sürece syncMediaFiles() bir daha ASLA çalışma şansı bulamıyordu, cihaz
+      // yeni medyadan kalıcı olarak mahrum kalıyordu. Burada da (await'lenerek,
+      // fire-and-forget değil — mobilde uygulama arkaplana alınırsa yarım kalmasın
+      // diye) çağırıyoruz.
+      await syncMediaFiles();
       onStatusChangeCallback('synced', null);
       subscribeToRealtimeChanges();
       return;
@@ -924,8 +932,14 @@ const startSync = async () => {
       onConflictsCallback(conflictsThisRun);
     }
 
-    // Medya senkronu not senkronunu bekletmeden arka planda çalışır (bkz. yukarıdaki tanım).
-    syncMediaFiles();
+    // BUG DÜZELTMESİ (telefonda resimler gelmiyor): bu çağrı önceden await'siz
+    // ("arka planda") bırakılıyordu — mobilde uygulama senkron biter bitmez
+    // arkaplana alınırsa (çok yaygın bir kullanım deseni) JS çalışma zamanı
+    // duraklatılıp indirme yarıda kesiliyor, bir sonraki açılışta "aynı cihaz zaten
+    // senkron" kısayolu devreye girip syncMediaFiles()'a bir daha hiç sıra
+    // gelmiyordu. Artık gerçekten tamamlanmasını (veya kendi içindeki try/catch ile
+    // güvenle başarısız olmasını) bekliyoruz.
+    await syncMediaFiles();
 
     subscribeToRealtimeChanges();
 
