@@ -248,6 +248,16 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
       const content = fileContents[note.path] || '';
       if (!content.trim()) return;
 
+      // BUG DÜZELTMESİ: Aşağıdaki "Fallback 1/2" sezgisel eşleşmeleri, açık bir
+      // [harcama:]/[gider:] etiketi olmayan satırlarda bile "-3" gibi bir sayıyla
+      // başlayan HERHANGİ bir madde imini (ör. bir teknik notta "- 3 aylık süre...")
+      // gerçek bir harcama sanıyordu — madde imi tiresi ile eksi işareti ayırt
+      // edilmiyordu. Bu yüzden #harcama etiketi taşımayan notlarda bu gevşek
+      // sezgisel eşleşmeler artık devre dışı; net [harcama:]/[gider:]/[fiyat:] vb.
+      // etiketler yine HER notta çalışmaya devam eder (kullanıcı bilerek yazmadıkça
+      // rastgele metinde oluşması neredeyse imkansız).
+      const isHarcamaNote = content.toLowerCase().includes('#harcama');
+
       const lines = content.split('\n');
       lines.forEach((lineText, lineIdx) => {
         const trimmed = lineText.trim();
@@ -340,7 +350,7 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
         } else if (fiyatMatch) {
           type = 'gider';
           amount = parseFloat(fiyatMatch[1].replace(/,/, '.'));
-        } else {
+        } else if (isHarcamaNote) {
           // Fallback 1: starts with +, - or *
           const moneyMatch = trimmed.match(/^([-+*])\s*([\d.,]+)\s*(?:TL|tl)?\s*(.*)$/i);
           if (moneyMatch) {
