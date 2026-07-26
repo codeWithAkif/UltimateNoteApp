@@ -14,6 +14,7 @@ import FlashcardView from './components/FlashcardView';
 import AmbientMixerView from './components/AmbientMixerView';
 import ForgeWorkbenchView from './components/ForgeWorkbenchView';
 import NoteMentorView from './components/NoteMentorView';
+import NotesChatView from './components/NotesChatView';
 import MusicPlayerView from './components/MusicPlayerView';
 import MiniWidgetView from './components/MiniWidgetView';
 import AnalyticsView from './components/AnalyticsView';
@@ -44,7 +45,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -81,6 +82,7 @@ const DEFAULT_SHORTCUTS: Record<string, { label: string; shortcut: ShortcutKey }
   nav_ambient: { label: 'Ortam Seslerini Aç', shortcut: { key: 'o', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   nav_forge: { label: 'Sentez Tezgahını Aç', shortcut: { key: 's', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   nav_mentor: { label: 'Not Mentörünü Aç', shortcut: { key: 'r', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
+  nav_aichat: { label: 'Notlarımla Sohbeti Aç', shortcut: { key: 'a', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   nav_analytics: { label: 'Verimlilik Analizini Aç', shortcut: { key: 'l', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
   nav_music: { label: 'Müzik Kutusunu Aç', shortcut: { key: 'u', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } }
 };
@@ -99,6 +101,7 @@ const NAV_SHORTCUT_TARGETS: Record<string, string> = {
   nav_ambient: 'ambient',
   nav_forge: 'forge',
   nav_mentor: 'mentor',
+  nav_aichat: 'aichat',
   nav_analytics: 'analytics',
   nav_music: 'music'
 };
@@ -778,6 +781,7 @@ export default function App() {
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [searchSelectedIndex, setSearchSelectedIndex] = useState(0);
+  const [isSwipeQuickMenuOpen, setIsSwipeQuickMenuOpen] = useState(false);
 
   // Notlar ekranındaki sağ hızlı erişim paneli (Search / Takvim): açılır-kapanır ve yeniden boyutlandırılabilir
   const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
@@ -1737,6 +1741,51 @@ export default function App() {
     };
   }, [activeNotePath]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Telefonda klavye kısayolları olmadığı için Arama, Ezber Kartları, Notlarımla Sohbet,
+  // Müzik Kutusu, Yeni Not ve Fiş Tara gibi sık kullanılan eylemlere hızlı erişimin bir
+  // yolu yoktu. Ekranın ALT KENARINDAN başlayan yukarı kaydırma hareketini (iOS/Android
+  // sistem gezinme jestiyle aynı desen) bir hızlı-eylem menüsü açma tetikleyicisi yaptık —
+  // normal içerik kaydırmasıyla (parmak herhangi bir yerden başlar) karışmasın diye SADECE
+  // alt kenara yakın (~40px) başlayan hızlı/yeterince uzun yukarı hareketlerde tetiklenir;
+  // preventDefault YAPILMAZ, bu yüzden normal kaydırma hiçbir şekilde etkilenmez.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    let startY = 0;
+    let startX = 0;
+    let startTime = 0;
+    let startedAtBottomEdge = false;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      startY = touch.clientY;
+      startX = touch.clientX;
+      startTime = Date.now();
+      startedAtBottomEdge = (window.innerHeight - startY) < 40;
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (!startedAtBottomEdge) return;
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+      const deltaY = startY - touch.clientY;
+      const deltaX = Math.abs(touch.clientX - startX);
+      const elapsed = Date.now() - startTime;
+      if (deltaY > 60 && deltaX < 50 && elapsed < 600) {
+        setIsSwipeQuickMenuOpen(true);
+      }
+      startedAtBottomEdge = false;
+    };
+
+    document.addEventListener('touchstart', handleTouchStart, { passive: true });
+    document.addEventListener('touchend', handleTouchEnd, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', handleTouchStart);
+      document.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, []);
+
   const handlePasteClipboardToNote = async () => {
     const targetPath = activeNotePath || notes.find(n => n.type === 'note')?.path;
     if (!targetPath || !clipboardText) return;
@@ -1896,6 +1945,7 @@ export default function App() {
     { id: 'ambient', label: 'Ortam Sesleri', icon: Volume2 },
     { id: 'forge', label: 'Sentez Tezgahı', icon: FlaskConical },
     { id: 'mentor', label: 'Not Mentorü', icon: Compass },
+    { id: 'aichat', label: 'Notlarımla Sohbet', icon: MessageCircle },
     { id: 'analytics', label: 'Verimlilik Analizi', icon: BarChart2 },
     { id: 'browser', label: 'Web Araştırma', icon: Globe },
     { id: 'music', label: 'Müzik Kutusu', icon: Headphones },
@@ -5500,6 +5550,58 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         </div>
       )}
 
+      {isSwipeQuickMenuOpen && (
+        <div
+          className="modal-overlay animate-fade"
+          onClick={() => setIsSwipeQuickMenuOpen(false)}
+          style={{ zIndex: 9500, alignItems: 'flex-end', display: 'flex' }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              background: 'rgba(15, 23, 42, 0.97)',
+              backdropFilter: 'blur(16px)',
+              borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+              borderTopLeftRadius: '16px',
+              borderTopRightRadius: '16px',
+              padding: '10px 16px 24px 16px'
+            }}
+          >
+            <div style={{ width: '36px', height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.2)', margin: '0 auto 16px auto' }} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+              {[
+                { label: 'Arama', icon: Search, onClick: () => { setIsGlobalSearchOpen(true); setGlobalSearchQuery(''); setSearchSelectedIndex(0); setActiveTab('notes'); } },
+                { label: 'Ezber Kartları', icon: BookOpen, onClick: () => setActiveTab('srs') },
+                { label: 'Notlarımla Sohbet', icon: MessageCircle, onClick: () => setActiveTab('aichat') },
+                { label: 'Müzik Kutusu', icon: Headphones, onClick: () => setActiveTab('music') },
+                { label: 'Yeni Not', icon: Plus, onClick: () => {
+                    const name = prompt('Yeni notun adı:');
+                    if (name && name.trim()) {
+                      handleCreateNote(name.trim(), selectedFolder);
+                    }
+                  }
+                },
+                { label: 'Fiş Tara', icon: CameraIcon, onClick: () => handleOpenReceiptScan() }
+              ].map(item => (
+                <button
+                  key={item.label}
+                  onClick={() => { item.onClick(); setIsSwipeQuickMenuOpen(false); }}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
+                    padding: '14px 6px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '12px', color: '#fff', cursor: 'pointer', fontSize: '11.5px'
+                  }}
+                >
+                  <item.icon size={20} />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {isReceiptScanModalOpen && (
         <div className="modal-overlay animate-fade" onClick={() => setIsReceiptScanModalOpen(false)} style={{ zIndex: 2000 }}>
           <div
@@ -6362,6 +6464,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <NoteMentorView
               notes={notes}
               onSaveNote={handleSaveNote}
+              onSelectNote={(path) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
+              }}
+            />
+          )}
+
+          {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+              Notlarımla Sohbet: kullanıcının kendi notlarına dayanarak AI ile soru-cevap yapmasını
+              sağlar (bkz. geminiMentor.ts findRelevantNotes/askNotesChat). */}
+          {activeTab === 'aichat' && (
+            <NotesChatView
+              notes={notes}
+              fileContents={fileContents}
               onSelectNote={(path) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');

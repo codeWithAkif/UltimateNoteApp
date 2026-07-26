@@ -678,3 +678,114 @@ Sadece JSON döndür. Türkçe yaz.`;
 export const buildLevelUpMessage = (domainLabel: string, newLevelTitle: string): string => {
   return `${domainLabel} yolunda yeni seviye: ${newLevelTitle}. Buraya kadar gösterdiğin emek gerçek — devam et!`;
 };
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// "Notlarımla Sohbet" özelliği — embedding/vektör veritabanı gerektirmeyen basit bir
+// anahtar kelime skorlama ile en alakalı birkaç not seçilir, yalnızca onların içeriği
+// Gemini'ye gönderilir. Bu hem hızlı/ücretsizdir hem de vault büyüklüğünden bağımsız
+// çalışır (tüm notları her seferinde göndermek yerine).
+const TURKISH_STOPWORDS = new Set([
+  'bir', 've', 'ile', 'için', 'bu', 'şu', 'o', 'de', 'da', 'ki', 'gibi', 'çok',
+  'en', 'ben', 'sen', 'biz', 'siz', 'onlar', 'mı', 'mi', 'mu', 'mü', 'ne',
+  'nasıl', 'neden', 'niçin', 'hangi', 'kim', 'mu?', 'mı?', 'ya', 'da', 'ama',
+  'fakat', 'ancak', 'the', 'is', 'are', 'was', 'were', 'a', 'an', 'of', 'to'
+]);
+
+export interface RelevantNote {
+  path: string;
+  name: string;
+  content: string;
+  score: number;
+}
+
+// Basit not/dosya listesi arayüzü — App.tsx'teki NoteItem'ın alt kümesi, dairesel
+// import'tan kaçınmak için burada bağımsız/minimal tanımlanır.
+interface NoteLike {
+  type: string;
+  path: string;
+  name: string;
+}
+
+export const findRelevantNotes = (
+  query: string,
+  notes: NoteLike[],
+  fileContents: Record<string, string>,
+  maxNotes: number = 6
+): RelevantNote[] => {
+  const tokens = query
+    .toLowerCase()
+    .replace(/[.,!?;:'"()\[\]{}]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 3 && !TURKISH_STOPWORDS.has(t));
+
+  if (tokens.length === 0) return [];
+
+  const scored: RelevantNote[] = [];
+  for (const note of notes) {
+    if (note.type !== 'note') continue;
+    const content = fileContents[note.path] || '';
+    if (!content.trim()) continue;
+
+    const lowerContent = content.toLowerCase();
+    const lowerName = note.name.toLowerCase();
+    let score = 0;
+    for (const token of tokens) {
+      const nameHits = lowerName.split(token).length - 1;
+      const contentHits = lowerContent.split(token).length - 1;
+      score += nameHits * 5 + contentHits;
+    }
+    if (score > 0) {
+      scored.push({ path: note.path, name: note.name, content, score });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, maxNotes);
+};
+
+export interface NotesChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export interface NotesChatAnswer {
+  answer: string;
+  usedNoteNames: string[];
+  foundInNotes: boolean;
+}
+
+const NOTES_CHAT_SCHEMA = {
+  type: 'object',
+  properties: {
+    answer: { type: 'string' },
+    usedNoteNames: { type: 'array', items: { type: 'string' } },
+    foundInNotes: { type: 'boolean' }
+  },
+  required: ['answer', 'usedNoteNames', 'foundInNotes']
+};
+
+export const askNotesChat = async (
+  question: string,
+  relevantNotes: RelevantNote[],
+  history: NotesChatMessage[]
+): Promise<NotesChatAnswer> => {
+  const notesBlock = relevantNotes.length > 0
+    ? relevantNotes.map(n => `--- Not: "${n.name}" ---\n${n.content.slice(0, 4000)}`).join('\n\n')
+    : '(Bu soruyla alakalı hiçbir not bulunamadı.)';
+
+  const historyBlock = history.slice(-6).map(h => `${h.role === 'user' ? 'Kullanıcı' : 'Asistan'}: ${h.text}`).join('\n');
+
+  const prompt = `Sen kullanıcının kişisel notlarını kullanarak soru cevaplayan bir asistansın. SADECE aşağıda verilen not içeriklerine dayanarak cevap ver — kendi genel bilgini veya varsayımını KESİNLİKLE kullanma. Cevap notlarda yoksa bunu açıkça söyle (foundInNotes=false), uydurma bilgi verme.
+
+İlgili notlar:
+${notesBlock}
+
+${historyBlock ? `Önceki konuşma:\n${historyBlock}\n` : ''}
+Kullanıcının sorusu: "${question}"
+
+Görev: Yalnızca yukarıdaki notlara dayanarak Türkçe, doğal ve net bir cevap yaz (answer). Cevabı oluştururken gerçekten kullandığın notların isimlerini usedNoteNames dizisine ekle (hiç not kullanmadıysan boş dizi). Notlarda bu sorunun cevabı yoksa foundInNotes=false yap ve answer alanına "Notlarımda bu konuda bir bilgi bulamadım." benzeri bir şey yaz.
+
+Sadece JSON döndür.`;
+
+  return callGemini(prompt, NOTES_CHAT_SCHEMA);
+};
