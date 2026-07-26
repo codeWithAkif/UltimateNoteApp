@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "1.1.8",
+  "version": "1.2.0",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -31,6 +31,7 @@
   "dependencies": {
     "@capacitor/app": "^8.1.1",
     "@capacitor/browser": "^8.0.3",
+    "@capacitor/camera": "^8.2.1",
     "@capacitor/clipboard": "^8.0.1",
     "@capacitor/core": "^8.3.4",
     "@capacitor/filesystem": "^8.1.2",

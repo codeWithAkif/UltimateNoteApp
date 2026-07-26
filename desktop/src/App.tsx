@@ -29,10 +29,11 @@ import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMod
 import {
   getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
   determineLevelAndTopics, generateNextLevel, generateTopicSubNotes, suggestAdditionalTopic, generateQuiz, gradeQuiz, generateFlashcards, evaluateSummary, buildLevelUpMessage,
-  type ClarifyingQA, type TopicSubNote
+  analyzeReceiptImage, type ClarifyingQA, type TopicSubNote, type ReceiptScanResult
 } from './services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
 import { App as CapacitorApp } from '@capacitor/app';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { registerPlugin } from '@capacitor/core';
 
 const WidgetBridge = registerPlugin<any>('WidgetBridge');
@@ -43,7 +44,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2
+  Award, Link2, Camera as CameraIcon, Receipt
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -913,6 +914,74 @@ export default function App() {
     const divider = currentContent.trim() === '' ? '' : (currentContent.endsWith('\n') ? '' : '\n');
     const newContent = `${currentContent}${divider}[[${noteName.replace(/\.md$/, '')}]]`;
     await handleSaveNote(activeNotePath, newContent);
+  };
+
+  // İSTEK: Kamerayla fiş fotoğrafı çekip AI (Gemini) ile ürün/fiyat/toplam çıkarma —
+  // uygulamanın herhangi bir ekranından tek dokunuşla ("pratik") erişilebilir olması
+  // için üst başlık çubuğuna (titlebar) eklendi, belirli bir not açık olmasına bağlı
+  // değil. Sadece "#harcama" etiketiyle işaretlenmiş notlar hedef olarak seçilebilir.
+  const [isReceiptScanModalOpen, setIsReceiptScanModalOpen] = useState(false);
+  const [receiptScanStep, setReceiptScanStep] = useState<'capture' | 'analyzing' | 'review'>('capture');
+  const [receiptScanResult, setReceiptScanResult] = useState<ReceiptScanResult | null>(null);
+  const [receiptScanTargetNote, setReceiptScanTargetNote] = useState<string>('');
+  const [receiptScanError, setReceiptScanError] = useState<string | null>(null);
+
+  const harcamaNotes = useMemo(
+    () => notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#harcama')),
+    [notes, fileContents]
+  );
+
+  const handleOpenReceiptScan = () => {
+    setReceiptScanResult(null);
+    setReceiptScanError(null);
+    setReceiptScanStep('capture');
+    setReceiptScanTargetNote(harcamaNotes[0]?.path || '');
+    setIsReceiptScanModalOpen(true);
+  };
+
+  const handleCaptureReceipt = async (source: 'camera' | 'gallery') => {
+    try {
+      const photo = await Camera.getPhoto({
+        resultType: CameraResultType.Base64,
+        source: source === 'camera' ? CameraSource.Camera : CameraSource.Photos,
+        quality: 70
+      });
+      if (!photo.base64String) return;
+
+      setReceiptScanStep('analyzing');
+      setReceiptScanError(null);
+      const mimeType = `image/${photo.format || 'jpeg'}`;
+      const result = await analyzeReceiptImage(photo.base64String, mimeType);
+      setReceiptScanResult(result);
+      setReceiptScanStep('review');
+    } catch (e: any) {
+      // Kullanıcı kamera/galeri seçimini iptal ettiyse sessizce yakalama ekranına dön.
+      if (e?.message && /cancel/i.test(e.message)) {
+        setReceiptScanStep('capture');
+        return;
+      }
+      setReceiptScanError(e?.message || 'Fiş okunamadı. Lütfen tekrar deneyin.');
+      setReceiptScanStep('capture');
+    }
+  };
+
+  const handleSaveScannedReceipt = async () => {
+    if (!receiptScanResult || !receiptScanTargetNote) return;
+
+    const itemDetails = receiptScanResult.items
+      .map(i => `${i.name} [fiyat: ${i.price}]`)
+      .join(', ');
+    const storeTag = receiptScanResult.store.trim() ? ` @${receiptScanResult.store.trim()}` : '';
+    const dateTag = /^\d{4}-\d{2}-\d{2}$/.test(receiptScanResult.date)
+      ? receiptScanResult.date
+      : new Date().toISOString().split('T')[0];
+    const receiptLine = `- [harcama: ${receiptScanResult.total} TL]${storeTag} (${itemDetails}) [${dateTag}]`;
+
+    const currentContent = fileContents[receiptScanTargetNote] || '';
+    const divider = currentContent.trim() === '' ? '' : (currentContent.endsWith('\n') ? '' : '\n');
+    const newContent = `${currentContent}${divider}${receiptLine}`;
+    await handleSaveNote(receiptScanTargetNote, newContent);
+    setIsReceiptScanModalOpen(false);
   };
 
   // İki (veya üç) not paneli arasındaki genişlik oranları — sürüklenerek ayarlanabilir bölücü
@@ -5381,6 +5450,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               </div>
             )}
           </div>
+
+          <button
+            className="titlebar-nav-icon"
+            title="Fiş Tara (AI)"
+            onClick={handleOpenReceiptScan}
+          >
+            <CameraIcon size={16} />
+          </button>
         </div>
 
         {openTitlebarMenu && (
@@ -5419,6 +5496,169 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
               {rankUpCelebration.label}: {rankUpCelebration.rankName}
             </span>
+          </div>
+        </div>
+      )}
+
+      {isReceiptScanModalOpen && (
+        <div className="modal-overlay animate-fade" onClick={() => setIsReceiptScanModalOpen(false)} style={{ zIndex: 2000 }}>
+          <div
+            className="modal-container"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: '420px', maxWidth: '95%', maxHeight: '85vh', overflowY: 'auto', padding: '20px', background: 'rgba(15, 23, 42, 0.97)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '12px', color: '#fff' }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Receipt size={15} /> Fiş Tara (AI)
+              </h3>
+              <button onClick={() => setIsReceiptScanModalOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+            </div>
+
+            {receiptScanError && (
+              <div style={{ padding: '10px', marginBottom: '12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                {receiptScanError}
+              </div>
+            )}
+
+            {receiptScanStep === 'capture' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <p style={{ margin: '0 0 4px 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Fiş fotoğrafını çek veya galeriden seç — AI ürün/fiyat/toplamı okumayı deneyecek, kaydetmeden önce düzenleyebileceksin.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleCaptureReceipt('camera')}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '12px', background: 'var(--accent-color, #6366f1)', border: 'none', borderRadius: '6px', color: '#fff', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
+                >
+                  <CameraIcon size={16} /> Fotoğraf Çek
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCaptureReceipt('gallery')}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
+                >
+                  🖼️ Galeriden Seç
+                </button>
+              </div>
+            )}
+
+            {receiptScanStep === 'analyzing' && (
+              <div style={{ padding: '32px 0', textAlign: 'center', fontSize: '12.5px', color: 'var(--text-muted)' }}>
+                Fiş okunuyor (AI)...
+              </div>
+            )}
+
+            {receiptScanStep === 'review' && receiptScanResult && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Hangi Nota Kaydedilsin?</label>
+                  {harcamaNotes.length === 0 ? (
+                    <div style={{ fontSize: '11.5px', color: '#ef4444', padding: '6px 0' }}>
+                      #harcama etiketli bir not bulunamadı. Önce bir nota "#harcama" ekleyin.
+                    </div>
+                  ) : (
+                    <select
+                      value={receiptScanTargetNote}
+                      onChange={(e) => setReceiptScanTargetNote(e.target.value)}
+                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
+                    >
+                      {harcamaNotes.map(n => (
+                        <option key={n.path} value={n.path}>{n.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Mağaza</label>
+                    <input
+                      type="text"
+                      value={receiptScanResult.store}
+                      onChange={(e) => setReceiptScanResult(prev => prev ? { ...prev, store: e.target.value } : prev)}
+                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Tarih (YYYY-AA-GG)</label>
+                    <input
+                      type="text"
+                      value={receiptScanResult.date}
+                      onChange={(e) => setReceiptScanResult(prev => prev ? { ...prev, date: e.target.value } : prev)}
+                      placeholder={new Date().toISOString().split('T')[0]}
+                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', marginBottom: '8px', color: 'var(--text-secondary)', fontWeight: 'bold' }}>Ürünler (düzenlenebilir)</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '180px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {receiptScanResult.items.map((item, idx) => (
+                      <div key={idx} style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          value={item.name}
+                          onChange={(e) => setReceiptScanResult(prev => {
+                            if (!prev) return prev;
+                            const items = [...prev.items];
+                            items[idx] = { ...items[idx], name: e.target.value };
+                            return { ...prev, items };
+                          })}
+                          placeholder="Ürün adı"
+                          style={{ flex: 1, padding: '5px 8px', fontSize: '11.5px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', color: '#fff', minWidth: 0 }}
+                        />
+                        <input
+                          type="number"
+                          value={item.price}
+                          onChange={(e) => setReceiptScanResult(prev => {
+                            if (!prev) return prev;
+                            const items = [...prev.items];
+                            items[idx] = { ...items[idx], price: parseFloat(e.target.value) || 0 };
+                            return { ...prev, items };
+                          })}
+                          style={{ width: '70px', padding: '5px 8px', fontSize: '11.5px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', color: '#fff' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setReceiptScanResult(prev => prev ? { ...prev, items: prev.items.filter((_, i) => i !== idx) } : prev)}
+                          style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '14px', padding: '2px' }}
+                          title="Bu ürünü kaldır"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReceiptScanResult(prev => prev ? { ...prev, items: [...prev.items, { name: '', price: 0 }] } : prev)}
+                    style={{ marginTop: '6px', padding: '5px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', color: 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer' }}
+                  >
+                    + Ürün Ekle
+                  </button>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Toplam Tutar (TL)</label>
+                  <input
+                    type="number"
+                    value={receiptScanResult.total}
+                    onChange={(e) => setReceiptScanResult(prev => prev ? { ...prev, total: parseFloat(e.target.value) || 0 } : prev)}
+                    style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveScannedReceipt}
+                  disabled={harcamaNotes.length === 0}
+                  style={{ marginTop: '4px', width: '100%', padding: '10px', background: harcamaNotes.length === 0 ? 'rgba(16,185,129,0.3)' : '#10b981', border: 'none', borderRadius: '6px', color: '#fff', fontWeight: 'bold', fontSize: '13px', cursor: harcamaNotes.length === 0 ? 'not-allowed' : 'pointer' }}
+                >
+                  Kaydet
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

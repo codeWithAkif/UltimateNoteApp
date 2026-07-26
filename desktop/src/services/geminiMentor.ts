@@ -83,6 +83,58 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// callGemini'nin görsel destekli hâli — Gemini modelleri "inlineData" (base64) ile
+// gönderilen bir resmi de metin isteğiyle birlikte değerlendirebiliyor (multimodal).
+// Fiş tarama gibi tek amaçlı, seyrek kullanılan bir çağrı için mevcut callGemini'nin
+// imzasını değiştirip 13 çağrı noktasını güncellemek yerine ayrı bir yardımcı fonksiyon
+// eklemek daha güvenli/izole.
+async function callGeminiWithImage<T>(
+  prompt: string,
+  imageBase64: string,
+  imageMimeType: string,
+  responseSchema: any
+): Promise<T> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
+  }
+
+  const res = await fetch(
+    `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: imageMimeType, data: imageBase64 } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema
+        }
+      })
+    }
+  );
+
+  if (!res.ok) {
+    let errText = '';
+    try { errText = await res.text(); } catch (e) { /* yoksay */ }
+    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error('Gemini yanıtı boş döndü.');
+  }
+  return JSON.parse(text) as T;
+}
+
 export interface ClarifyingQA {
   question: string;
   answer: string;
@@ -430,6 +482,61 @@ Yer/market bilgisi: "${location || 'belirtilmedi'}"
 Sadece JSON döndür (category alanına yukarıdaki listeden BİREBİR bir değer yaz).`;
 
   return callGemini(prompt, EXPENSE_CATEGORY_SCHEMA);
+};
+
+export interface ReceiptScanItem {
+  name: string;
+  price: number;
+}
+
+export interface ReceiptScanResult {
+  store: string;
+  date: string;
+  items: ReceiptScanItem[];
+  total: number;
+}
+
+const RECEIPT_SCAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    store: { type: 'string' },
+    date: { type: 'string' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          price: { type: 'number' }
+        },
+        required: ['name', 'price']
+      }
+    },
+    total: { type: 'number' }
+  },
+  required: ['store', 'date', 'items', 'total']
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Kullanıcının kamerayla çektiği/galeriden seçtiği bir fiş fotoğrafını Gemini'ye
+// gönderip mağaza adı, tarih, satır bazlı ürün+fiyat listesi ve toplam tutarı
+// yapılandırılmış JSON olarak çıkarır. Fişler basım kalitesi/format açısından çok
+// değişken olduğundan (buruşuk, silik, elle yazılmış vb.) bu çıktı KESİN doğru kabul
+// edilmez — çağıran taraf (App.tsx'teki Fiş Tara akışı) sonucu her zaman düzenlenebilir
+// bir önizleme olarak gösterip kullanıcı onayı/düzeltmesinden sonra kaydeder.
+export const analyzeReceiptImage = async (
+  imageBase64: string,
+  imageMimeType: string
+): Promise<ReceiptScanResult> => {
+  const prompt = `Bu bir market/alışveriş fişinin fotoğrafı. Fişi oku ve şunları çıkar:
+- store: mağaza/işletme adı (okunamıyorsa boş bırak)
+- date: fiş üzerindeki tarih, YYYY-MM-DD formatında (yoksa veya okunamıyorsa bugünün tarihini tahmin etmeye ÇALIŞMA, boş bırak)
+- items: fişteki her satır kalemi için { name, price } — name kısa ve öz ürün adı, price o kalemin TL cinsinden fiyatı (sayısal, yalnızca nokta ondalık ayracı kullan)
+- total: fişin toplam tutarı (TL, sayısal). Fişte açık bir "TOPLAM" satırı varsa onu kullan; yoksa kalemlerin toplamını hesapla.
+
+Fiş baskısı düşük kaliteli, buruşuk veya kısmen okunaksız olabilir — emin olamadığın kalemler için en makul tahminini yap, tamamen okunamayan kalemleri atla. Sadece JSON döndür.`;
+
+  return callGeminiWithImage(prompt, imageBase64, imageMimeType, RECEIPT_SCAN_SCHEMA);
 };
 
 const DATE_EXTRACT_SCHEMA = {
