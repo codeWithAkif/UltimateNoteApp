@@ -170,18 +170,24 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
       directory: Directory.Data
     });
 
-    const fileList: any[] = [];
-    for (const file of result.files) {
-      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-      // BUG DÜZELTMESİ: "." ile başlayan HER ŞEY atlanıyordu; bu uygulamanın kendi
-      // varsayılan şablon klasörünü (".templates") de görünmez kılıp App.tsx'in onu
-      // sonsuz döngüde yeniden oluşturmasına yol açıyordu (bkz. main.cjs'teki eşleniği).
-      // Yalnızca gerçek sistem klasörü olan ".git" gizlenir.
-      if (file.name === '.git') {
-        continue;
-      }
+    // BUG DÜZELTMESİ (performans — telefonda ilk açılışta ~4sn dosya bekleme):
+    // her dosya/klasör için stat() çağrısı VE her alt klasör için recursive
+    // listeleme, birbiri ardına (sıralı await) yapılıyordu. Her biri ayrı bir
+    // native köprü round-trip'i olduğundan (Android'de tek bir Capacitor
+    // Filesystem çağrısının bile gözle görülür gecikmesi olabiliyor), orta
+    // büyüklükte bir kasada bile bu, toplamda saniyeler sürebiliyordu — hem ilk
+    // açılışta hem de her not oluşturma/güncelleme sonrası tetiklenen arka plan
+    // taramasında. scanTasksFromAllNotes'ta (App.tsx) daha önce uygulanan aynı
+    // Promise.all paralelleştirmesi burada da uygulandı: tüm stat() çağrıları VE
+    // tüm alt klasör recursion'ları artık PARALEL çalışıyor.
+    const relevantFiles = result.files.filter(file => file.name !== '.git');
+    // BUG DÜZELTMESİ: "." ile başlayan HER ŞEY atlanıyordu; bu uygulamanın kendi
+    // varsayılan şablon klasörünü (".templates") de görünmez kılıp App.tsx'in onu
+    // sonsuz döngüde yeniden oluşturmasına yol açıyordu (bkz. main.cjs'teki eşleniği).
+    // Yalnızca gerçek sistem klasörü olan ".git" gizlenir.
+    const entryLists = await Promise.all(relevantFiles.map(async (file): Promise<any[]> => {
       const fileRelPath = dirRelPath ? `${dirRelPath}/${file.name}` : file.name;
-      
+
       // Get real file modification time from filesystem stat
       let mtime = 0;
       try {
@@ -196,29 +202,26 @@ const listMobileFilesRecursively = async (dirRelPath: string = ''): Promise<any[
       }
 
       if (file.type === 'directory') {
-        fileList.push({
-          name: file.name,
-          path: fileRelPath,
-          type: 'folder',
-          createdAt: mtime,
-          updatedAt: mtime
-        });
         const subFiles = await listMobileFilesRecursively(fileRelPath);
-        fileList.push(...subFiles);
+        return [
+          { name: file.name, path: fileRelPath, type: 'folder', createdAt: mtime, updatedAt: mtime },
+          ...subFiles
+        ];
       } else if (file.name.endsWith('.md') || file.name.endsWith('.excalidraw') || file.name.endsWith('.drawio')) {
         // .drawio: draw.io (diagrams.net) diyagram dosyaları da not listesine dahil edilir.
         const isExcalidraw = file.name.endsWith('.excalidraw');
         const isDrawio = file.name.endsWith('.drawio');
-        fileList.push({
+        return [{
           name: file.name.replace(/\.(md|excalidraw|drawio)$/, ''),
           path: fileRelPath,
           type: isExcalidraw ? 'excalidraw' : (isDrawio ? 'drawio' : 'note'),
           createdAt: mtime,
           updatedAt: mtime
-        });
+        }];
       }
-    }
-    return fileList;
+      return [];
+    }));
+    return entryLists.flat();
   } catch (err) {
     // BUG DÜZELTMESİ (silinen dosyaların "geri gelmesi"): burada hata yutulup boş
     // dizi [] döndürülüyordu — sync katmanı bunu "kasa gerçekten boş/neredeyse boş"

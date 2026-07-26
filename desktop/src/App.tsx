@@ -3337,7 +3337,31 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       }
       await platform.writeNote(relativePath, header);
       handleLocalSave(relativePath, header);
-      await loadAllData();
+
+      // BUG DÜZELTMESİ (performans — telefonda yeni not oluşturma yavaşlığı):
+      // burada `await loadAllData()` ile TÜM kasa (dosya listesi + her notun
+      // içeriği) senkron olarak yeniden taranıyordu — kullanıcı arayüzü, tek bir
+      // not eklemek için onlarca dosyalı bir kasada saniyelerce donuyordu.
+      // handleSaveNote'taki gibi: yeni notu doğrudan state'e ekleyip tam
+      // taramayı arka planda ertelenmiş olarak planlıyoruz.
+      const newNoteItem: NoteItem = {
+        name,
+        path: relativePath,
+        type: isDrawio ? 'drawio' : (isExcalidraw ? 'excalidraw' : 'note'),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      setNotes(prev => [...prev, newNoteItem]);
+      setFileContents(prev => ({ ...prev, [relativePath]: header }));
+
+      const updatedTimeline = syncTimelineFromMarkdown(relativePath, header, timelineItems);
+      if (updatedTimeline !== timelineItems) {
+        setTimelineItems(updatedTimeline);
+        await saveMetadata(updatedTimeline, recentInputs, tags);
+      }
+
+      scheduleWorkspaceScan();
+
       if (switchActiveNote) {
         handleSetActiveNotePath(relativePath);
       }
@@ -4625,6 +4649,16 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
   // 5. Read Note Content
   const handleReadNoteContent = async (path: string): Promise<string> => {
+    // BUG DÜZELTMESİ (performans — telefonda Takvim'de görev sürükleme yavaşlığı):
+    // bu fonksiyon `fileContents` state'inde (loadAllData/scanTasksFromAllNotes
+    // tarafından zaten doldurulmuş) içerik hazır olsa bile HER ZAMAN diskten/native
+    // köprüden okuyordu — CalendarView'ın handleScheduleTask'ı görev her
+    // sürüklendiğinde bunu çağırdığından, gereksiz bir native round-trip her
+    // sürükleme işlemini yavaşlatıyordu. Önce bellekteki (zaten güncel) kopyayı
+    // kullanıyoruz; yalnızca hiç yüklenmemişse diske gidiyoruz.
+    if (fileContents[path] !== undefined) {
+      return fileContents[path];
+    }
     if (!isBrowser) {
       return await platform.readNote(path);
     } else {
