@@ -26,6 +26,7 @@ let onDevPathsChangeCallback: ((data: Record<string, any>) => void) | null = nul
 let realtimeChannel: any = null;
 
 const uploadDebounceTimers: Record<string, any> = {};
+const pendingUploadContent: Record<string, string> = {};
 const isUploadingPaths: Record<string, boolean> = {};
 
 const getHash = (str: string): string => {
@@ -1012,6 +1013,22 @@ export const resolveConflict = async (
   }
 };
 
+const runPendingUpload = async (path: string) => {
+  const content = pendingUploadContent[path];
+  delete pendingUploadContent[path];
+  if (content === undefined) return;
+  console.log(`[Supabase Sync] Uploading: ${path}`);
+  if (onStatusChangeCallback) onStatusChangeCallback('syncing', null);
+  try {
+    const normalizedContent = content.replace(/\r\n/g, '\n');
+    await uploadNoteDirect(path, normalizedContent);
+    if (onStatusChangeCallback) onStatusChangeCallback('synced', null);
+  } catch (err: any) {
+    console.error(`[Supabase Sync] Upload failed for ${path}:`, err);
+    if (onStatusChangeCallback) onStatusChangeCallback('error', err.message || String(err));
+  }
+};
+
 export const handleLocalSave = (path: string, content: string) => {
   if (!supabase) return;
 
@@ -1019,19 +1036,26 @@ export const handleLocalSave = (path: string, content: string) => {
     clearTimeout(uploadDebounceTimers[path]);
   }
 
-  uploadDebounceTimers[path] = setTimeout(async () => {
+  pendingUploadContent[path] = content;
+  uploadDebounceTimers[path] = setTimeout(() => {
     delete uploadDebounceTimers[path];
-    console.log(`[Supabase Sync] Debounced upload for: ${path}`);
-    if (onStatusChangeCallback) onStatusChangeCallback('syncing', null);
-    try {
-      const normalizedContent = content.replace(/\r\n/g, '\n');
-      await uploadNoteDirect(path, normalizedContent);
-      if (onStatusChangeCallback) onStatusChangeCallback('synced', null);
-    } catch (err: any) {
-      console.error(`[Supabase Sync] Upload failed for ${path}:`, err);
-      if (onStatusChangeCallback) onStatusChangeCallback('error', err.message || String(err));
-    }
+    void runPendingUpload(path);
   }, 500);
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Telefon uygulaması arka plana atıldığında (App.addListener('appStateChange'))
+// bekleyen 500ms'lik yükleme zamanlayıcıları henüz ateşlenmeden Android işlemi
+// donduruyor/öldürüyor olabilir — bu da telefonda işaretlenen checkbox'ların
+// hiç buluta yüklenmeden kaybolmasına yol açıyordu. Bu fonksiyon, bekleyen TÜM
+// yükleme zamanlayıcılarını beklemeden hemen çalıştırır.
+export const flushPendingUploads = async (): Promise<void> => {
+  const paths = Object.keys(uploadDebounceTimers);
+  await Promise.all(paths.map(path => {
+    clearTimeout(uploadDebounceTimers[path]);
+    delete uploadDebounceTimers[path];
+    return runPendingUpload(path);
+  }));
 };
 
 export const handleLocalDelete = async (path: string) => {

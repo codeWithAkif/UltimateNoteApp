@@ -10,9 +10,10 @@ import {
   DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search
 } from 'lucide-react';
 import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
-import { handleLocalSave as syncMediaToSupabase } from '../services/supabaseSync';
+import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../services/supabaseSync';
 import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
+import { App as CapacitorApp } from '@capacitor/app';
 import MindmapView from './MindmapView';
 import hljs from 'highlight.js/lib/core';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -4593,6 +4594,44 @@ export default function NotesView({
       }
     };
   }, [activeNotePath]);
+
+  const activeNotePathRef = useRef(activeNotePath);
+  activeNotePathRef.current = activeNotePath;
+  const onSaveNoteRef = useRef(onSaveNote);
+  onSaveNoteRef.current = onSaveNote;
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ: Telefonda checkbox işaretleyip hemen uygulamayı arka plana
+  // atınca (ana ekrana dönmek/uygulama değiştirmek) işaretleme hiç senkronlanmıyordu.
+  // Sebep: yazı yazma 2.5sn (Effect A) + buluta yükleme 500ms (handleLocalSave)
+  // debounce'undan geçiyor — Android arka plandaki WebView'ı bu ~3sn dolmadan
+  // dondurabiliyor/öldürebiliyor, zamanlayıcılar hiç ateşlenmiyor. Uygulama arka
+  // plana geçer geçmez bekleyen değişikliği hemen diske yazıp buluta yüklüyoruz.
+  // Ref'ler üzerinden okunuyor ki listener her render'da söküp yeniden kurulmasın.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    const listenerPromise = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) return;
+      const path = activeNotePathRef.current;
+      const latest = latestEditorContentRef.current;
+      if (path && latest !== lastLoadedContentRef.current) {
+        addDebugLog('App backgrounded: flushing dirty content for path: ' + path);
+        onSaveNoteRef.current(path, latest).then(() => {
+          lastLoadedContentRef.current = latest;
+          return flushPendingUploads();
+        }).catch(error => {
+          console.error('Error flushing note on app background:', error);
+        });
+      } else {
+        flushPendingUploads().catch(error => {
+          console.error('Error flushing pending uploads on app background:', error);
+        });
+      }
+    });
+    return () => {
+      listenerPromise.then(handle => handle.remove());
+    };
+  }, []);
 
   // Focus and Caret restore hook
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
