@@ -49,6 +49,8 @@ desktop/android/**/build/
 *.keystore
 *.jks
 keystore.properties
+RELEASE_KEYSTORE_SECRETS_DO_NOT_COMMIT.txt
+RELEASE_KEYSTORE_BASE64_DO_NOT_COMMIT.txt
 
 # --- Ortam değişkenleri / gizli anahtarlar ---
 .env
