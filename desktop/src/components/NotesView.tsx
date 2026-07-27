@@ -14,6 +14,7 @@ import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../
 import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
 import { App as CapacitorApp } from '@capacitor/app';
+import { applyCompletionToLine, applyQuestStartToLine, type LineCompletionResult } from '../questRpg';
 import MindmapView from './MindmapView';
 import hljs from 'highlight.js/lib/core';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -153,6 +154,7 @@ interface NotesViewProps {
   isFlowEffectsEnabled?: boolean;
   lineHeight?: number;
   lineMargin?: number;
+  onQuestReward?: (reward: LineCompletionResult) => void;
 }
 
 interface HistoryEntry {
@@ -2263,7 +2265,8 @@ export default function NotesView({
   onUpdatePinnedWidgets,
   isFlowEffectsEnabled = true,
   lineHeight = 1.6,
-  lineMargin = 8
+  lineMargin = 8,
+  onQuestReward
 }: NotesViewProps) {
   const [editorContent, setEditorContent] = useState<string>(() => {
     if (activeNotePath) {
@@ -4772,6 +4775,13 @@ export default function NotesView({
     // BİRİNCİ tıklamadan ÖNCEKİ (bayat) içeriği görüyor, üzerine yazınca ilk işaretlenen
         // görev "tamamlanmadı" durumuna geri dönüyordu. Fonksiyonel setState formu her
     // zaman en güncel, henüz commit edilmemiş state üzerinden çalışmayı garanti eder.
+    // BUG DÜZELTMESİ (bkz. XP hesaplama efektindeki aynı ders): setState updater'ları
+    // React tarafından senkron çalıştırılacağı garanti edilmeyen "saf" fonksiyonlardır —
+    // içeriden başka bir setState (onQuestReward) çağırmak, updater birden çalıştırılırsa
+    // (ör. StrictMode) veya hiç çalışmazsa tutarsızlığa yol açar. Bu yüzden ödül SADECE
+    // yerel bir değişkende toplanır, gerçek onQuestReward çağrısı setEditorContent'in
+    // DIŞINDA, bu fonksiyon başına bir kere yapılır.
+    let questRewardToApply: LineCompletionResult | null = null;
     setEditorContent(prevContent => {
       const linesArr = prevContent.split('\n');
       if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
@@ -4785,10 +4795,22 @@ export default function NotesView({
       const suffix = checklistMatch[3];
 
       const newStatus = currentStatus.toLowerCase() === 'x' ? ' ' : 'x';
-      linesArr[lineIdx] = `${prefix}${newStatus}${suffix}`;
+      let newLine = `${prefix}${newStatus}${suffix}`;
 
+      if (newStatus === 'x') {
+        const reward = applyCompletionToLine(newLine);
+        if (reward) {
+          newLine = reward.newLine;
+          questRewardToApply = reward;
+        }
+      }
+
+      linesArr[lineIdx] = newLine;
       return linesArr.join('\n');
     });
+    if (questRewardToApply) {
+      onQuestReward?.(questRewardToApply);
+    }
   };
 
   const handleUpdateTaskMetadata = async (

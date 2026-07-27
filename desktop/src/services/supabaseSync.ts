@@ -23,6 +23,7 @@ let onRemoteChangeCallback: (() => void) | null = null;
 let onStatusChangeCallback: ((status: SyncStatus, error?: string | null) => void) | null = null;
 let onConflictsCallback: ((conflicts: SyncConflict[]) => void) | null = null;
 let onDevPathsChangeCallback: ((data: Record<string, any>) => void) | null = null;
+let onQuestRpgChangeCallback: ((data: Record<string, any>) => void) | null = null;
 let realtimeChannel: any = null;
 
 const uploadDebounceTimers: Record<string, any> = {};
@@ -381,7 +382,8 @@ export const initSupabase = (
   onRemoteChange: () => void,
   onStatusChange: (status: SyncStatus, error?: string | null) => void,
   onConflicts?: (conflicts: SyncConflict[]) => void,
-  onDevPathsChange?: (data: Record<string, any>) => void
+  onDevPathsChange?: (data: Record<string, any>) => void,
+  onQuestRpgChange?: (data: Record<string, any>) => void
 ) => {
   if (realtimeChannel) {
     if (supabase) {
@@ -421,6 +423,7 @@ export const initSupabase = (
     onStatusChangeCallback = onStatusChange;
     onConflictsCallback = onConflicts || null;
     onDevPathsChangeCallback = onDevPathsChange || null;
+    onQuestRpgChangeCallback = onQuestRpgChange || null;
 
     // BUG DÜZELTMESİ: Burada eskiden koşulsuz "syncing" durumuna geçiliyordu —
     // bu da aynı-cihaz kısayolu (bkz. startSync başındaki kontrol) devreye
@@ -601,6 +604,21 @@ const subscribeToRealtimeChanges = () => {
         }
       }
     )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'quest_rpg',
+        filter: `vault=eq.${currentVault}`
+      },
+      (payload: any) => {
+        const newRec = payload.new;
+        if (newRec && newRec.data && onQuestRpgChangeCallback) {
+          onQuestRpgChangeCallback(newRec.data);
+        }
+      }
+    )
     .subscribe((status) => {
       console.log('[Supabase Realtime] Subscription status:', status);
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
@@ -638,6 +656,10 @@ const startSync = async () => {
       if (onDevPathsChangeCallback) {
         const devPathsData = await fetchDevPaths();
         if (devPathsData) onDevPathsChangeCallback(devPathsData);
+      }
+      if (onQuestRpgChangeCallback) {
+        const questRpgData = await fetchQuestRpg();
+        if (questRpgData) onQuestRpgChangeCallback(questRpgData);
       }
       // BUG DÜZELTMESİ (telefonda resimler gelmiyor): bu kısayol not/klasör
       // uzlaştırmasını atlıyordu ama medya senkronu SADECE tam uzlaştırmanın
@@ -902,6 +924,11 @@ const startSync = async () => {
     if (onDevPathsChangeCallback) {
       const devPathsData = await fetchDevPaths();
       if (devPathsData) onDevPathsChangeCallback(devPathsData);
+    }
+
+    if (onQuestRpgChangeCallback) {
+      const questRpgData = await fetchQuestRpg();
+      if (questRpgData) onQuestRpgChangeCallback(questRpgData);
     }
 
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -1181,6 +1208,41 @@ const fetchDevPaths = async (): Promise<Record<string, any> | null> => {
     return row ? (row.data || {}) : null;
   } catch (err) {
     console.warn('[Supabase Sync] Dev path fetch failed (has the dev_paths table migration been run?):', err);
+    return null;
+  }
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// "Görev Macerası" karakter kağıdı da dev_paths ile AYNI mantık: vault başına tek JSON
+// blob (bkz. quest_rpg tablosu, 0004_create_quest_rpg_table.sql). Birleştirme (merge)
+// App.tsx'te yapılır, burası yalnızca ham veriyi taşır.
+export const uploadQuestRpg = async (data: Record<string, any>): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase
+      .from('quest_rpg')
+      .upsert(
+        { vault: currentVault, data, updated_at: new Date().toISOString() },
+        { onConflict: 'vault' }
+      );
+    if (error) throw error;
+  } catch (err) {
+    console.warn('[Supabase Sync] Quest RPG upload failed (has the quest_rpg table migration been run?):', err);
+  }
+};
+
+const fetchQuestRpg = async (): Promise<Record<string, any> | null> => {
+  if (!supabase) return null;
+  try {
+    const { data: row, error } = await supabase
+      .from('quest_rpg')
+      .select('data')
+      .eq('vault', currentVault)
+      .maybeSingle();
+    if (error) throw error;
+    return row ? (row.data || {}) : null;
+  } catch (err) {
+    console.warn('[Supabase Sync] Quest RPG fetch failed (has the quest_rpg table migration been run?):', err);
     return null;
   }
 };

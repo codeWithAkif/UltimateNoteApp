@@ -15,6 +15,7 @@ import AmbientMixerView from './components/AmbientMixerView';
 import ForgeWorkbenchView from './components/ForgeWorkbenchView';
 import NoteMentorView from './components/NoteMentorView';
 import NotesChatView from './components/NotesChatView';
+import AdventureView from './components/AdventureView';
 import MusicPlayerView from './components/MusicPlayerView';
 import MiniWidgetView from './components/MiniWidgetView';
 import AnalyticsView from './components/AnalyticsView';
@@ -25,8 +26,13 @@ import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
 import { initLiveUpdates } from './services/liveUpdate';
-import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, uploadQuestRpg, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
+import {
+  type QuestRpgState, type InventoryItem,
+  createDefaultQuestRpgState, getRpgLevel, XP_PER_QUEST,
+  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine
+} from './questRpg';
 import {
   getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
   determineLevelAndTopics, generateNextLevel, generateTopicSubNotes, suggestAdditionalTopic, generateQuiz, gradeQuiz, generateFlashcards, evaluateSummary, buildLevelUpMessage,
@@ -45,7 +51,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Sword
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -433,6 +439,143 @@ export default function App() {
       return changed ? merged : prev;
     });
   };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Görev Macerası" karakter kağıdı (altın/xp/envanter/chronicle) dev_paths ile AYNI mimari:
+  // kendi localStorage anahtarı + kendi Supabase tablosu (metadata.json Supabase'e hiç
+  // senkronlanmıyor). Per-quest veri (zorluk/tahmini/başlangıç/sonuç) ise notun kendi
+  // satırında etiket olarak yaşar (bkz. questRpg.ts) — burada yaşayan SADECE toplu karakter
+  // durumu.
+  const [questRpg, setQuestRpg] = useState<QuestRpgState>(() => {
+    try {
+      const stored = localStorage.getItem('quest_rpg_local');
+      const parsed = stored ? JSON.parse(stored) : null;
+      return parsed && parsed.updatedAt ? parsed : createDefaultQuestRpgState();
+    } catch (e) {
+      return createDefaultQuestRpgState();
+    }
+  });
+  const [levelUpCelebration, setLevelUpCelebration] = useState<string | null>(null);
+  const questRpgUploadTimerRef = useRef<any>(null);
+
+  useEffect(() => {
+    localStorage.setItem('quest_rpg_local', JSON.stringify(questRpg));
+    if (questRpgUploadTimerRef.current) clearTimeout(questRpgUploadTimerRef.current);
+    questRpgUploadTimerRef.current = setTimeout(() => {
+      uploadQuestRpg(questRpg);
+    }, 800);
+    return () => {
+      if (questRpgUploadTimerRef.current) clearTimeout(questRpgUploadTimerRef.current);
+    };
+  }, [questRpg]);
+
+  const handleQuestRpgChange = (remoteData: Record<string, any>) => {
+    setQuestRpg(prev => {
+      const remote = remoteData as QuestRpgState;
+      if (!remote || !remote.updatedAt) return prev;
+      if (new Date(remote.updatedAt).getTime() > new Date(prev.updatedAt).getTime()) {
+        return remote;
+      }
+      return prev;
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Bir quest tamamlandığında (applyCompletionToLine sonucu) ya da otomatik başarısız
+  // sayıldığında (applyAutoFailToLine) çağrılır — altın/xp/envanteri günceller, hasar
+  // görecek eşyayı (varsa) GÜNCEL envanterden seçer (satır-mutasyon fonksiyonları envantere
+  // erişemediği için bu seçim kasıtlı olarak burada yapılır), ve seviye atlarsa kutlama
+  // toast'ını tetikler (rankUpCelebration ile aynı desen).
+  const applyQuestRewardToState = (reward: { outcome: 'fast' | 'ontime' | 'failed'; goldDelta: number; itemDrop: InventoryItem | null }) => {
+    setQuestRpg(prev => {
+      const oldLevel = getRpgLevel(prev.xp);
+      let newInventory = prev.inventory;
+      if (reward.outcome === 'failed') {
+        const undamaged = prev.inventory.filter(i => !i.damaged);
+        if (undamaged.length > 0) {
+          const target = undamaged[Math.floor(Math.random() * undamaged.length)];
+          newInventory = prev.inventory.map(i => i.id === target.id ? { ...i, damaged: true } : i);
+        }
+      }
+      if (reward.itemDrop) {
+        newInventory = [...newInventory, reward.itemDrop];
+      }
+      const newXp = prev.xp + XP_PER_QUEST;
+      const newGold = Math.max(0, prev.gold + reward.goldDelta);
+      const newLevel = getRpgLevel(newXp);
+      if (newLevel.index > oldLevel.index) {
+        setLevelUpCelebration(newLevel.name);
+        setTimeout(() => setLevelUpCelebration(null), 3000);
+      }
+      return { ...prev, gold: newGold, xp: newXp, inventory: newInventory, updatedAt: new Date().toISOString() };
+    });
+  };
+
+  const handleChronicleGenerated = (text: string, newWorldStateFlags: Record<string, string>) => {
+    setQuestRpg(prev => {
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      const weekStartStr = weekStart.toISOString().split('T')[0];
+      return {
+        ...prev,
+        chronicles: [...prev.chronicles, { weekStart: weekStartStr, text }],
+        worldState: { ...prev.worldState, ...newWorldStateFlags },
+        updatedAt: new Date().toISOString()
+      };
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Hiç bitirilmeden gün geçmesi" kuralı: uygulama açılışında/veri yüklendiğinde tüm
+  // notları tarayıp son tarihi geçmiş, hâlâ işaretlenmemiş, henüz [quest:] etiketi
+  // olmayan görevleri "failed" damgalar. Habit Garden'daki applyStreakDecayToAll'un
+  // görev-versiyonu — kalıcı ilerlemeye dokunmaz, sadece bir kerelik ceza uygular.
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    let anyFailed = false;
+    const writes: { path: string; content: string }[] = [];
+
+    Object.keys(fileContents).forEach(path => {
+      const content = fileContents[path];
+      if (!content) return;
+      const lines = content.split('\n');
+      let changed = false;
+      const newLines = lines.map(line => {
+        const result = applyAutoFailToLine(line, todayStr);
+        if (!result) return line;
+        changed = true;
+        anyFailed = true;
+        applyQuestRewardToState(result);
+        return result.newLine;
+      });
+      if (changed) {
+        writes.push({ path, content: newLines.join('\n') });
+      }
+    });
+
+    if (anyFailed) {
+      writes.forEach(async ({ path, content }) => {
+        if (!isBrowser) {
+          await platform.writeNote(path, content);
+        } else {
+          localStorage.setItem(`mock_note_${path}`, content);
+        }
+        handleLocalSave(path, content);
+      });
+      setFileContents(prev => {
+        const next = { ...prev };
+        writes.forEach(({ path, content }) => { next[path] = content; });
+        return next;
+      });
+    }
+    // Sadece uygulama açılışında/not listesi ilk yüklendiğinde bir kere taransın diye
+    // bağımlılık dizisi kasıtlı olarak dar tutuldu — her fileContents değişiminde
+    // yeniden taramak (her tuş vuruşunda tetiklenebileceğinden) performansı ciddi
+    // etkiler ve zaten gerekli değildir (yeni biten görevler kendi tamamlama anında
+    // ödüllendirilir, bu efekt sadece "unutulmuş/asla başlanmamış" görevler içindir).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes.length > 0]);
+
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
   const [customizingFolder, setCustomizingFolder] = useState<string | null>(null);
   const [selectedIcon, setSelectedIcon] = useState('Folder');
@@ -1876,6 +2019,13 @@ export default function App() {
   });
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Görev Macerası" (zaman yönetimi RPG'si) karakter widget'ının sol menü altında
+  // görünüp görünmeyeceğini tutar.
+  const [isQuestRpgEnabled, setIsQuestRpgEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('setting_quest_rpg_enabled') !== 'false';
+  });
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Faz 2: Gemini destekli AI Mentor katmanı aç/kapa. Kapalıyken (veya API anahtarı
   // girilmemişken) gelişim yolu işaretleme Faz 1'in basit rütbe/XP akışına döner.
   const [isAiMentorEnabled, setIsAiMentorEnabled] = useState<boolean>(() => {
@@ -1961,6 +2111,7 @@ export default function App() {
     { id: 'forge', label: 'Sentez Tezgahı', icon: FlaskConical },
     { id: 'mentor', label: 'Not Mentorü', icon: Compass },
     { id: 'aichat', label: 'Notlarımla Sohbet', icon: MessageCircle },
+    ...(isQuestRpgEnabled ? [{ id: 'adventure', label: 'Görev Macerası', icon: Sword }] : []),
     { id: 'analytics', label: 'Verimlilik Analizi', icon: BarChart2 },
     { id: 'browser', label: 'Web Araştırma', icon: Globe },
     { id: 'music', label: 'Müzik Kutusu', icon: Headphones },
@@ -2352,7 +2503,8 @@ export default function App() {
           handleRemoteChange,
           handleStatusChange,
           handleConflicts,
-          handleDevPathsChange
+          handleDevPathsChange,
+          handleQuestRpgChange
         );
       } catch (e) {
         console.error('Failed to parse Supabase creds', e);
@@ -5068,8 +5220,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             if (match) {
               const statusChar = newStatus === 'done' ? 'x' : (newStatus === 'in-progress' ? '/' : ' ');
               lines[lineIdx] = `${match[1]}${statusChar}${match[3]}`;
-              
+
               if (newStatus === 'done') {
+                const questReward = applyCompletionToLine(lines[lineIdx]);
+                if (questReward) {
+                  lines[lineIdx] = questReward.newLine;
+                  applyQuestRewardToState(questReward);
+                }
                 const repeatMatch = line.match(/\[repeat:(daily|günlük|weekly|haftalık|monthly|aylık)\]/i);
                 const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})(?:\s\d{2}:\d{2})?\]/i);
                 
@@ -5178,9 +5335,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             if (match) {
               const statusChar = nextState ? 'x' : ' ';
               lines[lineIdx] = `${match[1]}${statusChar}${match[3]}`;
-              
+
               // Handle recurring task logic: if checked completed, append next recurrence
               if (nextState) {
+                const questReward = applyCompletionToLine(lines[lineIdx]);
+                if (questReward) {
+                  lines[lineIdx] = questReward.newLine;
+                  applyQuestRewardToState(questReward);
+                }
                 const repeatMatch = line.match(/\[repeat:(daily|günlük|weekly|haftalık|monthly|aylık)\]/i);
                 const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})(?:\s\d{2}:\d{2})?\]/i);
                 
@@ -5326,6 +5488,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           readNoteContent={handleReadNoteContent}
           onRenameNote={() => Promise.resolve()}
           onRequestConfirm={requestConfirm}
+          onQuestReward={applyQuestRewardToState}
           hideSidebar={true}
           pinnedWidgetLists={pinnedWidgetLists}
           pinnedWidgetList={pinnedWidgetList}
@@ -5560,6 +5723,35 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>TERFİ ETTİN!</span>
             <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
               {rankUpCelebration.label}: {rankUpCelebration.rankName}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {levelUpCelebration && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10000,
+            background: 'var(--bg-tertiary)',
+            border: '1px solid var(--accent-color)',
+            borderRadius: '10px',
+            padding: '14px 22px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            animation: 'fadeIn 0.3s ease'
+          }}
+        >
+          <span style={{ fontSize: '22px' }}>⚔️</span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>SEVİYE ATLADIN!</span>
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              Yeni unvanın: {levelUpCelebration}
             </span>
           </div>
         </div>
@@ -5830,6 +6022,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           isDevPathsEnabled={isDevPathsEnabled}
           developmentPaths={developmentPaths}
           onOpenPathDetail={(path) => setDevPathDetailTarget(path)}
+          isQuestRpgEnabled={isQuestRpgEnabled}
+          questRpg={questRpg}
+          onOpenAdventure={() => setActiveTab('adventure')}
           fileContents={fileContents}
           notes={notes}
           appVersion={appVersion}
@@ -6099,6 +6294,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       onRenameNote={handleRenameNote}
                       onNoteContextMenu={handleNoteContextMenu}
                       onRequestConfirm={requestConfirm}
+                      onQuestReward={applyQuestRewardToState}
                       onSearchWeb={(query) => {
                         setBrowserInitialQuery(query);
                         setActiveTab('browser');
@@ -6322,6 +6518,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         onSaveNote={handleSaveNote}
                         onCreateDailyNote={handleCreateDailyNote}
                         onSelectDateNotes={handleSelectDateNotes}
+                        onQuestReward={applyQuestRewardToState}
                       />
                     </div>
                   )}
@@ -6343,6 +6540,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               selectedTag={selectedTag}
               selectedFolder={selectedFolder}
               onRequestConfirm={requestConfirm}
+              onQuestReward={applyQuestRewardToState}
             />
           )}
 
@@ -6373,6 +6571,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onSaveNote={handleSaveNote}
               onCreateDailyNote={handleCreateDailyNote}
               onSelectDateNotes={handleSelectDateNotes}
+              onQuestReward={applyQuestRewardToState}
             />
           </div>
 
@@ -6497,6 +6696,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
               }}
+            />
+          )}
+
+          {activeTab === 'adventure' && (
+            <AdventureView
+              questRpg={questRpg}
+              notes={notes}
+              fileContents={fileContents}
+              onChronicleGenerated={handleChronicleGenerated}
             />
           )}
 
@@ -7485,7 +7693,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       handleRemoteChange,
                       handleStatusChange,
                       handleConflicts,
-                      handleDevPathsChange
+                      handleDevPathsChange,
+                      handleQuestRpgChange
                     );
                   }}
                   style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}
@@ -7784,6 +7993,23 @@ grant execute on function get_db_size() to anon;`}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Gelişim Yolları (Rütbe)</span>
                         <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Bir klasörü işaretleyip o alandaki gelişimini rütbe olarak takip et (Er → General).</span>
+                      </div>
+                    </label>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
+                      <input
+                        type="checkbox"
+                        checked={isQuestRpgEnabled}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          localStorage.setItem('setting_quest_rpg_enabled', String(checked));
+                          setIsQuestRpgEnabled(checked);
+                        }}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
+                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Görev Macerası (RPG)</span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Görevlerini quest'e çevirir — zamanında/hızlı bitirme altın ve eşya kazandırır, gecikme altın kaybettirir.</span>
                       </div>
                     </label>
 

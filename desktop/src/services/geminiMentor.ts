@@ -789,3 +789,131 @@ Sadece JSON döndür.`;
 
   return callGemini(prompt, NOTES_CHAT_SCHEMA);
 };
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// "Görev Macerası" (zaman yönetimi RPG'si) AI hikaye motoru — notlarımla-sohbet ile AYNI
+// callGemini<T> altyapısını kullanır, sıfırdan bir AI entegrasyonu GEREKMEZ.
+
+export interface QuestFlavorResult {
+  title: string;
+  description: string;
+}
+
+const QUEST_FLAVOR_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    description: { type: 'string' }
+  },
+  required: ['title', 'description']
+};
+
+// Bir görevi (checklist satırını), o notun içeriğine bakarak fantastik bir "quest" başlığına/
+// açıklamasına dönüştürür — sonuç [quest-title:]/[quest-desc:] etiketleri olarak satıra ÖNBELLEĞE
+// alınır (bkz. questRpg.ts), bu yüzden bu fonksiyon her görüntülemede DEĞİL, sadece kullanıcı
+// "Hikayelendir" butonuna bastığında bir kere çağrılır.
+export const generateQuestFlavor = async (
+  taskText: string,
+  surroundingNoteContent: string
+): Promise<QuestFlavorResult> => {
+  const prompt = `Sen bir fantastik RPG oyununun anlatıcısısın (Dungeon Master). Kullanıcının gerçek bir görevini, o notun bağlamına uygun, sürükleyici bir "quest" haline getiriyorsun.
+
+Notun içeriği (bağlam için):
+"""
+${surroundingNoteContent.slice(0, 3000)}
+"""
+
+Görev metni: "${taskText}"
+
+Görev: Bu görevi kısa, çarpıcı bir fantastik quest başlığına (title, en fazla 6 kelime, ör. "Kayıp Bilgelik Parşömenlerini Kurtar") ve 1-2 cümlelik atmosferik bir açıklamaya (description) dönüştür. Görevin GERÇEK içeriğiyle mantıklı bir bağlantısı olsun (ör. bir rapor yazma görevi "bilgelik kaydı" temalı olabilir), ama uydurma teknik detay ekleme. Türkçe yaz.
+
+Sadece JSON döndür.`;
+
+  return callGemini(prompt, QUEST_FLAVOR_SCHEMA);
+};
+
+export interface ChronicleResult {
+  text: string;
+  newWorldStateFlags: Record<string, string>;
+}
+
+const CHRONICLE_SCHEMA = {
+  type: 'object',
+  properties: {
+    text: { type: 'string' },
+    newWorldStateFlags: {
+      type: 'object',
+      additionalProperties: { type: 'string' }
+    }
+  },
+  required: ['text', 'newWorldStateFlags']
+};
+
+// Haftalık "Chronicle" — kullanıcının o haftaki quest performansına (bkz. AdventureView.tsx
+// recentQuestSummaries) dayanarak kısa bir hikaye bölümü yazar. worldState (önceki bölümlerden
+// kalan süreklilik bayrakları — "hangi bölgeler açıldı" gibi) hem girdi hem de AI'nin
+// güncelleyebileceği bir çıktı olarak geçilir, böylece hikaye bölümler arasında tutarlı kalır.
+export const generateChronicle = async (
+  recentQuestSummaries: { title: string; outcome: string }[],
+  worldState: Record<string, string>,
+  weekStart: string
+): Promise<ChronicleResult> => {
+  const questsBlock = recentQuestSummaries.length > 0
+    ? recentQuestSummaries.map(q => `- "${q.title}" (${q.outcome === 'fast' ? 'hızlı zafer' : q.outcome === 'ontime' ? 'zamanında tamamlandı' : 'başarısız oldu'})`).join('\n')
+    : '(Bu hafta hiç quest tamamlanmadı.)';
+
+  const worldStateBlock = Object.keys(worldState).length > 0
+    ? Object.entries(worldState).map(([k, v]) => `${k}: ${v}`).join('\n')
+    : '(Henüz bir dünya durumu yok — bu ilk bölüm.)';
+
+  const prompt = `Sen bir fantastik RPG oyununun anlatıcısısın (Dungeon Master). Kullanıcının bu haftaki gerçek quest performansına dayanarak devam eden bir hikayenin bir sonraki bölümünü yazıyorsun.
+
+Önceki dünya durumu (süreklilik için):
+${worldStateBlock}
+
+Bu hafta (${weekStart} haftası) tamamlanan/başarısız olan quest'ler:
+${questsBlock}
+
+Görev: Kısa (3-5 cümle), sürükleyici bir hikaye bölümü yaz (text) — quest'lerin sonuçlarını (zafer/başarısızlık) hikayenin bir parçası gibi anlat, düz istatistik gibi değil. Hikaye önceki dünya durumuyla tutarlı olsun. Eğer bu bölümde önemli bir gelişme oldu ise (yeni bir bölge açıldı, bir karakterle tanışıldı, büyük bir zafer/yenilgi) bunu newWorldStateFlags içine kısa anahtar-değer olarak ekle (ör. {"acilen_kesfedilen_bolge": "Unutulmuş Kütüphane"}); yoksa boş obje döndür. Türkçe yaz.
+
+Sadece JSON döndür.`;
+
+  return callGemini(prompt, CHRONICLE_SCHEMA);
+};
+
+// Seviye atlama anlatısı — templated + AI karışımı yerine tamamen AI (kısa olduğu için
+// ucuz/hızlı), rankUpCelebration/gardenerTitleUpCelebration'daki gibi bir toast'ta gösterilir.
+export const generateLevelUpNarrative = async (
+  newLevelTitle: string,
+  recentQuestSummaries: { title: string; outcome: string }[]
+): Promise<string> => {
+  const questsBlock = recentQuestSummaries.length > 0
+    ? recentQuestSummaries.map(q => `- "${q.title}" (${q.outcome})`).join('\n')
+    : '(son quest bulunamadı)';
+
+  const prompt = `Sen bir fantastik RPG oyununun anlatıcısısın. Kullanıcı az önce "${newLevelTitle}" unvanına yükseldi. Son quest'leri:
+${questsBlock}
+
+Görev: 1-2 cümlelik kısa, coşkulu bir seviye-atlama anlatısı yaz (düz metin, JSON değil). Türkçe yaz.`;
+
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API anahtarı ayarlanmamış.');
+  }
+  const res = await fetch(
+    `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+    }
+  );
+  if (!res.ok) {
+    let errText = '';
+    try { errText = await res.text(); } catch (e) { /* yoksay */ }
+    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return text ? text.trim() : `${newLevelTitle} unvanına yükseldin!`;
+};

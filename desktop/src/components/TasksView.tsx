@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle } from 'lucide-react';
+import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Sword } from 'lucide-react';
+import {
+  applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
+  type LineCompletionResult, type QuestDifficulty
+} from '../questRpg';
 
 interface NoteItem {
   name: string;
@@ -23,6 +27,7 @@ interface TasksViewProps {
   // onay modalını kullanır (confirm() gerçek bir pencere blur/focus olayı tetiklemediği
   // için odağa dayalı temizleme mekanizmaları silme onayı sırasında hiç çalışmıyordu).
   onRequestConfirm?: (message: string, onConfirm: () => void) => void;
+  onQuestReward?: (reward: LineCompletionResult) => void;
 }
 
 export interface WorkspaceSubTask {
@@ -50,6 +55,10 @@ export interface WorkspaceTask {
   isSubtask?: boolean;
   parentTaskId?: string | null;
   subtasks?: WorkspaceSubTask[];
+  questDifficulty: QuestDifficulty;
+  questEstimatedMinutes: number | null;
+  questStartedAt: string | null;
+  questOutcome: 'fast' | 'ontime' | 'failed' | null;
 }
 
 
@@ -97,7 +106,8 @@ export default function TasksView({
   setActiveTab,
   selectedTag,
   selectedFolder,
-  onRequestConfirm
+  onRequestConfirm,
+  onQuestReward
 }: TasksViewProps) {
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -297,7 +307,7 @@ export default function TasksView({
               const folderName = pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : null;
 
               // Clean display content: strip all annotation tags and capture timestamps
-              const displayContent = rawText
+              const displayContent = stripQuestTags(rawText)
                 .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
                 .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
                 .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
@@ -305,6 +315,8 @@ export default function TasksView({
                 .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
                 .replace(/\s+/g, ' ')
                 .trim();
+
+              const questTags = parseQuestTags(rawText);
 
               noteTasks.push({
                 id: taskId,
@@ -322,7 +334,11 @@ export default function TasksView({
                 tags: taskTags,
                 isSubtask,
                 parentTaskId,
-                subtasks: []
+                subtasks: [],
+                questDifficulty: questTags.difficulty,
+                questEstimatedMinutes: questTags.estimatedMinutes,
+                questStartedAt: questTags.startedAt,
+                questOutcome: questTags.outcome
               });
             } else {
               if (line.trim().length > 0 && !line.match(/^\s*[*\-]\s+/)) {
@@ -384,6 +400,14 @@ export default function TasksView({
       const newStatus = currentStatus.toLowerCase() === 'x' ? ' ' : 'x';
       lines[task.lineIdx] = `${prefix}${newStatus}${suffix}`;
 
+      if (newStatus === 'x') {
+        const questReward = applyCompletionToLine(lines[task.lineIdx]);
+        if (questReward) {
+          lines[task.lineIdx] = questReward.newLine;
+          onQuestReward?.(questReward);
+        }
+      }
+
       const newContent = lines.join('\n');
       await onSaveNote(task.filePath, newContent);
       setRefreshTrigger(prev => prev + 1);
@@ -443,6 +467,53 @@ export default function TasksView({
       setRefreshTrigger(prev => prev + 1);
     } catch (err) {
       console.error('Error updating task metadata:', err);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Görev Macerası" (quest) özelliği: zorluk/tahmini süre etiketleri de diğer meta veriler
+  // (öncelik/tarih/tekrar) ile AYNI satır-içi etiket deseniyle saklanır. Bu iki fonksiyon
+  // sadece o etiketleri günceller, diğer etiketlere dokunmaz.
+  const handleUpdateQuestMetadata = async (task: WorkspaceTask, difficulty: QuestDifficulty, estimatedMinutes: number | null) => {
+    try {
+      const content = await readNoteContent(task.filePath);
+      const lines = content.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+      const rawLine = lines[task.lineIdx];
+      const withoutQuestFields = rawLine
+        .replace(/\[zorluk:(?:kolay|orta|zor)\]/gi, '')
+        .replace(/\[tahmini:\d+\]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trimEnd();
+
+      const zorlukStr = ` [zorluk:${difficulty}]`;
+      const tahminiStr = (estimatedMinutes && estimatedMinutes > 0) ? ` [tahmini:${estimatedMinutes}]` : '';
+      lines[task.lineIdx] = `${withoutQuestFields}${zorlukStr}${tahminiStr}`;
+
+      const newContent = lines.join('\n');
+      await onSaveNote(task.filePath, newContent);
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error updating quest metadata:', err);
+    }
+  };
+
+  const handleStartQuest = async (task: WorkspaceTask) => {
+    try {
+      const content = await readNoteContent(task.filePath);
+      const lines = content.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+      const newLine = applyQuestStartToLine(lines[task.lineIdx]);
+      if (!newLine) return;
+      lines[task.lineIdx] = newLine;
+
+      const newContent = lines.join('\n');
+      await onSaveNote(task.filePath, newContent);
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error starting quest:', err);
     }
   };
 
@@ -739,6 +810,73 @@ export default function TasksView({
           <div className="row-control-score">
             <div className="score-num-display">{task.score}</div>
             <span className="score-desc-lbl">Task Score</span>
+          </div>
+        </div>
+
+        {/* GÖREV MACERASI (QUEST) BÖLÜMÜ */}
+        <div className="drawer-row">
+          <div className="row-label">
+            <Sword size={13} />
+            <span>ZORLUK</span>
+          </div>
+          <div className="row-control-pills">
+            {(['kolay', 'orta', 'zor'] as QuestDifficulty[]).map(d => (
+              <button
+                key={d}
+                type="button"
+                className={`pill-btn ${task.questDifficulty === d ? 'active' : ''}`}
+                onClick={() => handleUpdateQuestMetadata(task, d, task.questEstimatedMinutes)}
+              >
+                {d === 'kolay' ? 'Kolay' : d === 'orta' ? 'Orta' : 'Zor'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="drawer-row">
+          <div className="row-label">
+            <Clock size={13} />
+            <span>TAHMİNİ SÜRE</span>
+          </div>
+          <div className="row-control" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input
+              type="number"
+              min={1}
+              value={task.questEstimatedMinutes ?? ''}
+              onChange={(e) => {
+                const val = e.target.value ? parseInt(e.target.value, 10) : null;
+                handleUpdateQuestMetadata(task, task.questDifficulty, val);
+              }}
+              placeholder="dakika"
+              className="drawer-date-input"
+              style={{ width: '90px' }}
+            />
+            <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>dakika</span>
+          </div>
+        </div>
+
+        <div className="drawer-row">
+          <div className="row-label">
+            <Play size={13} />
+            <span>QUEST</span>
+          </div>
+          <div className="row-control">
+            {task.questOutcome ? (
+              <span style={{ fontSize: '11px', fontWeight: 'bold', color: task.questOutcome === 'fast' ? '#fbbf24' : task.questOutcome === 'ontime' ? '#22c55e' : '#ef4444' }}>
+                {task.questOutcome === 'fast' ? '🥇 Hızlı tamamlandı' : task.questOutcome === 'ontime' ? '🥈 Zamanında tamamlandı' : '💀 Başarısız'}
+              </span>
+            ) : task.questStartedAt ? (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>▶️ Başladı, devam ediyor...</span>
+            ) : (
+              <button
+                type="button"
+                className="pill-btn"
+                onClick={() => handleStartQuest(task)}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <Play size={11} /> Başla
+              </button>
+            )}
           </div>
         </div>
 

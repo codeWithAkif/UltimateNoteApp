@@ -19,6 +19,10 @@ import {
 import { tr } from 'date-fns/locale';
 import { isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { registerPlugin } from '@capacitor/core';
+import {
+  applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
+  type LineCompletionResult, type QuestDifficulty
+} from '../questRpg';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -54,6 +58,7 @@ interface CalendarViewProps {
   onCreateDailyNote: (dateStr: string) => void;
   onSelectDateNotes: (dateStr: string) => void;
   embedded?: boolean; // Sağ hızlı erişim panelinde küçük "günlük takvim" olarak gömülüyken sadeleştirilmiş görünüm
+  onQuestReward?: (reward: LineCompletionResult) => void;
 }
 
 export interface WorkspaceSubTask {
@@ -85,6 +90,10 @@ export interface WorkspaceTask {
   subtasks?: WorkspaceSubTask[];
   isExternal?: boolean;
   externalSource?: 'google' | 'outlook';
+  questDifficulty: QuestDifficulty;
+  questEstimatedMinutes: number | null;
+  questStartedAt: string | null;
+  questOutcome: 'fast' | 'ontime' | 'failed' | null;
 }
 
 interface ICSEvent {
@@ -382,7 +391,8 @@ export default function CalendarView({
   onSaveNote,
   onCreateDailyNote,
   onSelectDateNotes,
-  embedded = false
+  embedded = false,
+  onQuestReward
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
     if (embedded) return 'day';
@@ -510,7 +520,11 @@ export default function CalendarView({
       score: 5,
       tags: [] as string[],
       isExternal: true,
-      externalSource: evt.source
+      externalSource: evt.source,
+      questDifficulty: 'orta' as QuestDifficulty,
+      questEstimatedMinutes: null,
+      questStartedAt: null,
+      questOutcome: null
     }))
   ];
 
@@ -845,7 +859,7 @@ export default function CalendarView({
             const folderName = pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : null;
 
             // Remove annotations from content to display neatly
-            let cleanContent = rawText
+            let cleanContent = stripQuestTags(rawText)
               .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
               .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
@@ -853,6 +867,8 @@ export default function CalendarView({
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // Strip capture timestamp
               .replace(/\s+/g, ' ')
               .trim();
+
+            const questTags = parseQuestTags(rawText);
 
             noteTasks.push({
               id: taskId,
@@ -870,7 +886,11 @@ export default function CalendarView({
               tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
               isSubtask,
               parentTaskId,
-              subtasks: []
+              subtasks: [],
+              questDifficulty: questTags.difficulty,
+              questEstimatedMinutes: questTags.estimatedMinutes,
+              questStartedAt: questTags.startedAt,
+              questOutcome: questTags.outcome
             });
           } else {
             if (line.trim().length > 0 && !line.match(/^\s*[*\-]\s+/)) {
@@ -953,7 +973,11 @@ export default function CalendarView({
               score: 0,
               tags: [],
               isSubtask: true,
-              parentTaskId: p.id
+              parentTaskId: p.id,
+              questDifficulty: 'orta' as QuestDifficulty,
+              questEstimatedMinutes: null,
+              questStartedAt: null,
+              questOutcome: null
             };
             break;
           }
@@ -1027,7 +1051,11 @@ export default function CalendarView({
               score: 0,
               tags: [],
               isSubtask: true,
-              parentTaskId: p.id
+              parentTaskId: p.id,
+              questDifficulty: 'orta' as QuestDifficulty,
+              questEstimatedMinutes: null,
+              questStartedAt: null,
+              questOutcome: null
             };
             break;
           }
@@ -1167,6 +1195,14 @@ export default function CalendarView({
 
       const newStatus = currentStatus.toLowerCase() === 'x' ? ' ' : 'x';
       lines[task.lineIdx] = `${prefix}${newStatus}${suffix}`;
+
+      if (newStatus === 'x') {
+        const questReward = applyCompletionToLine(lines[task.lineIdx]);
+        if (questReward) {
+          lines[task.lineIdx] = questReward.newLine;
+          onQuestReward?.(questReward);
+        }
+      }
 
       const newContent = lines.join('\n');
       await onSaveNote(task.filePath, newContent);
@@ -1748,7 +1784,20 @@ export default function CalendarView({
                                   <Circle size={10} style={{ color: 'var(--text-muted)' }} />
                                 )}
                               </div>
-                              <span 
+                              {!task.isExternal && (task.questOutcome || task.questStartedAt) && (
+                                <span
+                                  title={
+                                    task.questOutcome === 'fast' ? 'Quest: Hızlı tamamlandı' :
+                                    task.questOutcome === 'ontime' ? 'Quest: Zamanında tamamlandı' :
+                                    task.questOutcome === 'failed' ? 'Quest: Başarısız' :
+                                    'Quest: Devam ediyor'
+                                  }
+                                  style={{ fontSize: '9px', flexShrink: 0, marginRight: '2px' }}
+                                >
+                                  {task.questOutcome === 'fast' ? '🥇' : task.questOutcome === 'ontime' ? '🥈' : task.questOutcome === 'failed' ? '💀' : '▶️'}
+                                </span>
+                              )}
+                              <span
                                 className="mini-task-text"
                                 onClick={(e) => {
                                   e.stopPropagation();
