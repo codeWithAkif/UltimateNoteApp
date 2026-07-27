@@ -837,13 +837,32 @@ export interface ChronicleResult {
   newWorldStateFlags: Record<string, string>;
 }
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// BUG DÜZELTMESİ: Gemini'nin responseSchema'sı (OpenAPI 3.0'ın kısıtlı bir alt kümesi)
+// "additionalProperties" ile açık uçlu bir obje/sözlük tanımını DESTEKLEMİYOR — 400 hatası
+// veriyordu ("Unknown name additionalProperties"). Serbest anahtar-değer haritası yerine
+// {key,value} çiftlerinden oluşan bir DİZİ istiyoruz (Gemini'nin şemasının desteklediği),
+// sonra bunu aşağıda normal bir Record'a çeviriyoruz — çağıran taraf (AdventureView.tsx,
+// App.tsx) hiç değişmedi, dönüşüm burada, tek yerde yapılıyor.
+interface ChronicleRawResult {
+  text: string;
+  newWorldStateFlags: { key: string; value: string }[];
+}
+
 const CHRONICLE_SCHEMA = {
   type: 'object',
   properties: {
     text: { type: 'string' },
     newWorldStateFlags: {
-      type: 'object',
-      additionalProperties: { type: 'string' }
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          key: { type: 'string' },
+          value: { type: 'string' }
+        },
+        required: ['key', 'value']
+      }
     }
   },
   required: ['text', 'newWorldStateFlags']
@@ -874,11 +893,16 @@ ${worldStateBlock}
 Bu hafta (${weekStart} haftası) tamamlanan/başarısız olan quest'ler:
 ${questsBlock}
 
-Görev: Kısa (3-5 cümle), sürükleyici bir hikaye bölümü yaz (text) — quest'lerin sonuçlarını (zafer/başarısızlık) hikayenin bir parçası gibi anlat, düz istatistik gibi değil. Hikaye önceki dünya durumuyla tutarlı olsun. Eğer bu bölümde önemli bir gelişme oldu ise (yeni bir bölge açıldı, bir karakterle tanışıldı, büyük bir zafer/yenilgi) bunu newWorldStateFlags içine kısa anahtar-değer olarak ekle (ör. {"acilen_kesfedilen_bolge": "Unutulmuş Kütüphane"}); yoksa boş obje döndür. Türkçe yaz.
+Görev: Kısa (3-5 cümle), sürükleyici bir hikaye bölümü yaz (text) — quest'lerin sonuçlarını (zafer/başarısızlık) hikayenin bir parçası gibi anlat, düz istatistik gibi değil. Hikaye önceki dünya durumuyla tutarlı olsun. Eğer bu bölümde önemli bir gelişme oldu ise (yeni bir bölge açıldı, bir karakterle tanışıldı, büyük bir zafer/yenilgi) bunu newWorldStateFlags dizisine {key, value} çifti olarak ekle (ör. {"key": "acilen_kesfedilen_bolge", "value": "Unutulmuş Kütüphane"}); yoksa boş dizi döndür. Türkçe yaz.
 
 Sadece JSON döndür.`;
 
-  return callGemini(prompt, CHRONICLE_SCHEMA);
+  const raw = await callGemini<ChronicleRawResult>(prompt, CHRONICLE_SCHEMA);
+  const newWorldStateFlags: Record<string, string> = {};
+  (raw.newWorldStateFlags || []).forEach(({ key, value }) => {
+    if (key) newWorldStateFlags[key] = value;
+  });
+  return { text: raw.text, newWorldStateFlags };
 };
 
 // Seviye atlama anlatısı — templated + AI karışımı yerine tamamen AI (kısa olduğu için
