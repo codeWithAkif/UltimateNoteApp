@@ -1744,17 +1744,31 @@ export default function App() {
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Telefonda klavye kısayolları olmadığı için Arama, Ezber Kartları, Notlarımla Sohbet,
   // Müzik Kutusu, Yeni Not ve Fiş Tara gibi sık kullanılan eylemlere hızlı erişimin bir
-  // yolu yoktu. Ekranın ALT KENARINDAN başlayan yukarı kaydırma hareketini (iOS/Android
-  // sistem gezinme jestiyle aynı desen) bir hızlı-eylem menüsü açma tetikleyicisi yaptık —
-  // normal içerik kaydırmasıyla (parmak herhangi bir yerden başlar) karışmasın diye SADECE
-  // alt kenara yakın (~40px) başlayan hızlı/yeterince uzun yukarı hareketlerde tetiklenir;
-  // preventDefault YAPILMAZ, bu yüzden normal kaydırma hiçbir şekilde etkilenmez.
+  // yolu yoktu. Parmağı ekranın HERHANGİ BİR YERİNDE tutup aşağı çekme hareketini bir
+  // hızlı-eylem menüsü açma tetikleyicisi yaptık — dinleyici `document` üzerinde olduğu
+  // için hangi sekme/görünüm açık olursa olsun (uygulamanın her yerinden) çalışır.
+  // Normal içerik kaydırmasıyla (aşağı çekince yukarıdaki içerik görünür) karışmasın diye
+  // SADECE dokunulan yerin en yakın kaydırılabilir kabı ZATEN en üstteyse (scrollTop≈0,
+  // yani aşağı çekince gerçekte scroll olacak bir hâli yoksa) tetiklenir — pull-to-refresh
+  // jestiyle aynı uygunluk kuralı. preventDefault YAPILMAZ, bu yüzden normal kaydırma
+  // hiçbir şekilde etkilenmez.
   useEffect(() => {
     if (!isCapacitor) return;
     let startY = 0;
     let startX = 0;
     let startTime = 0;
-    let startedAtBottomEdge = false;
+    let eligible = false;
+
+    const findNearestScrollable = (el: Element | null): Element | null => {
+      let node: Element | null = el;
+      while (node && node !== document.body && node !== document.documentElement) {
+        const style = window.getComputedStyle(node);
+        const canScrollY = (style.overflowY === 'auto' || style.overflowY === 'scroll') && node.scrollHeight > node.clientHeight + 1;
+        if (canScrollY) return node;
+        node = node.parentElement;
+      }
+      return null;
+    };
 
     const handleTouchStart = (e: TouchEvent) => {
       const touch = e.touches[0];
@@ -1762,20 +1776,21 @@ export default function App() {
       startY = touch.clientY;
       startX = touch.clientX;
       startTime = Date.now();
-      startedAtBottomEdge = (window.innerHeight - startY) < 40;
+      const scrollable = findNearestScrollable(e.target as Element | null);
+      eligible = scrollable ? scrollable.scrollTop <= 2 : true;
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
-      if (!startedAtBottomEdge) return;
+      if (!eligible) return;
       const touch = e.changedTouches[0];
       if (!touch) return;
-      const deltaY = startY - touch.clientY;
+      const deltaY = touch.clientY - startY;
       const deltaX = Math.abs(touch.clientX - startX);
       const elapsed = Date.now() - startTime;
       if (deltaY > 60 && deltaX < 50 && elapsed < 600) {
         setIsSwipeQuickMenuOpen(true);
       }
-      startedAtBottomEdge = false;
+      eligible = false;
     };
 
     document.addEventListener('touchstart', handleTouchStart, { passive: true });
