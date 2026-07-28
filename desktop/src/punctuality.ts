@@ -24,7 +24,7 @@ export const createDefaultPunctualityState = (): PunctualityState => ({
 // Hareketli ortalama (EMA) katsayısı: tek bir görev ibreyi ne kadar sallayabilir. Düşük tutulur
 // (0.12) ki bir kötü gün skoru dibe vurdurmasın — kullanıcının GENEL eğilimini yansıtsın,
 // anlık bir tek olayı değil.
-const SCORE_EMA_ALPHA = 0.12;
+export const SCORE_EMA_ALPHA = 0.12;
 
 export const nudgeScore = (oldScore: number, outcomeScore: number): number => {
   const next = oldScore * (1 - SCORE_EMA_ALPHA) + outcomeScore * SCORE_EMA_ALPHA;

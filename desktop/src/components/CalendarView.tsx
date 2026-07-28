@@ -170,6 +170,18 @@ interface CalendarViewProps {
   // yanıtlanmamışken gösterilir — kullanıcı Evet/Vazgeç dediği an bu null'a döner ve blok
   // normal (düz gölge şeridi) görünümüne iner.
   activeCascadeCompletedAt?: string | null;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "#proje" etiketli notlardan türetilen proje adları (bkz. App.tsx, ProjectsView.tsx'teki
+  // aynı tarama). "Yeni Görev Ekle" modalındaki proje seçici için — görevi doğrudan bir
+  // projeyle ilişkilendirmek üzere satıra #proje-slug etiketi eklenmesini sağlar (proje,
+  // ProjectsView.tsx'teki #müşteri bağlantısı üzerinden dolaylı olarak müşteriye de bağlanır).
+  projectNames?: string[];
+  // İSTEK: "her müşteriye bir renk ve icon verilebilse ve takvimde o renk ile gösterilse
+  // ayırt etmek kolaylaşır." Anahtar proje slug'ı (bkz. yukarıdaki projectNames) — App.tsx
+  // bunu müşteri notundaki [renk:]/[icon:] etiketinden, proje→müşteri bağlantısı üzerinden
+  // hesaplar (bkz. App.tsx projectColors). Bir görev bu slug'lardan birine sahipse, kartında
+  // öncelik rengi yerine müşterinin rengi/iconu gösterilir.
+  projectColors?: Record<string, { color: string; icon: string }>;
 }
 
 export interface WorkspaceSubTask {
@@ -493,6 +505,22 @@ function parseICS(icsText: string): ICSEvent[] {
   return finalEvents;
 }
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// BUG DÜZELTMESİ (kullanıcı geri bildirimi: "sadece köşesini yapıyormuşsun göremedim") —
+// müşteri rengi önceden yalnızca ince bir sol kenarlık olarak uygulanıyordu, bu da pratikte
+// fark edilmiyordu. .scheduled-event-card'ın arka plan gradyanı/kenarlığı/gölgesi ZATEN
+// tek bir CSS değişkenine (--card-priority-rgb, "r, g, b" formatında) bağlı — bu değişkeni
+// inline stille müşterinin rengine ayarlamak, KARTIN TAMAMINI (arka plan tonu + kenarlık +
+// parlama) o renge boyuyor; öncelik rengine göre çok daha belirgin.
+const hexToRgbString = (hex: string): string => {
+  const clean = hex.replace('#', '');
+  const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+  const r = parseInt(full.slice(0, 2), 16) || 0;
+  const g = parseInt(full.slice(2, 4), 16) || 0;
+  const b = parseInt(full.slice(4, 6), 16) || 0;
+  return `${r}, ${g}, ${b}`;
+};
+
 export default function CalendarView({
   notes,
   folders,
@@ -503,7 +531,9 @@ export default function CalendarView({
   onSelectDateNotes,
   embedded = false,
   onQuestReward,
-  activeCascadeCompletedAt = null
+  activeCascadeCompletedAt = null,
+  projectNames = [],
+  projectColors = {}
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
     if (embedded) return 'day';
@@ -730,6 +760,21 @@ export default function CalendarView({
     dateStr: string;
     startTime: string;
     endTime: string;
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Görev hem o günün notunda hem ilgili PROJENİN altında "görünmeli" isteği (müşteriye
+    // DEĞİL — hiyerarşi Müşteri → Proje → Görev, bkz. kullanıcı geri bildirimi). Görevi İKİ
+    // dosyaya fiziksel olarak yazmak yerine (o zaman biri tiklenince diğeri habersiz kalır,
+    // aynı dev_paths'teki "tek blob" sorununun task versiyonu olur), günlük nottaki satıra
+    // proje etiketini (#proje-slug) ekliyoruz. Proje notu (ve dolayısıyla o projeye bağlı
+    // müşteri) bu etiketle canlı bir sorgu yaparak aynı satırı sayar (bkz. ProjectsView.tsx
+    // getProjectProgress/currentProjectTasks) — TEK gerçek kopya, iki görünüm.
+    projectTag: string;
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Takvimdeki bir göreve ÇİFT TIKLAYINCA açılan gerçek düzenleme modunu, "Seçili tarihe
+    // planla" / drag-drop akışlarından (bunlar da aynı modalı, ama sadece tarih/saat
+    // değiştirmek için kullanır — GÖREV ADI alanı kilitli kalır, subtask grup/dağıt
+    // sorusu vs. o akışlara özel davranışlar bozulmasın diye) ayırt eder.
+    isEditMode: boolean;
   } | null>(null);
 
   // Drag, Drop, and Resize states
@@ -1140,6 +1185,74 @@ export default function CalendarView({
     }
   };
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Takvimdeki bir göreve çift tıklayınca açılan gerçek DÜZENLEME (bkz. activeSchedulingModal.
+  // isEditMode) — handleScheduleTask'ten farkı: sadece tarih/saat değil, görev METNİNİ ve
+  // PROJE etiketini de değiştirebilir. Satırdaki DİĞER etiketleri ([p:], [repeat:], dakiklik
+  // geçmişi vb. — kullanıcının hiç GÖRMEDİĞİ, düzenleme alanına hiç girmeyen metadata)
+  // olduğu gibi korur; yalnızca [due:]/[time:] her zaman yeniden yazılır (tarih/saat alanlarından)
+  // ve proje etiketi (varsa eskisini kaldırıp yenisini ekleyerek) güncellenir.
+  const handleEditTask = async (
+    taskId: string,
+    newText: string,
+    dateStr: string,
+    timeSlot: string | null,
+    newProjectSlug?: string
+  ) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    try {
+      const fileContent = await readNoteContent(task.filePath);
+      const lines = fileContent.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+      const rawLine = lines[task.lineIdx];
+      const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX\/]\]\s+)(.*)$/);
+      let prefix = '';
+      let body = rawLine;
+      if (lineBodyMatch) {
+        prefix = lineBodyMatch[1];
+        body = lineBodyMatch[2];
+      } else {
+        const m = rawLine.match(/^(\s*)/);
+        prefix = m ? m[1] : '';
+        body = rawLine.slice(prefix.length);
+      }
+
+      // due/time HER ZAMAN tarih/saat alanlarından yeniden yazılır — diğer tüm köşeli
+      // parantezli etiketler ([p:], [repeat:], [baslangic:], [tamamlanma:], [dakiklik:] vb.)
+      // ham satırdan olduğu gibi korunur (düzenleme alanı bunları hiç göstermiyor).
+      const preservedBracketTags = (body.match(/\[[^\]]+\]/g) || [])
+        .filter(tag => !/^\[due:/i.test(tag) && !/^\[time:/i.test(tag));
+
+      // Proje etiketi: eski proje etiketi (varsa) metinden çıkarılır, yeni seçilen projenin
+      // etiketi (metinde zaten yoksa) eklenir. Kullanıcı metni elle düzenlediyse (ör. etiketi
+      // kendi silmişse) buna saygı duyulur — sadece SEÇİCİDEKİ değişiklik uygulanır.
+      const oldProjectSlug = projectNames
+        .map(n => n.toLowerCase().replace(/\s+/g, '-'))
+        .find(slug => task.tags.includes(slug));
+
+      let editedText = newText.trim();
+      if (oldProjectSlug && oldProjectSlug !== newProjectSlug) {
+        editedText = editedText.replace(new RegExp(`#${oldProjectSlug}\\b`, 'i'), '').replace(/\s+/g, ' ').trim();
+      }
+      if (newProjectSlug && !new RegExp(`#${newProjectSlug}\\b`, 'i').test(editedText)) {
+        editedText += ` #${newProjectSlug}`;
+      }
+
+      let newBody = `${editedText} [due:${dateStr}]`;
+      if (timeSlot) newBody += ` [time:${timeSlot}]`;
+      if (preservedBracketTags.length) newBody += ` ${preservedBracketTags.join(' ')}`;
+
+      lines[task.lineIdx] = `${prefix}${newBody}`;
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error editing task:', err);
+    }
+  };
+
   // Helper to handle drop and show modal if task has subtasks
   const handleDropTask = (taskId: string, dateStr: string, timeSlot: string | null) => {
     let task = tasks.find(t => t.id === taskId);
@@ -1366,7 +1479,7 @@ export default function CalendarView({
   };
 
   // Click to create scheduled task
-  const handleCreateQuickTask = async (content: string, dateStr: string, timeSlot: string | null) => {
+  const handleCreateQuickTask = async (content: string, dateStr: string, timeSlot: string | null, projectSlug?: string) => {
     const folder = 'Günlükler';
     const noteName = dateStr;
     const filename = `${noteName}.md`;
@@ -1394,6 +1507,14 @@ export default function CalendarView({
       let taskLine = `\n- [ ] ${content} [due:${dateStr}]`;
       if (timeSlot) {
         taskLine += ` [time:${timeSlot}]`;
+      }
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // Görev fiziksel olarak SADECE günün notuna yazılır (kullanıcının sevdiği yapı korunur) —
+      // ama bir proje seçildiyse satıra #proje-slug etiketi eklenir. Proje notu (bkz.
+      // ProjectsView.tsx getProjectProgress/currentProjectTasks) bu etiketi canlı olarak
+      // sorgulayıp aynı satırı sayar, fiziksel ikinci bir kopya oluşturulmaz.
+      if (projectSlug) {
+        taskLine += ` #${projectSlug}`;
       }
 
       await onSaveNote(relativePath, existingContent + taskLine);
@@ -1534,7 +1655,9 @@ export default function CalendarView({
           taskName: '',
           dateStr: dragToCreate.dateStr,
           startTime: formatTimeStr(finalStartAbsMin),
-          endTime: formatTimeStr(finalEndAbsMin)
+          endTime: formatTimeStr(finalEndAbsMin),
+          projectTag: '',
+          isEditMode: false
         });
 
         justDraggedRef.current = true;
@@ -1695,7 +1818,9 @@ export default function CalendarView({
       taskName: '',
       dateStr,
       startTime: formatTimeStr(startHour, startMin),
-      endTime: formatTimeStr(endHour, endMin)
+      endTime: formatTimeStr(endHour, endMin),
+      projectTag: '',
+      isEditMode: false
     });
     setCurrentDate(dayDate);
   };
@@ -2631,6 +2756,9 @@ export default function CalendarView({
                               const percentSub = totalSub > 0 ? Math.round((completedSub / totalSub) * 100) : 0;
                               const parentTask = task.isSubtask && task.parentTaskId ? allMergedEvents.find(t => t.id === task.parentTaskId) : null;
                               const isSmallCard = height < 48;
+                              // İSTEK: müşteriye özel renk/icon — görevin proje etiketi (varsa) o
+                              // projenin bağlı olduğu müşterinin rengini/iconunu miras alır.
+                              const clientColorInfo = task.tags.map(t => projectColors[t]).find(Boolean);
 
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                               // Yukarıda hesaplanan overlapLayout'tan bu görevin sütun konumunu al —
@@ -2793,6 +2921,31 @@ export default function CalendarView({
                                   onMouseLeave={handleMouseLeaveCard}
                                   className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''}`}
                                   onClick={(e) => e.stopPropagation()}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe
+                                    // yorum satırı (Kural 5): İSTEK — takvimdeki bir göreve çift
+                                    // tıklayınca düzenlenebilir olsun. Aynı "Yeni Görev Ekle" modalı
+                                    // gerçek DÜZENLEME moduyla (isEditMode) açılır: metin, tarih/saat
+                                    // VE proje etiketi değiştirilebilir (bkz. handleEditTask).
+                                    if (task.isExternal) return;
+                                    const [depStart, depEnd] = (task.timeSlot || '10:00-11:00').split('-');
+                                    const currentProjectSlug = projectNames
+                                      .map(n => n.toLowerCase().replace(/\s+/g, '-'))
+                                      .find(slug => task.tags.includes(slug));
+                                    const currentProjectName = projectNames.find(
+                                      n => n.toLowerCase().replace(/\s+/g, '-') === currentProjectSlug
+                                    );
+                                    setActiveSchedulingModal({
+                                      taskId: task.id,
+                                      taskName: task.content,
+                                      dateStr: task.dueDate || format(currentDate, 'yyyy-MM-dd'),
+                                      startTime: depStart || '10:00',
+                                      endTime: depEnd || '11:00',
+                                      projectTag: currentProjectName || '',
+                                      isEditMode: true
+                                    });
+                                  }}
                                   onMouseDown={(e) => e.stopPropagation()}
                                   style={{
                                     position: 'absolute',
@@ -2816,6 +2969,13 @@ export default function CalendarView({
                                     borderLeft: task.isExternal
                                       ? `3px solid ${task.externalSource === 'google' ? '#4285F4' : '#0078d4'}`
                                       : undefined,
+                                    // Müşteri rengi atanmışsa, kartın arka plan gradyanını/kenarlığını/
+                                    // parlamasını YÖNETEN CSS değişkenini o renge çeviriyoruz — böylece
+                                    // sadece ince bir kenar değil, KARTIN TAMAMI o rengin tonuna bürünüyor
+                                    // (bkz. yukarıdaki hexToRgbString ve .scheduled-event-card CSS kuralı).
+                                    ...(clientColorInfo && !task.isExternal
+                                      ? { ['--card-priority-rgb' as any]: hexToRgbString(clientColorInfo.color) }
+                                      : {}),
                                     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                                     // Geç başlama caydırıcısı: planlanan başlangıç geçti ama "▶️ Başla"
                                     // hiç basılmadıysa kart kendiliğinden amber çerçeve+nabız alır —
@@ -2826,9 +2986,22 @@ export default function CalendarView({
                                     } : {})
                                   }}
                                 >
-                                  {/* Drag Handle or Indicator bar */}
-                                  {!task.isExternal && <div className="event-priority-bar" style={isSmallCard ? { height: '80%' } : undefined} />}
-                                  
+                                  {/* Drag Handle or Indicator bar — müşteri rengi atanmışsa öncelik rengi yerine onu kullanır */}
+                                  {!task.isExternal && (
+                                    <div
+                                      className="event-priority-bar"
+                                      style={{
+                                        ...(isSmallCard ? { height: '80%' } : {}),
+                                        ...(clientColorInfo ? { background: clientColorInfo.color } : {})
+                                      }}
+                                    />
+                                  )}
+                                  {clientColorInfo && (
+                                    <span title="Müşteri" style={{ fontSize: isSmallCard ? '10px' : '12px', flexShrink: 0 }}>
+                                      {clientColorInfo.icon}
+                                    </span>
+                                  )}
+
                                   {/* Dedicated Checkbox */}
                                   <div 
                                     className="event-checkbox-wrapper"
@@ -3230,7 +3403,9 @@ export default function CalendarView({
                                   taskName: task.content,
                                   dateStr: format(currentDate, 'yyyy-MM-dd'),
                                   startTime: '10:00',
-                                  endTime: '11:00'
+                                  endTime: '11:00',
+                                  projectTag: '',
+                                  isEditMode: false
                                 });
                               }}
                               style={{
@@ -3354,7 +3529,9 @@ export default function CalendarView({
                                         taskName: sub.content,
                                         dateStr: format(currentDate, 'yyyy-MM-dd'),
                                         startTime: '10:00',
-                                        endTime: '11:00'
+                                        endTime: '11:00',
+                                        projectTag: '',
+                                        isEditMode: false
                                       });
                                     }}
                                     style={{
@@ -3458,7 +3635,9 @@ export default function CalendarView({
                             taskName: task.content,
                             dateStr: format(currentDate, 'yyyy-MM-dd'),
                             startTime: '10:00',
-                            endTime: '11:00'
+                            endTime: '11:00',
+                            projectTag: '',
+                            isEditMode: false
                           });
                         }}
                         style={{
@@ -3823,7 +4002,7 @@ export default function CalendarView({
             onClick={(e) => e.stopPropagation()}
           >
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '800', color: 'var(--accent-color)' }}>
-              {activeSchedulingModal.taskId ? 'Görevi Planla' : 'Yeni Görev Ekle'}
+              {activeSchedulingModal.isEditMode ? 'Görevi Düzenle' : (activeSchedulingModal.taskId ? 'Görevi Planla' : 'Yeni Görev Ekle')}
             </h3>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3833,7 +4012,7 @@ export default function CalendarView({
                 value={activeSchedulingModal.taskName}
                 onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, taskName: e.target.value })}
                 placeholder="Örn: Raporu tamamla"
-                disabled={!!activeSchedulingModal.taskId}
+                disabled={!!activeSchedulingModal.taskId && !activeSchedulingModal.isEditMode}
                 autoFocus
                 style={{
                   background: 'var(--bg-tertiary)',
@@ -3846,6 +4025,30 @@ export default function CalendarView({
                 }}
               />
             </div>
+
+            {(!activeSchedulingModal.taskId || activeSchedulingModal.isEditMode) && projectNames.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>PROJE (opsiyonel)</label>
+                <select
+                  value={activeSchedulingModal.projectTag}
+                  onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, projectTag: e.target.value })}
+                  style={{
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    color: 'var(--text-primary)',
+                    padding: '8px 12px',
+                    fontSize: '13px',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="">Proje seçme</option>
+                  {projectNames.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>TARİH</label>
@@ -3924,13 +4127,18 @@ export default function CalendarView({
                 type="button"
                 disabled={!activeSchedulingModal.taskName.trim()}
                 onClick={async () => {
-                  const { taskId, taskName, dateStr, startTime, endTime } = activeSchedulingModal;
+                  const { taskId, taskName, dateStr, startTime, endTime, projectTag, isEditMode } = activeSchedulingModal;
                   const timeSlot = `${startTime}-${endTime}`;
+                  const projectSlug = projectTag ? projectTag.toLowerCase().replace(/\s+/g, '-') : undefined;
                   if (taskId) {
-                    handleDropTask(taskId, dateStr, timeSlot);
-                    setIsUnplannedOpen(false);
+                    if (isEditMode) {
+                      await handleEditTask(taskId, taskName, dateStr, timeSlot, projectSlug);
+                    } else {
+                      handleDropTask(taskId, dateStr, timeSlot);
+                      setIsUnplannedOpen(false);
+                    }
                   } else {
-                    await handleCreateQuickTask(taskName, dateStr, timeSlot);
+                    await handleCreateQuickTask(taskName, dateStr, timeSlot, projectSlug);
                   }
                   setActiveSchedulingModal(null);
                 }}
@@ -3947,7 +4155,7 @@ export default function CalendarView({
                   opacity: activeSchedulingModal.taskName.trim() ? 1 : 0.5
                 }}
               >
-                {activeSchedulingModal.taskId ? 'Planla' : 'Ekle'}
+                {activeSchedulingModal.isEditMode ? 'Kaydet' : (activeSchedulingModal.taskId ? 'Planla' : 'Ekle')}
               </button>
             </div>
           </div>

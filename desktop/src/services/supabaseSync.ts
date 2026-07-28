@@ -18,6 +18,15 @@ export interface SyncConflict {
 
 let supabase: SupabaseClient | null = null;
 let currentVault = 'default';
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Finans Kayıtları (bkz. financeSync.ts) notlardan bağımsız, kendi tablolarında yaşayan
+// AYRI bir senkron akışı — ama AYNI Supabase bağlantısını (client+vault) kullanmalı, iki
+// ayrı `createClient` çağrısı gereksiz bağlantı/oturum çoğaltır. initSupabase zaten bu
+// modülde client'ı kurduğu için, financeSync.ts'in kendi client'ını yaratmak yerine
+// buradan okuması için basit birer erişimci.
+export const getSupabaseClient = (): SupabaseClient | null => supabase;
+export const getCurrentVault = (): string => currentVault;
 let localPlatform: any = null;
 let onRemoteChangeCallback: (() => void) | null = null;
 let onStatusChangeCallback: ((status: SyncStatus, error?: string | null) => void) | null = null;
@@ -650,7 +659,7 @@ const startSync = async () => {
     if (deviceRow && deviceRow.device_id === getDeviceId()) {
       console.log('[Supabase Sync] Last full sync was from this same device — skipping reconciliation.');
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-      // Not/klasör uzlaştırması atlansa da dev_paths ayrı bir kanaldan (uploadDevPaths ile
+      // Not/klasör uzlaştırması atlansa da dev_paths ayrı bir kanaldan (mergeDevPath ile
       // her değişiklikte anında) yazılabildiği için "sync_devices" damgasını hiç tetiklemeden
       // güncellenmiş olabilir — bu ucuz tek satır fetch'i her zaman ayrıca yapıyoruz.
       if (onDevPathsChangeCallback) {
@@ -1181,18 +1190,35 @@ export const handleLocalFolderDelete = async (path: string): Promise<void> => {
 // tasarım yerine tek satırlık upsert/fetch yeterli. Birleştirme (merge) mantığı
 // App.tsx'te yapılır çünkü developmentPaths state'i orada yaşıyor; burası yalnızca
 // ham veriyi taşır.
-export const uploadDevPaths = async (data: Record<string, any>): Promise<void> => {
+// BUG DÜZELTMESİ (kökten): Bu fonksiyon önceden TÜM developmentPaths haritasını `upsert`
+// ile yazıyordu — iki cihaz aynı pencerede FARKLI yolları değiştirip yüklerse, ikinci
+// yazan birincinin değişikliğini (kendi eski/yerel kopyasıyla) tamamen SİLİYORDU. Artık
+// yalnızca DEĞİŞEN TEK anahtarı (`path`) gönderiyoruz; sunucudaki merge_dev_path RPC'si
+// (bkz. migrations/0005) bunu atomik bir jsonb `||` birleştirmesiyle uyguluyor — diğer
+// anahtarlara asla dokunmuyor, iki cihazın eşzamanlı değişikliği de korunuyor.
+export const mergeDevPath = async (path: string, data: any): Promise<void> => {
   if (!supabase) return;
   try {
-    const { error } = await supabase
-      .from('dev_paths')
-      .upsert(
-        { vault: currentVault, data, updated_at: new Date().toISOString() },
-        { onConflict: 'vault' }
-      );
+    const { error } = await supabase.rpc('merge_dev_path', {
+      p_vault: currentVault,
+      p_path: path,
+      p_data: data
+    });
     if (error) throw error;
   } catch (err) {
-    console.warn('[Supabase Sync] Dev path upload failed (has the dev_paths table migration been run?):', err);
+    console.warn('[Supabase Sync] Dev path merge failed (has migrations/0005_atomic_dev_paths_and_punctuality.sql been run?):', err);
+  }
+};
+
+// Kullanıcı bir klasörü gelişim yolu olmaktan çıkardığında (unmark) çağrılır — yalnızca o
+// anahtarı sunucudaki haritadan kaldırır, diğer cihazların yazdığı anahtarlara dokunmaz.
+export const deleteDevPathRemote = async (path: string): Promise<void> => {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.rpc('delete_dev_path', { p_vault: currentVault, p_path: path });
+    if (error) throw error;
+  } catch (err) {
+    console.warn('[Supabase Sync] Dev path delete failed:', err);
   }
 };
 
@@ -1216,18 +1242,28 @@ const fetchDevPaths = async (): Promise<Record<string, any> | null> => {
 // "Görev Macerası" karakter kağıdı da dev_paths ile AYNI mantık: vault başına tek JSON
 // blob (bkz. quest_rpg tablosu, 0004_create_quest_rpg_table.sql). Birleştirme (merge)
 // App.tsx'te yapılır, burası yalnızca ham veriyi taşır.
-export const uploadQuestRpg = async (data: Record<string, any>): Promise<void> => {
-  if (!supabase) return;
+// BUG DÜZELTMESİ (kökten): Önceden istemci, kendi yerel hareketli-ortalamasının (EMA)
+// SONUCUNU hesaplayıp tam skoru buraya yazıyordu — iki cihaz yaklaşık aynı anda farklı
+// görevler tamamlarsa, ikinci yazan birincinin katkısından habersiz kendi skorunu
+// basıyor, birincinin güncellemesi kayboluyordu. Artık istemci yalnızca "az önce olan
+// olayın puanını" (outcomeScore) gönderiyor; EMA hesaplaması sunucuda (nudge_punctuality_score
+// RPC'si, bkz. migrations/0005) satır kilidiyle TEK bir atomik işlemde yapılıyor — iki cihaz
+// aynı anda çağırsa bile PostgreSQL bunları sıraya koyar, ikisi de sonuca yansır. Dönen değer
+// (yeni skor) tek doğru kaynak olarak yerel state'e yazılır.
+export const nudgePunctualityScoreRemote = async (outcomeScore: number, alpha: number): Promise<number | null> => {
+  if (!supabase) return null;
   try {
-    const { error } = await supabase
-      .from('quest_rpg')
-      .upsert(
-        { vault: currentVault, data, updated_at: new Date().toISOString() },
-        { onConflict: 'vault' }
-      );
+    const { data, error } = await supabase.rpc('nudge_punctuality_score', {
+      p_vault: currentVault,
+      p_outcome_score: outcomeScore,
+      p_alpha: alpha
+    });
     if (error) throw error;
+    const score = typeof data === 'number' ? data : Number(data);
+    return isNaN(score) ? null : score;
   } catch (err) {
-    console.warn('[Supabase Sync] Quest RPG upload failed (has the quest_rpg table migration been run?):', err);
+    console.warn('[Supabase Sync] Punctuality nudge RPC failed (has migrations/0005_atomic_dev_paths_and_punctuality.sql been run?):', err);
+    return null;
   }
 };
 

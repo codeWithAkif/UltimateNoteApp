@@ -15,11 +15,66 @@ interface ProjectsViewProps {
   scannedContents: Record<string, string>;
   onChangeTaskStatus: (id: string, newStatus: 'todo' | 'in-progress' | 'done') => void;
   onOpenNote?: (item: TimelineItem) => void;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Müşteriye renk/icon atarken müşteri notunun içeriğine [renk:]/[icon:] etiketi yazmak
+  // için gerekli — Finans kategorileri gibi ayrı bir tablo yerine, müşteri zaten bir NOT
+  // olduğundan (bkz. #müşteri etiketi) veriyi doğrudan o notun içinde tutmak, mevcut
+  // not-senkron mekanizmasını (satır-bazlı, kanıtlanmış) bedavaya kullanır.
+  onSaveNote?: (path: string, content: string) => Promise<void>;
 }
 
-export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote }: ProjectsViewProps) {
+// Bir müşteri/proje notunun içeriğinden [renk:hex] ve [icon:emoji] etiketlerini okur.
+// Not içinde yoksa varsayılan (nötr gri + 👤) döner.
+//
+// BUG DÜZELTMESİ (kullanıcı geri bildirimi: "renk olmadı, notda renki başında # olacak
+// şekilde belirtirsen onu etiket olarak alır"): [renk:#22c55e] yazıldığında, notun GENEL
+// etiket tarayıcısı (App.tsx'teki tagRegexGlobal, sidebar "Etiketler" listesi vb. — TÜM not
+// içeriğini tarar, köşeli parantez içi/dışı ayırt etmez) buradaki "#22c55e" kısmını da
+// gerçek bir hashtag ("22c55e") sanıp yakalıyordu — bu hem gereksiz bir etiket kirliliği
+// yaratıyor hem de rengin okunmasını güvenilmez kılıyordu. Çözüm: renk değeri parantez
+// içinde "#" OLMADAN saklanır ([renk:22c55e]) — hashtag deseniyle hiç eşleşmez. "#" yalnızca
+// kullanım anında (CSS rengi olarak) eklenir.
+const CLIENT_COLOR_REGEX = /\[renk:#?([0-9a-fA-F]{3,8})\]/;
+const CLIENT_ICON_REGEX = /\[icon:([^\]]+)\]/;
+const DEFAULT_CLIENT_COLOR = '#6366f1';
+const DEFAULT_CLIENT_ICON = '👤';
+const CLIENT_PALETTE = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#a855f7', '#eab308', '#ef4444', '#ec4899', '#06b6d4', '#84cc16'];
+const CLIENT_ICON_CHOICES = ['👤', '🏢', '🏭', '🏦', '🛒', '🎯', '💼', '⚙️', '🚀', '🎨', '📦', '🔧'];
+
+// BUG DÜZELTMESİ (kullanıcı geri bildirimi: "rengi mavi yaptım hâlâ yeşil görünüyor"):
+// Not içinde (önceki test/deneme kayıtlarından kalma) BİRDEN FAZLA [renk:]/[icon:] etiketi
+// varsa, `.match()` (global olmayan) HER ZAMAN İLK eşleşmeyi döndürüyordu — kullanıcı yeni
+// bir renk seçtiğinde bu YENİ etiket dosyanın SONUNA ekleniyordu ama okuma hep en eski (ilk)
+// etiketi görüyordu, yani seçim hiçbir zaman "görünürde" etkili olmuyordu. Artık SON
+// (en son yazılan) eşleşme alınır — hem bu geçmiş kirliliğe karşı dayanıklı olur hem de
+// upsertClientTag artık yazarken TÜM eski kopyaları temizleyip TEK bir taze etiket bırakır.
+const lastMatch = (content: string, regexSource: string): RegExpMatchArray | null => {
+  const matches = Array.from(content.matchAll(new RegExp(regexSource, 'g')));
+  return matches.length > 0 ? matches[matches.length - 1] : null;
+};
+const parseClientColor = (content: string): string => {
+  const m = lastMatch(content, CLIENT_COLOR_REGEX.source);
+  return m ? `#${m[1]}` : DEFAULT_CLIENT_COLOR;
+};
+const parseClientIcon = (content: string): string => {
+  const m = lastMatch(content, CLIENT_ICON_REGEX.source);
+  return m ? m[1].trim() : DEFAULT_CLIENT_ICON;
+};
+// Var olan TÜM [renk:]/[icon:] etiketi kopyalarını kaldırıp notun sonuna TEK, taze bir
+// etiket ekler (yukarıdaki yorumdaki mükerrer-etiket sorununu kökten temizler).
+const upsertClientTag = (content: string, tagRegex: RegExp, newTag: string): string => {
+  const globalRegex = new RegExp(tagRegex.source, 'g');
+  const stripped = content
+    .replace(globalRegex, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd();
+  return `${stripped}\n${newTag}`;
+};
+
+export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
 
   // 1. Identify all projects (Notes containing #proje)
   const projectNotes = notes.filter(note => {
@@ -37,11 +92,24 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     projectNotes.map(n => n.name.replace('.md', '').toLowerCase())
   );
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "müşterinin altına direkt görev eklemek saçma,
+  // müşterinin altında projeler var, o projelerin görevleri var"): Görev bir müşteriye değil
+  // PROJEYE bağlanmalı — hiyerarşi Müşteri → Proje → Görev. Bir görev artık ya (a) doğrudan
+  // proje notunun İÇİNDE bir satır olabilir (t.note === projectName, eski davranış) YA DA
+  // (b) günlük nota yazılmış ama #proje-slug etiketiyle o projeye bağlanmış olabilir (bkz.
+  // CalendarView.tsx'teki "Yeni Görev Ekle" modalındaki PROJE seçici). İkisi de aynı ilerleme
+  // yüzdesine/Kanban listesine sayılır — TEK gerçek kopya (günlük nottaki satır), iki görünüm.
+  const isProjectTask = (t: TimelineItem, cleanProjectName: string) => {
+    const slug = cleanProjectName.toLowerCase().replace(/\s+/g, '-');
+    return (t.note && t.note.toLowerCase() === cleanProjectName.toLowerCase()) || t.tags.includes(slug);
+  };
+
   const getProjectProgress = (noteName: string) => {
     const cleanName = noteName.replace('.md', '');
-    const projectTasks = timelineItems.filter(t => t.note && t.note.toLowerCase() === cleanName.toLowerCase() && t.isTodo);
+    const projectTasks = timelineItems.filter(t => t.isTodo && isProjectTask(t, cleanName));
     if (projectTasks.length === 0) return { total: 0, done: 0, percent: 0 };
-    
+
     const doneTasks = projectTasks.filter(t => t.status === 'done' || (!t.status && t.isCompleted));
     return {
       total: projectTasks.length,
@@ -71,9 +139,24 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     });
   };
 
-  const currentProjectTasks = selectedProject 
-    ? timelineItems.filter(t => t.note && t.note.toLowerCase() === selectedProject.toLowerCase() && t.isTodo && !t.isSubtask) 
-    : timelineItems.filter(t => t.note && projectNames.has(t.note.toLowerCase()) && t.isTodo && !t.isSubtask);
+  const currentProjectTasks = selectedProject
+    ? timelineItems.filter(t => t.isTodo && !t.isSubtask && isProjectTask(t, selectedProject))
+    : timelineItems.filter(t => t.isTodo && !t.isSubtask && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))));
+
+  // Renk/icon seçimi, müşteri notunun İÇİNE [renk:hex]/[icon:emoji] etiketi olarak yazılır
+  // (bkz. App.tsx'teki projectColors haritası — CalendarView bu etiketleri görev kartlarında
+  // proje→müşteri bağlantısı üzerinden kullanır). "#" burada BİLEREK atılır (bkz. yukarıdaki
+  // CLIENT_COLOR_REGEX yorumu) — genel etiket tarayıcısının bunu hashtag sanmaması için.
+  const handleSetClientColor = async (clientPath: string, currentContent: string, color: string) => {
+    if (!onSaveNote) return;
+    const updated = upsertClientTag(currentContent, CLIENT_COLOR_REGEX, `[renk:${color.replace(/^#/, '')}]`);
+    await onSaveNote(clientPath, updated);
+  };
+  const handleSetClientIcon = async (clientPath: string, currentContent: string, icon: string) => {
+    if (!onSaveNote) return;
+    const updated = upsertClientTag(currentContent, CLIENT_ICON_REGEX, `[icon:${icon}]`);
+    await onSaveNote(clientPath, updated);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-primary)' }}>
@@ -229,26 +312,77 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                 {clientNotes.map(client => {
                   const cleanClientName = client.name.replace('.md', '');
                   const linkedProjects = getClientProjects(client.name, client.path);
-                  
+                  const clientContent = scannedContents[client.path] || '';
+                  const clientColor = parseClientColor(clientContent);
+                  const clientIcon = parseClientIcon(clientContent);
+                  const isPickerOpen = colorPickerOpenFor === client.path;
+
                   return (
-                    <div 
-                      key={client.path} 
-                      style={{ 
-                        background: 'var(--bg-secondary)', 
-                        padding: '20px', 
-                        borderRadius: '12px', 
+                    <div
+                      key={client.path}
+                      style={{
+                        background: 'var(--bg-secondary)',
+                        padding: '20px',
+                        borderRadius: '12px',
                         border: '1px solid var(--border-color)',
+                        borderLeft: `4px solid ${clientColor}`
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                         <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <User size={18} color="var(--accent-color)" />
+                          <button
+                            type="button"
+                            onClick={() => setColorPickerOpenFor(isPickerOpen ? null : client.path)}
+                            title="Renk ve icon seç"
+                            style={{
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              width: '26px', height: '26px', borderRadius: '50%',
+                              background: clientColor, border: 'none', cursor: onSaveNote ? 'pointer' : 'default',
+                              fontSize: '13px'
+                            }}
+                          >
+                            {clientIcon}
+                          </button>
                           {cleanClientName}
                         </h3>
                         <span style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px' }}>
                           {linkedProjects.length} Proje
                         </span>
                       </div>
+
+                      {isPickerOpen && onSaveNote && (
+                        <div style={{ marginBottom: '14px', padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                            {CLIENT_PALETTE.map(c => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => handleSetClientColor(client.path, clientContent, c)}
+                                style={{
+                                  width: '20px', height: '20px', borderRadius: '50%', background: c,
+                                  border: clientColor === c ? '2px solid var(--text-primary)' : '2px solid transparent', cursor: 'pointer'
+                                }}
+                              />
+                            ))}
+                          </div>
+                          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                            {CLIENT_ICON_CHOICES.map(ic => (
+                              <button
+                                key={ic}
+                                type="button"
+                                onClick={() => handleSetClientIcon(client.path, clientContent, ic)}
+                                style={{
+                                  width: '24px', height: '24px', borderRadius: '4px', fontSize: '13px',
+                                  background: clientIcon === ic ? 'var(--bg-hover)' : 'transparent',
+                                  border: '1px solid var(--border-color)', cursor: 'pointer'
+                                }}
+                              >
+                                {ic}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         {linkedProjects.length > 0 ? (
@@ -272,6 +406,32 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           </div>
                         )}
                       </div>
+
+                      {(() => {
+                        // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                        // Müşteri kartında görevleri DOĞRUDAN göstermiyoruz artık (kullanıcı geri bildirimi:
+                        // hiyerarşi Müşteri → Proje → Görev olmalı, müşteriye direkt görev bağlamak anlamsız).
+                        // Bunun yerine, bağlı projelerin ilerlemesini (getProjectProgress zaten hem proje
+                        // notu İÇİNDEKİ hem #proje-slug etiketli günlük-not görevlerini sayıyor) toplayıp
+                        // müşteri düzeyinde tek bir özet gösteriyoruz.
+                        const totals = linkedProjects.reduce((acc, proj) => {
+                          const s = getProjectProgress(proj.name);
+                          return { total: acc.total + s.total, done: acc.done + s.done };
+                        }, { total: 0, done: 0 });
+                        if (totals.total === 0) return null;
+                        const pct = Math.round((totals.done / totals.total) * 100);
+                        return (
+                          <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
+                              <span style={{ color: 'var(--text-secondary)' }}>Toplam Görev İlerlemesi</span>
+                              <span style={{ fontWeight: 600 }}>{pct}% ({totals.done}/{totals.total})</span>
+                            </div>
+                            <div style={{ height: '5px', background: 'var(--border-color)', borderRadius: '3px', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', background: pct === 100 ? '#4caf50' : 'var(--accent-color)', width: `${pct}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}

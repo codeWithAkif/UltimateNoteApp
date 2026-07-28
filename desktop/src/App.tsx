@@ -5,6 +5,13 @@ import NoteFactoryView from './components/NoteFactoryView';
 import type { ParsedInput } from './components/NoteFactoryView';
 import NotesView from './components/NotesView';
 import FinanceView from './components/FinanceView';
+import type { LegacyCandidate } from './components/FinanceEntriesView';
+import {
+  fetchAllFinanceEntries, fetchAllFinanceCategories, createFinanceEntry, updateFinanceEntry,
+  deleteFinanceEntry, upsertFinanceCategory, deleteFinanceCategory, fetchImportedLegacyKeys,
+  initFinanceRealtime, DEFAULT_FINANCE_CATEGORIES,
+  type FinanceEntry, type FinanceCategory, type NewFinanceEntryInput
+} from './services/financeSync';
 import TasksView from './components/TasksView';
 import TimelineView from './components/TimelineView';
 import CalendarView from './components/CalendarView';
@@ -26,11 +33,11 @@ import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
 import { initLiveUpdates } from './services/liveUpdate';
-import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, uploadQuestRpg, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, mergeDevPath, deleteDevPathRemote, nudgePunctualityScoreRemote, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
 import {
   type PunctualityState,
-  createDefaultPunctualityState, nudgeScore, getPunctualityLabel,
+  createDefaultPunctualityState, nudgeScore, getPunctualityLabel, SCORE_EMA_ALPHA,
   applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine, getDeadlineFromLine
 } from './punctuality';
 import {
@@ -444,11 +451,32 @@ export default function App() {
 
   // Yerel önbellek her zaman anında güncellenir; Supabase'e gönderim debounce'lu (hızlı
   // art arda değişikliklerde tek tek istek atmamak için, handleLocalSave'deki desenle aynı).
+  // BUG DÜZELTMESİ (kökten — "Gelişim Yolları başka cihazda eski/farklı"): Önceden burada
+  // TÜM developmentPaths haritası tek bir upsert ile sunucuya yazılıyordu. Bu, iki cihazın
+  // aynı pencerede FARKLI yolları değiştirip yüklemesi durumunda ikincinin birincinin
+  // değişikliğini tamamen silmesine yol açıyordu (lost update). Artık önceki state'e göre
+  // GERÇEKTEN DEĞİŞEN anahtarları tespit edip yalnızca onları (mergeDevPath ile, sunucuda
+  // atomik jsonb birleştirmesi) gönderiyoruz; kaldırılan anahtarlar için deleteDevPathRemote
+  // çağrılır. Böylece bu cihazın hiç dokunmadığı, henüz kendi belleğine düşmemiş bir uzak
+  // anahtarı yanlışlıkla eski haliyle geri yazma riski de ortadan kalkar.
+  const prevDevelopmentPathsRef = useRef<Record<string, DevPath>>(developmentPaths);
   useEffect(() => {
     localStorage.setItem('dev_paths_local', JSON.stringify(developmentPaths));
     if (devPathsUploadTimerRef.current) clearTimeout(devPathsUploadTimerRef.current);
     devPathsUploadTimerRef.current = setTimeout(() => {
-      uploadDevPaths(developmentPaths);
+      const prev = prevDevelopmentPathsRef.current;
+      const current = developmentPaths;
+      Object.keys(current).forEach(path => {
+        if (current[path] !== prev[path]) {
+          mergeDevPath(path, current[path]);
+        }
+      });
+      Object.keys(prev).forEach(path => {
+        if (!(path in current)) {
+          deleteDevPathRemote(path);
+        }
+      });
+      prevDevelopmentPathsRef.current = current;
     }, 800);
     return () => {
       if (devPathsUploadTimerRef.current) clearTimeout(devPathsUploadTimerRef.current);
@@ -478,6 +506,227 @@ export default function App() {
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Finans Kayıtları" — harcama/gelir verisi artık notlar içine gömülü serbest metin
+  // etiketleri yerine kendi tablolarında (finance_entries/finance_categories) tutuluyor
+  // (bkz. financeSync.ts, migrations/0006). Notlar/klasörler gibi SATIR-BAZLI senkron —
+  // dev_paths/quest_rpg'nin düştüğü "tek blob" tuzağı yok. Yerel önbellek localStorage'da
+  // tutulur ki Supabase henüz bağlanmadan/çevrimdışıyken de anında görünür olsun.
+  const [financeEntries, setFinanceEntries] = useState<FinanceEntry[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('finance_entries_local') || '[]');
+    } catch (e) {
+      return [];
+    }
+  });
+  const [financeCategories, setFinanceCategories] = useState<FinanceCategory[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('finance_categories_local') || 'null');
+      if (Array.isArray(stored) && stored.length > 0) return stored;
+    } catch (e) { /* yoksay */ }
+    return DEFAULT_FINANCE_CATEGORIES.map(c => ({ name: c.name, color: c.color, updatedAt: new Date().toISOString() }));
+  });
+  const [importedLegacyKeys, setImportedLegacyKeys] = useState<Set<string>>(new Set());
+  const financeRealtimeUnsubRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('finance_entries_local', JSON.stringify(financeEntries));
+  }, [financeEntries]);
+  useEffect(() => {
+    localStorage.setItem('finance_categories_local', JSON.stringify(financeCategories));
+  }, [financeCategories]);
+
+  // Sync durumu 'synced' olduğunda (bkz. handleStatusChange) çağrılır: tam listeyi çeker
+  // VE gerçek zamanlı aboneliği kurar/yeniler (initFinanceRealtime önceki kanalı kendi içinde
+  // temizlediği için tekrar tekrar çağırmak güvenli). Kategori hiç yoksa (ilk bağlanma)
+  // varsayılan kategori setini sunucuya da yazar ki diğer cihazlar da görsün.
+  const loadFinanceData = async () => {
+    const [entries, cats, importedKeys] = await Promise.all([
+      fetchAllFinanceEntries(),
+      fetchAllFinanceCategories(),
+      fetchImportedLegacyKeys()
+    ]);
+    // BUG DÜZELTMESİ (çevrimdışı kayıt kaybı): Supabase yokken/çevrimdışıyken eklenen
+    // kayıtlar yerel state'de kalır ama uzaktaki listede hiç görünmez. Burada uzak listeyle
+    // KÖRÜ KÖRÜNE değiştirmek yerine, yereldeki (henüz uzakta olmayan) "bekleyen" kayıtları
+    // koruyoruz VE şimdi (bağlantı geldiğine göre) aynı id ile tekrar yazmayı deniyoruz —
+    // notlardaki "yerelde her zaman kalıcı, senkron ayrı bir katman" felsefesiyle tutarlı.
+    setFinanceEntries(prev => {
+      const remoteIds = new Set(entries.map(e => e.id));
+      const stillPendingLocal = prev.filter(e => !remoteIds.has(e.id));
+      stillPendingLocal.forEach(e => {
+        createFinanceEntry({
+          id: e.id, entryDate: e.entryDate, category: e.category, type: e.type, amount: e.amount,
+          source: e.source, note: e.note, items: e.items,
+          legacyNotePath: e.legacyNotePath, legacyLineIdx: e.legacyLineIdx
+        });
+      });
+      return [...stillPendingLocal, ...entries];
+    });
+    setImportedLegacyKeys(importedKeys);
+    if (cats.length > 0) {
+      setFinanceCategories(cats);
+    } else {
+      await Promise.all(DEFAULT_FINANCE_CATEGORIES.map(c => upsertFinanceCategory(c.name, c.color)));
+      setFinanceCategories(DEFAULT_FINANCE_CATEGORIES.map(c => ({ name: c.name, color: c.color, updatedAt: new Date().toISOString() })));
+    }
+
+    if (financeRealtimeUnsubRef.current) financeRealtimeUnsubRef.current();
+    financeRealtimeUnsubRef.current = initFinanceRealtime(
+      (entry, eventType) => {
+        setFinanceEntries(prev => {
+          if (eventType === 'DELETE') return prev.filter(e => e.id !== entry.id);
+          const idx = prev.findIndex(e => e.id === entry.id);
+          if (idx === -1) return [entry, ...prev];
+          const next = [...prev];
+          next[idx] = entry;
+          return next;
+        });
+      },
+      (category, eventType) => {
+        setFinanceCategories(prev => {
+          if (eventType === 'DELETE') return prev.filter(c => c.name !== category.name);
+          const idx = prev.findIndex(c => c.name === category.name);
+          if (idx === -1) return [...prev, category];
+          const next = [...prev];
+          next[idx] = category;
+          return next;
+        });
+      }
+    );
+  };
+
+  // BUG DÜZELTMESİ (çevrimdışı kayıt kaybı): Önceden bu fonksiyon sunucu cevabını bekleyip
+  // ("created" null dönerse, yani Supabase yapılandırılmamışsa/çevrimdışıysa) kaydı yerel
+  // state'e HİÇ eklemiyordu — yani senkron kapalıyken eklenen fiş/harcama sessizce kaybolurdu.
+  // Artık kayıt id'si İSTEMCİDE üretilir, state'e HEMEN (iyimser) eklenir; sunucuya yazma
+  // arka planda dener, başarısız olursa kayıt yereldeki tek doğru kopya olarak kalır ve
+  // bağlantı geldiğinde (bkz. loadFinanceData) aynı id ile otomatik tekrar denenir.
+  const handleAddFinanceEntry = async (input: NewFinanceEntryInput) => {
+    const id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const optimisticEntry: FinanceEntry = {
+      id,
+      entryDate: input.entryDate,
+      category: input.category,
+      type: input.type,
+      amount: input.amount,
+      source: input.source ?? null,
+      note: input.note ?? null,
+      items: input.items || [],
+      legacyNotePath: input.legacyNotePath ?? null,
+      legacyLineIdx: input.legacyLineIdx ?? null,
+      updatedAt: new Date().toISOString()
+    };
+    setFinanceEntries(prev => [optimisticEntry, ...prev]);
+    await createFinanceEntry({ ...input, id });
+  };
+
+  const handleUpdateFinanceEntry = async (id: string, patch: Partial<NewFinanceEntryInput>) => {
+    setFinanceEntries(prev => prev.map(e => e.id === id ? { ...e, ...patch, items: patch.items ?? e.items, updatedAt: new Date().toISOString() } as FinanceEntry : e));
+    await updateFinanceEntry(id, patch);
+  };
+
+  const handleDeleteFinanceEntry = async (id: string) => {
+    setFinanceEntries(prev => prev.filter(e => e.id !== id));
+    await deleteFinanceEntry(id);
+  };
+
+  const handleAddFinanceCategory = async (name: string, color: string) => {
+    setFinanceCategories(prev => prev.some(c => c.name === name) ? prev : [...prev, { name, color, updatedAt: new Date().toISOString() }]);
+    await upsertFinanceCategory(name, color);
+  };
+
+  const handleDeleteFinanceCategory = async (name: string) => {
+    setFinanceCategories(prev => prev.filter(c => c.name !== name));
+    await deleteFinanceCategory(name);
+  };
+
+  // "İçe Aktar" ekranında (bkz. FinanceEntriesView.tsx) kullanıcının seçtiği eski (not içi
+  // etiketli) harcama satırlarını yeni tabloya taşır. Orijinal not satırına DOKUNULMAZ —
+  // yalnızca kopyalanır; legacy_note_path+legacy_line_idx veritabanında benzersiz olduğu
+  // için aynı satır iki kez aktarılırsa sunucu reddeder (bkz. migrations/0006).
+  const handleImportLegacyEntries = async (selected: LegacyCandidate[]) => {
+    const newKeys = new Set(importedLegacyKeys);
+    for (const c of selected) {
+      const created = await createFinanceEntry({
+        entryDate: c.date,
+        category: 'Diğer',
+        type: c.type,
+        amount: c.amount,
+        source: c.source || null,
+        note: c.description || null,
+        legacyNotePath: c.notePath,
+        legacyLineIdx: c.lineIdx
+      });
+      if (created) {
+        setFinanceEntries(prev => [created, ...prev]);
+        newKeys.add(c.key);
+      }
+    }
+    setImportedLegacyKeys(newKeys);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "müşterinin altına direkt görev eklemek saçma,
+  // müşterinin altında projeler var, o projelerin görevleri var"): Takvimden görev eklerken
+  // artık MÜŞTERİ değil PROJE seçilir — hiyerarşi Müşteri → Proje → Görev korunur. "#proje"
+  // etiketli notlardan türetilen proje adları (ProjectsView.tsx'teki projectNotes taramasıyla
+  // AYNI mantık). Görev, günün notuna yazılırken satıra #proje-slug etiketi eklenir; proje
+  // notu (ve #müşteri bağlantısı üzerinden dolaylı olarak müşteri) bu etiketle canlı sorgu
+  // yapar (bkz. ProjectsView.tsx getProjectProgress/currentProjectTasks) — görev iki dosyaya
+  // fiziksel olarak YAZILMAZ.
+  const projectNames = useMemo(
+    () => notes
+      .filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#proje'))
+      .map(n => n.name.replace('.md', '')),
+    [notes, fileContents]
+  );
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "her müşteriye bir renk ve icon verilebilse ve takvimde o renk ile gösterilse
+  // ayırt etmek kolaylaşır." Renk/icon müşteri notunun İÇİNE [renk:hex]/[icon:emoji]
+  // etiketi olarak yazılır (bkz. ProjectsView.tsx "clients" sekmesindeki seçici) — ayrı bir
+  // tablo gerekmez, müşteri zaten bir not. Burada müşteri→proje bağlantısını (ProjectsView'
+  // getClientProjects ile AYNI eşleştirme mantığı) kullanarak, bir projenin etiketiyle
+  // (#proje-slug) işaretli TÜM görevlerin, o projenin bağlı olduğu müşterinin rengini/
+  // iconunu miras almasını sağlayan bir harita üretiyoruz — CalendarView bunu doğrudan
+  // görev kartlarında kullanır.
+  const projectColors = useMemo(() => {
+    const map: Record<string, { color: string; icon: string }> = {};
+    const clientNotes = notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#müşteri'));
+    const projectNotesLocal = notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#proje'));
+
+    clientNotes.forEach(client => {
+      const clientContent = fileContents[client.path] || '';
+      const clientCleanName = client.name.replace('.md', '');
+      const clientSlug = clientCleanName.toLowerCase().replace(/\s+/g, '-');
+      // BUG DÜZELTMESİ: [renk:] değeri "#" OLMADAN saklanır (bkz. ProjectsView.tsx
+      // CLIENT_COLOR_REGEX yorumu) — aksi halde genel etiket tarayıcısı "#22c55e" gibi bir
+      // değeri gerçek bir hashtag sanıyordu. "#" burada, kullanım anında geri eklenir.
+      // BUG DÜZELTMESİ ("rengi mavi yaptım hâlâ yeşil"): notta (eski deneme kayıtlarından)
+      // birden fazla [renk:]/[icon:] kopyası birikmişse İLK değil SON eşleşme kullanılır —
+      // ProjectsView.tsx'teki upsertClientTag artık yazarken eskilerini temizlese de, henüz
+      // temizlenmemiş var olan notlarda okuma tarafının da buna dayanıklı olması gerekir.
+      const colorMatches = Array.from(clientContent.matchAll(/\[renk:#?([0-9a-fA-F]{3,8})\]/g));
+      const iconMatches = Array.from(clientContent.matchAll(/\[icon:([^\]]+)\]/g));
+      const color = colorMatches.length > 0 ? `#${colorMatches[colorMatches.length - 1][1]}` : '#6366f1';
+      const icon = iconMatches.length > 0 ? iconMatches[iconMatches.length - 1][1].trim() : '👤';
+
+      projectNotesLocal.forEach(proj => {
+        const projCleanName = proj.name.replace('.md', '');
+        const projSlug = projCleanName.toLowerCase().replace(/\s+/g, '-');
+        const projContent = (fileContents[proj.path] || '').toLowerCase();
+        const linked = projContent.includes(`#${clientSlug}`) ||
+          clientContent.toLowerCase().includes(`[[${projCleanName.toLowerCase()}]]`) ||
+          clientContent.toLowerCase().includes(projCleanName.toLowerCase());
+        if (linked) {
+          map[projSlug] = { color, icon };
+        }
+      });
+    });
+    return map;
+  }, [notes, fileContents]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // "Dakiklik Pusulası" tek skoru dev_paths ile AYNI mimari: kendi localStorage anahtarı +
   // kendi Supabase tablosu (quest_rpg tablosu aynen kullanılıyor, sadece içindeki JSON'un
   // şekli değişti — jsonb kolonu şekilsiz olduğu için migration gerekmiyor). Per-görev veri
@@ -493,7 +742,6 @@ export default function App() {
     }
   });
   const [punctualityCelebration, setPunctualityCelebration] = useState<{ text: string; positive: boolean } | null>(null);
-  const punctualityUploadTimerRef = useRef<any>(null);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // "Boşluğu doldur" önerisi — bir görev erken (5dk+) bitirildiğinde, o günün kalanında
@@ -511,15 +759,15 @@ export default function App() {
   } | null>(null);
   const [isCascading, setIsCascading] = useState(false);
 
+  // BUG DÜZELTMESİ (kökten): Önceden burada, skor her değiştiğinde TÜM PunctualityState
+  // tekrar sunucuya yazılıyordu (debounce'lu upsert) — iki cihaz yaklaşık aynı anda farklı
+  // görevler tamamlarsa ikincinin yazdığı (birincinin katkısından habersiz) tam skor,
+  // birincinin güncellemesini silebiliyordu. Artık skor güncellemesi TAMAMEN
+  // applyQuestRewardToState içinde, olay anında, nudgePunctualityScoreRemote RPC'siyle
+  // (sunucuda atomik EMA) yapılıyor — burada ayrıca periyodik bir "tüm state'i yükle"
+  // efektine gerek yok, yalnızca yerel önbelleği güncel tutuyoruz.
   useEffect(() => {
     localStorage.setItem('punctuality_local', JSON.stringify(punctuality));
-    if (punctualityUploadTimerRef.current) clearTimeout(punctualityUploadTimerRef.current);
-    punctualityUploadTimerRef.current = setTimeout(() => {
-      uploadQuestRpg(punctuality);
-    }, 800);
-    return () => {
-      if (punctualityUploadTimerRef.current) clearTimeout(punctualityUploadTimerRef.current);
-    };
   }, [punctuality]);
 
   const handleQuestRpgChange = (remoteData: Record<string, any>) => {
@@ -575,14 +823,28 @@ export default function App() {
   // useEffect) uygulama açılışında BİRDEN FAZLA unutulmuş görevi aynı anda damgalayabilir —
   // her biri için ayrı bir push bildirimi göndermek can sıkıcı bir bildirim yağmuruna yol
   // açardı, bu yüzden o yol skoru sessizce günceller, bildirim/toast göndermez.
-  const applyQuestRewardToState = (
+  const applyQuestRewardToState = async (
     reward: { outcome: 'fast' | 'ontime' | 'late'; outcomeScore: number; completedAt?: string; gapMinutes?: number; dueDate?: string | null; plannedEndAbsMin?: number | null },
     silent: boolean = false
   ) => {
-    setPunctuality(prev => {
-      const newScore = nudgeScore(prev.score, reward.outcomeScore);
-      return { score: newScore, updatedAt: new Date().toISOString() };
-    });
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // Önce iyimser (optimistic) yerel EMA güncellemesi — arayüz anında tepki versin, çevrimdışıyken
+    // de çalışsın. Ardından sunucudaki atomik nudge_punctuality_score RPC'si çağrılır (bkz.
+    // supabaseSync.ts) — bu, gerçek/nihai değeri döndürür ve iki cihazın eşzamanlı katkısını da
+    // kaybetmeden birleştirir; başarılı dönerse yerel state o TEK doğru kaynakla değiştirilir.
+    // RPC başarısız olursa (çevrimdışı, migration çalıştırılmadıysa vb.) iyimser yerel değer kalır.
+    setPunctuality(prev => ({
+      score: nudgeScore(prev.score, reward.outcomeScore),
+      updatedAt: new Date().toISOString()
+    }));
+    try {
+      const authoritative = await nudgePunctualityScoreRemote(reward.outcomeScore, SCORE_EMA_ALPHA);
+      if (authoritative !== null) {
+        setPunctuality({ score: authoritative, updatedAt: new Date().toISOString() });
+      }
+    } catch (e) {
+      console.error('[Dakiklik] Uzak skor güncellemesi başarısız, yerel iyimser değer korunuyor:', e);
+    }
     if (silent) return;
     if (reward.outcome === 'fast') {
       setPunctualityCelebration({ text: '⚡ Harika, planından önce bitirdin!', positive: true });
@@ -1232,19 +1494,18 @@ export default function App() {
   const [isReceiptScanModalOpen, setIsReceiptScanModalOpen] = useState(false);
   const [receiptScanStep, setReceiptScanStep] = useState<'capture' | 'analyzing' | 'review'>('capture');
   const [receiptScanResult, setReceiptScanResult] = useState<ReceiptScanResult | null>(null);
-  const [receiptScanTargetNote, setReceiptScanTargetNote] = useState<string>('');
+  // BUG DÜZELTMESİ (kökten — "finans mevzusu bir çok nota dağıldı"): Fiş Tara AI önceden
+  // seçilen bir "#harcama" notuna markdown metni ekliyordu — bu da tam olarak şikayet
+  // edilen dağınıklığın kaynağıydı. Artık nota hiç yazmıyor; doğrudan yapılandırılmış
+  // finans kaydı (bkz. financeSync.ts) olarak, seçilen KATEGORİYE kaydediliyor.
+  const [receiptScanCategory, setReceiptScanCategory] = useState<string>('');
   const [receiptScanError, setReceiptScanError] = useState<string | null>(null);
-
-  const harcamaNotes = useMemo(
-    () => notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#harcama')),
-    [notes, fileContents]
-  );
 
   const handleOpenReceiptScan = () => {
     setReceiptScanResult(null);
     setReceiptScanError(null);
     setReceiptScanStep('capture');
-    setReceiptScanTargetNote(harcamaNotes[0]?.path || '');
+    setReceiptScanCategory(financeCategories[0]?.name || 'Diğer');
     setIsReceiptScanModalOpen(true);
   };
 
@@ -1275,21 +1536,20 @@ export default function App() {
   };
 
   const handleSaveScannedReceipt = async () => {
-    if (!receiptScanResult || !receiptScanTargetNote) return;
+    if (!receiptScanResult || !receiptScanCategory) return;
 
-    const itemDetails = receiptScanResult.items
-      .map(i => `${i.name} [fiyat: ${i.price}]`)
-      .join(', ');
-    const storeTag = receiptScanResult.store.trim() ? ` @${receiptScanResult.store.trim()}` : '';
     const dateTag = /^\d{4}-\d{2}-\d{2}$/.test(receiptScanResult.date)
       ? receiptScanResult.date
       : new Date().toISOString().split('T')[0];
-    const receiptLine = `- [harcama: ${receiptScanResult.total} TL]${storeTag} (${itemDetails}) [${dateTag}]`;
 
-    const currentContent = fileContents[receiptScanTargetNote] || '';
-    const divider = currentContent.trim() === '' ? '' : (currentContent.endsWith('\n') ? '' : '\n');
-    const newContent = `${currentContent}${divider}${receiptLine}`;
-    await handleSaveNote(receiptScanTargetNote, newContent);
+    await handleAddFinanceEntry({
+      entryDate: dateTag,
+      category: receiptScanCategory,
+      type: 'gider',
+      amount: receiptScanResult.total,
+      source: receiptScanResult.store.trim() || null,
+      items: receiptScanResult.items.filter(i => i.name.trim())
+    });
     setIsReceiptScanModalOpen(false);
   };
 
@@ -2640,6 +2900,7 @@ export default function App() {
     }
     if (status === 'synced') {
       loadAllData();
+      loadFinanceData();
     }
   };
 
@@ -6098,22 +6359,16 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             {receiptScanStep === 'review' && receiptScanResult && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Hangi Nota Kaydedilsin?</label>
-                  {harcamaNotes.length === 0 ? (
-                    <div style={{ fontSize: '11.5px', color: '#ef4444', padding: '6px 0' }}>
-                      #harcama etiketli bir not bulunamadı. Önce bir nota "#harcama" ekleyin.
-                    </div>
-                  ) : (
-                    <select
-                      value={receiptScanTargetNote}
-                      onChange={(e) => setReceiptScanTargetNote(e.target.value)}
-                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
-                    >
-                      {harcamaNotes.map(n => (
-                        <option key={n.path} value={n.path}>{n.name}</option>
-                      ))}
-                    </select>
-                  )}
+                  <label style={{ display: 'block', fontSize: '11px', marginBottom: '4px', color: 'var(--text-secondary)' }}>Kategori</label>
+                  <select
+                    value={receiptScanCategory}
+                    onChange={(e) => setReceiptScanCategory(e.target.value)}
+                    style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff' }}
+                  >
+                    {financeCategories.map(c => (
+                      <option key={c.name} value={c.name}>{c.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -6199,8 +6454,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 <button
                   type="button"
                   onClick={handleSaveScannedReceipt}
-                  disabled={harcamaNotes.length === 0}
-                  style={{ marginTop: '4px', width: '100%', padding: '10px', background: harcamaNotes.length === 0 ? 'rgba(16,185,129,0.3)' : '#10b981', border: 'none', borderRadius: '6px', color: '#fff', fontWeight: 'bold', fontSize: '13px', cursor: harcamaNotes.length === 0 ? 'not-allowed' : 'pointer' }}
+                  disabled={!receiptScanCategory}
+                  style={{ marginTop: '4px', width: '100%', padding: '10px', background: !receiptScanCategory ? 'rgba(16,185,129,0.3)' : '#10b981', border: 'none', borderRadius: '6px', color: '#fff', fontWeight: 'bold', fontSize: '13px', cursor: !receiptScanCategory ? 'not-allowed' : 'pointer' }}
                 >
                   Kaydet
                 </button>
@@ -6758,6 +7013,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         onSelectDateNotes={handleSelectDateNotes}
                         onQuestReward={applyQuestRewardToState}
                         activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
+                        projectNames={projectNames}
+                        projectColors={projectColors}
                       />
                     </div>
                   )}
@@ -6812,6 +7069,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onSelectDateNotes={handleSelectDateNotes}
               onQuestReward={applyQuestRewardToState}
               activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
+              projectNames={projectNames}
+              projectColors={projectColors}
             />
           </div>
 
@@ -6821,6 +7080,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               notes={notes}
               scannedContents={fileContents}
               onChangeTaskStatus={handleChangeTaskStatus}
+              onSaveNote={handleSaveNote}
               onOpenNote={(item) => {
                 if (item.note) {
                   let relativePath = '';
@@ -6855,6 +7115,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               }}
               onCreateNote={handleCreateNote}
               onSaveNote={handleSaveNote}
+              financeEntries={financeEntries}
+              financeCategories={financeCategories}
+              onAddFinanceEntry={handleAddFinanceEntry}
+              onUpdateFinanceEntry={handleUpdateFinanceEntry}
+              onDeleteFinanceEntry={handleDeleteFinanceEntry}
+              onAddFinanceCategory={handleAddFinanceCategory}
+              onDeleteFinanceCategory={handleDeleteFinanceCategory}
+              alreadyImportedLegacyKeys={importedLegacyKeys}
+              onImportLegacyEntries={handleImportLegacyEntries}
             />
           )}
 

@@ -4490,17 +4490,27 @@ export default function NotesView({
     }
   }, [activeNotePath]);
   
-  // Listen for external file changes (e.g. pulled from background sync) to refresh editor in real-time
+  // Listen for external file changes (e.g. pulled from background sync, or a
+  // direct write like Fiş Tara (AI)'s receipt append) to refresh editor in real-time.
+  // BUG DÜZELTMESİ: Önceden bu senkron, localStorage'da o nota ait BİR TASLAK VAR MI
+  // diye bakıyordu ("cachedDraft === null"). Ama o taslak anahtarı önceki bir
+  // oturumdan kalma, hiç temizlenmemiş bayat bir kayıt da olabiliyordu — taslağın
+  // salt VAR OLMASI "kullanıcının şu an kaydedilmemiş bir değişikliği var" anlamına
+  // gelmiyordu. Sonuç: not editörde açıkken Fiş Tara ile eklenen satır hiç görünmüyor,
+  // hatta editörün kendi otomatik-kaydet döngüsü az sonra eski (fiş satırsız) içeriği
+  // diskin üzerine geri yazıp siliyordu. Doğru sinyal, taslağın varlığı değil,
+  // editorContent'in lastLoadedContentRef'ten GERÇEKTEN sapmış olması (= kullanıcının
+  // henüz diske yazılmamış bir düzenlemesi olması).
   useEffect(() => {
     if (activeNotePath && fileContents[activeNotePath] !== undefined) {
       const externalContent = fileContents[activeNotePath];
-      const cachedDraft = localStorage.getItem(`active_note_draft_${activeNotePath}`);
-      if (externalContent !== lastLoadedContentRef.current && cachedDraft === null) {
+      const hasUnsavedLocalEdits = editorContent !== lastLoadedContentRef.current;
+      if (externalContent !== lastLoadedContentRef.current && !hasUnsavedLocalEdits) {
         lastLoadedContentRef.current = externalContent;
         setEditorContent(externalContent);
       }
     }
-  }, [activeNotePath, fileContents]);
+  }, [activeNotePath, fileContents, editorContent]);
 
   // Fetch exchange rates on mount
   useEffect(() => {

@@ -5,6 +5,8 @@ import {
   Gift
 } from 'lucide-react';
 import { categorizeExpense, isGeminiConfigured } from '../services/geminiMentor';
+import type { FinanceEntry, FinanceCategory, NewFinanceEntryInput } from '../services/financeSync';
+import FinanceEntriesView, { type LegacyCandidate } from './FinanceEntriesView';
 
 interface NoteItem {
   name: string;
@@ -19,6 +21,19 @@ interface FinanceViewProps {
   onSelectNote: (path: string) => void;
   onCreateNote?: (name: string, folder: string | null) => Promise<void>;
   onSaveNote?: (path: string, content: string) => Promise<void>;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Finans Kayıtları" (bkz. FinanceEntriesView.tsx) — notlardan bağımsız, gerçek tablo
+  // yapısındaki yeni finans verisi. Bu prop'lar App.tsx'te financeSync.ts üzerinden yönetilir;
+  // FinanceView bunları olduğu gibi FinanceEntriesView'a aktarır.
+  financeEntries: FinanceEntry[];
+  financeCategories: FinanceCategory[];
+  onAddFinanceEntry: (input: NewFinanceEntryInput) => Promise<void>;
+  onUpdateFinanceEntry: (id: string, patch: Partial<NewFinanceEntryInput>) => Promise<void>;
+  onDeleteFinanceEntry: (id: string) => Promise<void>;
+  onAddFinanceCategory: (name: string, color: string) => Promise<void>;
+  onDeleteFinanceCategory: (name: string) => Promise<void>;
+  alreadyImportedLegacyKeys: Set<string>;
+  onImportLegacyEntries: (selected: LegacyCandidate[]) => Promise<void>;
 }
 
 interface Transaction {
@@ -76,8 +91,12 @@ interface RecurringItem {
   notePath: string;
 }
 
-export default function FinanceView({ notes, fileContents, onSelectNote, onCreateNote, onSaveNote }: FinanceViewProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'summary' | 'compare' | 'ledger' | 'resources' | 'assets'>('summary');
+export default function FinanceView({
+  notes, fileContents, onSelectNote, onCreateNote, onSaveNote,
+  financeEntries, financeCategories, onAddFinanceEntry, onUpdateFinanceEntry, onDeleteFinanceEntry,
+  onAddFinanceCategory, onDeleteFinanceCategory, alreadyImportedLegacyKeys, onImportLegacyEntries
+}: FinanceViewProps) {
+  const [activeSubTab, setActiveSubTab] = useState<'summary' | 'compare' | 'ledger' | 'resources' | 'assets' | 'records'>('summary');
   const [budgetLimit, setBudgetLimit] = useState<number>(() => {
     return parseFloat(localStorage.getItem('finance_monthly_budget') || '15000');
   });
@@ -552,6 +571,34 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
     };
   }, [notes, fileContents]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "İçe Aktar" sekmesi (bkz. FinanceEntriesView.tsx) için: notlardan zaten ayrıştırılmış
+  // financeData.transactions'ı LegacyCandidate şekline çevirir. Taksitli harcamalar TEK bir
+  // orijinal satırdan birden fazla allTransactions girdisi (her ay için biri) ürettiğinden,
+  // notePath+lineIdx'e göre TEKİLLEŞTİRİLİR — aksi halde aynı satır taksit sayısı kadar
+  // aday olarak listelenirdi.
+  const legacyCandidates: LegacyCandidate[] = useMemo(() => {
+    const seen = new Set<string>();
+    const result: LegacyCandidate[] = [];
+    financeData.transactions.forEach(t => {
+      const key = `${t.notePath}#${t.lineIdx}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push({
+        key,
+        noteName: t.noteName,
+        notePath: t.notePath,
+        lineIdx: t.lineIdx,
+        date: t.date,
+        description: t.description,
+        amount: t.amount,
+        type: t.type,
+        source: t.kaynak
+      });
+    });
+    return result;
+  }, [financeData.transactions]);
+
   // 2. Calculations
   const stats = useMemo(() => {
     let totalGelir = 0;
@@ -840,6 +887,22 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
             }}
           >
             Hesap Geçmişi
+          </button>
+          <button
+            onClick={() => setActiveSubTab('records')}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '4px',
+              border: 'none',
+              fontSize: '12px',
+              fontWeight: '500',
+              cursor: 'pointer',
+              background: activeSubTab === 'records' ? 'var(--accent-color)' : 'transparent',
+              color: activeSubTab === 'records' ? '#fff' : 'var(--text-secondary)',
+              flexShrink: 0
+            }}
+          >
+            Finans Kayıtları
           </button>
         </div>
       </div>
@@ -1672,6 +1735,21 @@ export default function FinanceView({ notes, fileContents, onSelectNote, onCreat
               )}
             </div>
           </div>
+        )}
+
+        {activeSubTab === 'records' && (
+          <FinanceEntriesView
+            entries={financeEntries}
+            categories={financeCategories}
+            onAddEntry={onAddFinanceEntry}
+            onUpdateEntry={onUpdateFinanceEntry}
+            onDeleteEntry={onDeleteFinanceEntry}
+            onAddCategory={onAddFinanceCategory}
+            onDeleteCategory={onDeleteFinanceCategory}
+            legacyCandidates={legacyCandidates}
+            alreadyImportedKeys={alreadyImportedLegacyKeys}
+            onImportLegacy={onImportLegacyEntries}
+          />
         )}
       </div>
     </div>
