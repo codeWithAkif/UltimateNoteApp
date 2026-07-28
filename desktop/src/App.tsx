@@ -29,11 +29,10 @@ import { initLiveUpdates } from './services/liveUpdate';
 import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, uploadDevPaths, uploadQuestRpg, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
 import {
-  type QuestRpgState, type InventoryItem,
-  createDefaultQuestRpgState, getRpgLevel, XP_PER_QUEST,
-  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine,
-  rollRandomItem, ITEM_PULL_COST, ITEM_REPAIR_COST, getItemSellPrice
-} from './questRpg';
+  type PunctualityState,
+  createDefaultPunctualityState, nudgeScore, getPunctualityLabel,
+  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine, getDeadlineFromLine
+} from './punctuality';
 import {
   getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
   determineLevelAndTopics, generateNextLevel, generateTopicSubNotes, suggestAdditionalTopic, generateQuiz, gradeQuiz, generateFlashcards, evaluateSummary, buildLevelUpMessage,
@@ -52,7 +51,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Sword
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -479,38 +478,54 @@ export default function App() {
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // "Görev Macerası" karakter kağıdı (altın/xp/envanter/chronicle) dev_paths ile AYNI mimari:
-  // kendi localStorage anahtarı + kendi Supabase tablosu (metadata.json Supabase'e hiç
-  // senkronlanmıyor). Per-quest veri (zorluk/tahmini/başlangıç/sonuç) ise notun kendi
-  // satırında etiket olarak yaşar (bkz. questRpg.ts) — burada yaşayan SADECE toplu karakter
-  // durumu.
-  const [questRpg, setQuestRpg] = useState<QuestRpgState>(() => {
+  // "Dakiklik Pusulası" tek skoru dev_paths ile AYNI mimari: kendi localStorage anahtarı +
+  // kendi Supabase tablosu (quest_rpg tablosu aynen kullanılıyor, sadece içindeki JSON'un
+  // şekli değişti — jsonb kolonu şekilsiz olduğu için migration gerekmiyor). Per-görev veri
+  // (başlangıç/tamamlanma/sonuç) notun kendi satırında etiket olarak yaşar (bkz.
+  // punctuality.ts) — burada yaşayan SADECE tek toplu skor.
+  const [punctuality, setPunctuality] = useState<PunctualityState>(() => {
     try {
-      const stored = localStorage.getItem('quest_rpg_local');
+      const stored = localStorage.getItem('punctuality_local');
       const parsed = stored ? JSON.parse(stored) : null;
-      return parsed && parsed.updatedAt ? parsed : createDefaultQuestRpgState();
+      return parsed && typeof parsed.score === 'number' && parsed.updatedAt ? parsed : createDefaultPunctualityState();
     } catch (e) {
-      return createDefaultQuestRpgState();
+      return createDefaultPunctualityState();
     }
   });
-  const [levelUpCelebration, setLevelUpCelebration] = useState<string | null>(null);
-  const questRpgUploadTimerRef = useRef<any>(null);
+  const [punctualityCelebration, setPunctualityCelebration] = useState<{ text: string; positive: boolean } | null>(null);
+  const punctualityUploadTimerRef = useRef<any>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Boşluğu doldur" önerisi — bir görev erken (5dk+) bitirildiğinde, o günün kalanında
+  // planlanmış ama henüz tamamlanmamış görevler varsa çıkar. Bilerek App.tsx SEVİYESİNDE
+  // tutuluyor (CalendarView'da DEĞİL): görev tamamlama Takvim dışında (Görev Havuzu, not içi
+  // checkbox) da olabiliyor ve App.tsx tüm bu yolların ortak atası — tek bir yerde tutulursa
+  // HANGİ ekrandan tamamlarsan tamamla öneri çıkar. Otomatik UYGULANMAZ, yalnızca kullanıcı
+  // [Evet, kaydır] derse handleCascadeShift çalışır.
+  const [cascadeSuggestion, setCascadeSuggestion] = useState<{
+    completedAt: string;
+    gapMinutes: number;
+    dueDate: string;
+    plannedEndAbsMin: number;
+    affectedCount: number;
+  } | null>(null);
+  const [isCascading, setIsCascading] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('quest_rpg_local', JSON.stringify(questRpg));
-    if (questRpgUploadTimerRef.current) clearTimeout(questRpgUploadTimerRef.current);
-    questRpgUploadTimerRef.current = setTimeout(() => {
-      uploadQuestRpg(questRpg);
+    localStorage.setItem('punctuality_local', JSON.stringify(punctuality));
+    if (punctualityUploadTimerRef.current) clearTimeout(punctualityUploadTimerRef.current);
+    punctualityUploadTimerRef.current = setTimeout(() => {
+      uploadQuestRpg(punctuality);
     }, 800);
     return () => {
-      if (questRpgUploadTimerRef.current) clearTimeout(questRpgUploadTimerRef.current);
+      if (punctualityUploadTimerRef.current) clearTimeout(punctualityUploadTimerRef.current);
     };
-  }, [questRpg]);
+  }, [punctuality]);
 
   const handleQuestRpgChange = (remoteData: Record<string, any>) => {
-    setQuestRpg(prev => {
-      const remote = remoteData as QuestRpgState;
-      if (!remote || !remote.updatedAt) return prev;
+    setPunctuality(prev => {
+      const remote = remoteData as PunctualityState;
+      if (!remote || !remote.updatedAt || typeof remote.score !== 'number') return prev;
       if (new Date(remote.updatedAt).getTime() > new Date(prev.updatedAt).getTime()) {
         return remote;
       }
@@ -519,90 +534,157 @@ export default function App() {
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Bir quest tamamlandığında (applyCompletionToLine sonucu) ya da otomatik başarısız
-  // sayıldığında (applyAutoFailToLine) çağrılır — altın/xp/envanteri günceller, hasar
-  // görecek eşyayı (varsa) GÜNCEL envanterden seçer (satır-mutasyon fonksiyonları envantere
-  // erişemediği için bu seçim kasıtlı olarak burada yapılır), ve seviye atlarsa kutlama
-  // toast'ını tetikler (rankUpCelebration ile aynı desen).
-  const applyQuestRewardToState = (reward: { outcome: 'fast' | 'ontime' | 'failed'; goldDelta: number; itemDrop: InventoryItem | null }) => {
-    setQuestRpg(prev => {
-      const oldLevel = getRpgLevel(prev.xp);
-      let newInventory = prev.inventory;
-      if (reward.outcome === 'failed') {
-        const undamaged = prev.inventory.filter(i => !i.damaged);
-        if (undamaged.length > 0) {
-          const target = undamaged[Math.floor(Math.random() * undamaged.length)];
-          newInventory = prev.inventory.map(i => i.id === target.id ? { ...i, damaged: true } : i);
-        }
-      }
-      if (reward.itemDrop) {
-        newInventory = [...newInventory, reward.itemDrop];
-      }
-      const newXp = prev.xp + XP_PER_QUEST;
-      const newGold = Math.max(0, prev.gold + reward.goldDelta);
-      const newLevel = getRpgLevel(newXp);
-      if (newLevel.index > oldLevel.index) {
-        setLevelUpCelebration(newLevel.name);
-        setTimeout(() => setLevelUpCelebration(null), 3000);
-      }
-      return { ...prev, gold: newGold, xp: newXp, inventory: newInventory, updatedAt: new Date().toISOString() };
-    });
-  };
-
-  const handleChronicleGenerated = (text: string, newWorldStateFlags: Record<string, string>) => {
-    setQuestRpg(prev => {
-      const weekStart = new Date();
-      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-      const weekStartStr = weekStart.toISOString().split('T')[0];
-      return {
-        ...prev,
-        chronicles: [...prev.chronicles, { weekStart: weekStartStr, text }],
-        worldState: { ...prev.worldState, ...newWorldStateFlags },
-        updatedAt: new Date().toISOString()
-      };
-    });
+  // Bir görev tamamlandığı ANDA (erken/geç) çalar — scheduleNotificationsForTasks'taki
+  // "15 dk kaldı" / kademeli hatırlatmalar ÖNCEDEN planlanır, ama "az önce erken bitirdin"
+  // gibi bir başarı bildirimi ancak tamamlama anında, reaktif olarak gönderilebilir; bu
+  // yüzden ayrı, anlık bir LocalNotifications.schedule çağrısı gerekiyor. tasks_v2 kanalı
+  // scheduleNotificationsForTasks tarafından zaten oluşturulmuş olur; oluşturulmamışsa
+  // (uygulama henüz hiç görev taraması yapmadıysa) sessizce oluşturulur.
+  const fireQuestOutcomeNotification = async (outcome: 'fast' | 'late') => {
+    if (!isCapacitor) return;
+    try {
+      const isPermitted = await LocalNotifications.checkPermissions();
+      if (isPermitted.display !== 'granted') return;
+      try {
+        await LocalNotifications.createChannel({
+          id: 'tasks_v2', name: 'Görevler', importance: 5, vibration: true, visibility: 1, sound: 'default'
+        });
+      } catch (_) { /* zaten var olabilir */ }
+      await LocalNotifications.schedule({
+        notifications: [{
+          title: outcome === 'fast' ? '⚡ Planından önce bitirdin!' : '🐌 Bu görevde geç kaldın',
+          body: outcome === 'fast' ? 'Dakiklik pusulan sağa kaydı, harikasın.' : 'Dakiklik pusulan sola kaydı.',
+          id: Math.floor(Date.now() % 1000000) + Math.floor(Math.random() * 1000),
+          schedule: { at: new Date(Date.now() + 500), allowWhileIdle: true },
+          channelId: 'tasks_v2',
+          attachments: [],
+          actionTypeId: '',
+          extra: null
+        }]
+      });
+    } catch (e) {
+      console.error('Failed to fire quest outcome notification:', e);
+    }
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Mağaza: biriken altının harcanacağı iki basit kalem — rastgele eşya çekilişi ve
-  // hasarlı eşya tamiri (bkz. questRpg.ts ITEM_PULL_COST/ITEM_REPAIR_COST).
-  const handleBuyRandomItem = () => {
-    setQuestRpg(prev => {
-      if (prev.gold < ITEM_PULL_COST) return prev;
-      return {
-        ...prev,
-        gold: prev.gold - ITEM_PULL_COST,
-        inventory: [...prev.inventory, rollRandomItem()],
-        updatedAt: new Date().toISOString()
-      };
+  // Bir görev tamamlandığında (applyCompletionToLine sonucu) ya da otomatik geç sayıldığında
+  // (applyAutoFailToLine) çağrılır — dakiklik skorunu hareketli ortalamayla (nudgeScore)
+  // günceller, erken/geç bitirme durumuna göre kısa bir kutlama/uyarı toast'ı VE (mobilde)
+  // gerçek bir telefon bildirimi tetikler. `silent=true`: otomatik-geç-tarama (aşağıdaki
+  // useEffect) uygulama açılışında BİRDEN FAZLA unutulmuş görevi aynı anda damgalayabilir —
+  // her biri için ayrı bir push bildirimi göndermek can sıkıcı bir bildirim yağmuruna yol
+  // açardı, bu yüzden o yol skoru sessizce günceller, bildirim/toast göndermez.
+  const applyQuestRewardToState = (
+    reward: { outcome: 'fast' | 'ontime' | 'late'; outcomeScore: number; completedAt?: string; gapMinutes?: number; dueDate?: string | null; plannedEndAbsMin?: number | null },
+    silent: boolean = false
+  ) => {
+    setPunctuality(prev => {
+      const newScore = nudgeScore(prev.score, reward.outcomeScore);
+      return { score: newScore, updatedAt: new Date().toISOString() };
     });
+    if (silent) return;
+    if (reward.outcome === 'fast') {
+      setPunctualityCelebration({ text: '⚡ Harika, planından önce bitirdin!', positive: true });
+      setTimeout(() => setPunctualityCelebration(null), 3000);
+      fireQuestOutcomeNotification('fast');
+
+      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+      // O günün, açılan boşluktan SONRA başlayan, henüz tamamlanmamış görevlerini fileContents
+      // üzerinden tarıyoruz — CalendarView'ın kendi 'tasks' state'ine bağımlı değiliz, bu yüzden
+      // HANGİ ekrandan tamamlanmış olursa olsun çalışır.
+      if (reward.gapMinutes && reward.gapMinutes >= 5 && reward.dueDate && reward.plannedEndAbsMin != null) {
+        const dueDate = reward.dueDate;
+        const plannedEndAbsMin = reward.plannedEndAbsMin;
+        let affectedCount = 0;
+        Object.values(fileContents).forEach(content => {
+          if (!content) return;
+          content.split('\n').forEach(line => {
+            const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+            if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
+            const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
+            if (!dueMatch || dueMatch[1] !== dueDate) return;
+            const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
+            if (!timeMatch) return;
+            const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
+            if (startAbsMin >= plannedEndAbsMin) affectedCount++;
+          });
+        });
+        if (affectedCount > 0) {
+          setCascadeSuggestion({
+            completedAt: reward.completedAt || new Date().toISOString(),
+            gapMinutes: Math.round(reward.gapMinutes),
+            dueDate,
+            plannedEndAbsMin,
+            affectedCount
+          });
+        }
+      }
+    } else if (reward.outcome === 'late') {
+      setPunctualityCelebration({ text: '🐌 Bu görevde geç kaldın.', positive: false });
+      setTimeout(() => setPunctualityCelebration(null), 3000);
+      fireQuestOutcomeNotification('late');
+    }
   };
 
-  const handleRepairItem = (itemId: string) => {
-    setQuestRpg(prev => {
-      if (prev.gold < ITEM_REPAIR_COST) return prev;
-      const target = prev.inventory.find(i => i.id === itemId);
-      if (!target || !target.damaged) return prev;
-      return {
-        ...prev,
-        gold: prev.gold - ITEM_REPAIR_COST,
-        inventory: prev.inventory.map(i => i.id === itemId ? { ...i, damaged: false } : i),
-        updatedAt: new Date().toISOString()
-      };
-    });
-  };
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // cascadeSuggestion onaylandığında çağrılır: dueDate gününde, plannedEndAbsMin'den SONRA
+  // başlayan, henüz tamamlanmamış tüm görevlerin [time:] etiketini gapMinutes kadar öne
+  // kaydırır. Dosya başına TEK okuma/yazma için önce dosya yoluna göre gruplar (fileContents
+  // taze olmayabileceğinden yazmadan hemen önce her dosyayı ANINDA yeniden okur).
+  const handleCascadeShift = async () => {
+    if (!cascadeSuggestion) return;
+    const { gapMinutes, dueDate, plannedEndAbsMin } = cascadeSuggestion;
+    setIsCascading(true);
+    try {
+      const affectedPaths = new Set<string>();
+      Object.entries(fileContents).forEach(([path, content]) => {
+        if (!content) return;
+        content.split('\n').forEach(line => {
+          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+          if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
+          const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
+          if (!dueMatch || dueMatch[1] !== dueDate) return;
+          const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
+          if (!timeMatch) return;
+          const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
+          if (startAbsMin >= plannedEndAbsMin) affectedPaths.add(path);
+        });
+      });
 
-  const handleSellItem = (itemId: string) => {
-    setQuestRpg(prev => {
-      const target = prev.inventory.find(i => i.id === itemId);
-      if (!target) return prev;
-      return {
-        ...prev,
-        gold: prev.gold + getItemSellPrice(target),
-        inventory: prev.inventory.filter(i => i.id !== itemId),
-        updatedAt: new Date().toISOString()
+      const shiftTimeSlot = (h1: number, m1: number, h2: number, m2: number): string => {
+        const newStart = Math.max(0, h1 * 60 + m1 - gapMinutes);
+        const newEnd = Math.max(newStart + 1, h2 * 60 + m2 - gapMinutes);
+        const fmt = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        return `${fmt(newStart)}-${fmt(newEnd)}`;
       };
-    });
+
+      for (const path of affectedPaths) {
+        const content = await (isBrowser ? Promise.resolve(localStorage.getItem(`mock_note_${path}`) || '') : platform.readNote(path));
+        const lines = content.split('\n');
+        const newLines = lines.map(line => {
+          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+          if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return line;
+          const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
+          if (!dueMatch || dueMatch[1] !== dueDate) return line;
+          const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-(\d{2}):(\d{2})\]/i);
+          if (!timeMatch) return line;
+          const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
+          if (startAbsMin < plannedEndAbsMin) return line;
+          const newSlot = shiftTimeSlot(
+            parseInt(timeMatch[1], 10), parseInt(timeMatch[2], 10),
+            parseInt(timeMatch[3], 10), parseInt(timeMatch[4], 10)
+          );
+          return line.replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/i, `[time:${newSlot}]`);
+        });
+        await handleSaveNote(path, newLines.join('\n'));
+      }
+    } catch (err) {
+      console.error('Error cascading tasks:', err);
+    } finally {
+      setIsCascading(false);
+      setCascadeSuggestion(null);
+    }
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -625,7 +707,7 @@ export default function App() {
         if (!result) return line;
         changed = true;
         anyFailed = true;
-        applyQuestRewardToState(result);
+        applyQuestRewardToState(result, true);
         return result.newLine;
       });
       if (changed) {
@@ -2099,8 +2181,7 @@ export default function App() {
   });
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // "Görev Macerası" (zaman yönetimi RPG'si) karakter widget'ının sol menü altında
-  // görünüp görünmeyeceğini tutar.
+  // "Dakiklik Pusulası" widget'ının sol menü altında görünüp görünmeyeceğini tutar.
   const [isQuestRpgEnabled, setIsQuestRpgEnabled] = useState<boolean>(() => {
     return localStorage.getItem('setting_quest_rpg_enabled') !== 'false';
   });
@@ -2191,7 +2272,7 @@ export default function App() {
     { id: 'forge', label: 'Sentez Tezgahı', icon: FlaskConical },
     { id: 'mentor', label: 'Not Mentorü', icon: Compass },
     { id: 'aichat', label: 'Notlarımla Sohbet', icon: MessageCircle },
-    ...(isQuestRpgEnabled ? [{ id: 'adventure', label: 'Görev Macerası', icon: Sword }] : []),
+    ...(isQuestRpgEnabled ? [{ id: 'adventure', label: 'Dakiklik Pusulası', icon: Gauge }] : []),
     { id: 'analytics', label: 'Verimlilik Analizi', icon: BarChart2 },
     { id: 'browser', label: 'Web Araştırma', icon: Globe },
     { id: 'music', label: 'Müzik Kutusu', icon: Headphones },
@@ -5840,7 +5921,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         </div>
       )}
 
-      {levelUpCelebration && (
+      {punctualityCelebration && (
         <div
           style={{
             position: 'fixed',
@@ -5849,7 +5930,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             transform: 'translateX(-50%)',
             zIndex: 10000,
             background: 'var(--bg-tertiary)',
-            border: '1px solid var(--accent-color)',
+            border: `1px solid ${punctualityCelebration.positive ? '#22c55e' : '#ef4444'}`,
             borderRadius: '10px',
             padding: '14px 22px',
             display: 'flex',
@@ -5859,13 +5940,58 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             animation: 'fadeIn 0.3s ease'
           }}
         >
-          <span style={{ fontSize: '22px' }}>⚔️</span>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>SEVİYE ATLADIN!</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-              Yeni unvanın: {levelUpCelebration}
-            </span>
-          </div>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {punctualityCelebration.text}
+          </span>
+        </div>
+      )}
+
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          "Boşluğu doldur" önerisi — bilerek GLOBAL (App.tsx kökünde) render edilir, hangi
+          ekranda olursan ol görünsün. Otomatik uygulanmaz; [Evet]/[Vazgeç] ikisi de
+          cascadeSuggestion'ı temizler ve Takvim'deki parlak "kazanım" katmanının kaybolmasını
+          tetikler (activeCascadeCompletedAt eşleşmesi artık yok). */}
+      {cascadeSuggestion && (
+        <div
+          className="animate-fade"
+          style={{
+            position: 'fixed',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10001,
+            padding: '10px 16px',
+            borderRadius: '10px',
+            background: 'var(--bg-tertiary)',
+            border: '1px solid rgba(74, 222, 128, 0.5)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            flexWrap: 'wrap',
+            maxWidth: '92vw'
+          }}
+        >
+          <span style={{ fontSize: '16px' }}>⚡</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+            {cascadeSuggestion.gapMinutes} dakikalık boşluk açıldı — sonraki {cascadeSuggestion.affectedCount} görevi öne kaydırayım mı?
+          </span>
+          <button
+            type="button"
+            disabled={isCascading}
+            onClick={handleCascadeShift}
+            style={{ padding: '5px 12px', borderRadius: '6px', border: 'none', background: '#22c55e', color: '#0b1a0f', fontSize: '11px', fontWeight: 700, cursor: isCascading ? 'default' : 'pointer', opacity: isCascading ? 0.7 : 1 }}
+          >
+            {isCascading ? 'Kaydırılıyor…' : 'Evet, kaydır'}
+          </button>
+          <button
+            type="button"
+            disabled={isCascading}
+            onClick={() => setCascadeSuggestion(null)}
+            style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-secondary)', fontSize: '11px', fontWeight: 600, cursor: isCascading ? 'default' : 'pointer' }}
+          >
+            Vazgeç
+          </button>
         </div>
       )}
 
@@ -6135,7 +6261,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           developmentPaths={developmentPaths}
           onOpenPathDetail={(path) => setDevPathDetailTarget(path)}
           isQuestRpgEnabled={isQuestRpgEnabled}
-          questRpg={questRpg}
+          punctuality={punctuality}
           onOpenAdventure={() => setActiveTab('adventure')}
           fileContents={fileContents}
           notes={notes}
@@ -6631,6 +6757,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         onCreateDailyNote={handleCreateDailyNote}
                         onSelectDateNotes={handleSelectDateNotes}
                         onQuestReward={applyQuestRewardToState}
+                        activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
                       />
                     </div>
                   )}
@@ -6684,6 +6811,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onCreateDailyNote={handleCreateDailyNote}
               onSelectDateNotes={handleSelectDateNotes}
               onQuestReward={applyQuestRewardToState}
+              activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
             />
           </div>
 
@@ -6813,13 +6941,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'adventure' && (
             <AdventureView
-              questRpg={questRpg}
-              notes={notes}
+              punctuality={punctuality}
               fileContents={fileContents}
-              onChronicleGenerated={handleChronicleGenerated}
-              onBuyRandomItem={handleBuyRandomItem}
-              onRepairItem={handleRepairItem}
-              onSellItem={handleSellItem}
             />
           )}
 
@@ -8123,8 +8246,8 @@ grant execute on function get_db_size() to anon;`}
                         style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
                       />
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Görev Macerası (RPG)</span>
-                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Görevlerini quest'e çevirir — zamanında/hızlı bitirme altın ve eşya kazandırır, gecikme altın kaybettirir.</span>
+                        <span style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Dakiklik Pusulası</span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Bir göreve başlayıp bitirdiğinde ne kadar dakik olduğunu takip eder — erken bitirirsen ibre sağa, geç kalırsan sola kayar.</span>
                       </div>
                     </label>
 

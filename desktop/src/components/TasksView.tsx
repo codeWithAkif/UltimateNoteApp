@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Sword } from 'lucide-react';
+import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Compass } from 'lucide-react';
 import {
   applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
-  type LineCompletionResult, type QuestDifficulty
-} from '../questRpg';
+  type LineCompletionResult
+} from '../punctuality';
+import Hourglass from './Hourglass';
 
 interface NoteItem {
   name: string;
@@ -55,12 +56,57 @@ export interface WorkspaceTask {
   isSubtask?: boolean;
   parentTaskId?: string | null;
   subtasks?: WorkspaceSubTask[];
-  questDifficulty: QuestDifficulty;
-  questEstimatedMinutes: number | null;
   questStartedAt: string | null;
-  questOutcome: 'fast' | 'ontime' | 'failed' | null;
+  questOutcome: 'fast' | 'ontime' | 'late' | null;
 }
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// task.dueDate/task.timeSlot alanlarından planlanmış bitiş anını hesaplar — CalendarView.tsx'te
+// task.dueDate + task.timeSlot ile AYNI mantık, o dosyadaki getDeadlineFromLine ham satır
+// metnine ihtiyaç duyduğu için burada zaten ayrıştırılmış alanlarla tekrarlanıyor.
+function getTaskDeadline(task: WorkspaceTask): Date | null {
+  if (!task.dueDate) return null;
+  const [y, m, d] = task.dueDate.split('-').map(Number);
+  if (task.timeSlot) {
+    const endPart = task.timeSlot.split('-')[1];
+    if (endPart) {
+      const [eh, em] = endPart.split(':').map(Number);
+      return new Date(y, m - 1, d, eh, em, 0);
+    }
+  }
+  return new Date(y, m - 1, d, 23, 59, 59);
+}
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// CalendarView.tsx'teki TaskCountdownBadge ile AYNI canlı geri sayım, görev detay
+// çekmecesinde biraz daha büyük/okunur boyutta.
+const TaskCountdownInline: React.FC<{ startedAt: string; deadline: Date }> = ({ startedAt, deadline }) => {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const startMs = new Date(startedAt).getTime();
+  const deadlineMs = deadline.getTime();
+  const totalMs = Math.max(1, deadlineMs - startMs);
+  const remainingMs = deadlineMs - now;
+  const remainingFraction = Math.max(0, Math.min(1, remainingMs / totalMs));
+  const isOverdue = remainingMs <= 0;
+
+  const abs = Math.abs(remainingMs);
+  const totalMin = Math.floor(abs / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const txt = h > 0 ? `${h}s ${m}dk` : `${m}dk`;
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: isOverdue ? '#ef4444' : 'var(--text-muted)' }}>
+      <Hourglass remainingFraction={isOverdue ? 0 : remainingFraction} active={!isOverdue} size={16} />
+      {isOverdue ? `${txt} geçti — geciktin` : `${txt} kaldı`}
+    </span>
+  );
+};
 
 // Utility: generate detailed score breakdown tooltip for ⭐ Puan badges
 function getScoreBreakdown(task: WorkspaceTask): string {
@@ -113,6 +159,11 @@ export default function TasksView({
   const [loading, setLoading] = useState(true);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Başla" planlanan saatten 5dk+ sonra basıldığında kısa süreliğine gösterilen, cezalandırıcı
+  // olmayan bilgi notu (bkz. handleStartQuest) — CalendarView.tsx'teki AYNI kavramın bu görünüme
+  // özel kopyası, skoru etkilemez.
+  const [lateStartNotice, setLateStartNotice] = useState<{ taskContent: string; lateByMin: number } | null>(null);
   const [newSubtaskText, setNewSubtaskText] = useState('');
 
   // Filters State
@@ -335,8 +386,6 @@ export default function TasksView({
                 isSubtask,
                 parentTaskId,
                 subtasks: [],
-                questDifficulty: questTags.difficulty,
-                questEstimatedMinutes: questTags.estimatedMinutes,
                 questStartedAt: questTags.startedAt,
                 questOutcome: questTags.outcome
               });
@@ -471,34 +520,9 @@ export default function TasksView({
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // "Görev Macerası" (quest) özelliği: zorluk/tahmini süre etiketleri de diğer meta veriler
-  // (öncelik/tarih/tekrar) ile AYNI satır-içi etiket deseniyle saklanır. Bu iki fonksiyon
-  // sadece o etiketleri günceller, diğer etiketlere dokunmaz.
-  const handleUpdateQuestMetadata = async (task: WorkspaceTask, difficulty: QuestDifficulty, estimatedMinutes: number | null) => {
-    try {
-      const content = await readNoteContent(task.filePath);
-      const lines = content.split('\n');
-      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
-
-      const rawLine = lines[task.lineIdx];
-      const withoutQuestFields = rawLine
-        .replace(/\[zorluk:(?:kolay|orta|zor)\]/gi, '')
-        .replace(/\[tahmini:\d+\]/gi, '')
-        .replace(/\s+/g, ' ')
-        .trimEnd();
-
-      const zorlukStr = ` [zorluk:${difficulty}]`;
-      const tahminiStr = (estimatedMinutes && estimatedMinutes > 0) ? ` [tahmini:${estimatedMinutes}]` : '';
-      lines[task.lineIdx] = `${withoutQuestFields}${zorlukStr}${tahminiStr}`;
-
-      const newContent = lines.join('\n');
-      await onSaveNote(task.filePath, newContent);
-      setRefreshTrigger(prev => prev + 1);
-    } catch (err) {
-      console.error('Error updating quest metadata:', err);
-    }
-  };
-
+  // Geç başlama bilgilendirmesi — CalendarView.tsx'teki handleStartTaskFromCalendar ile AYNI
+  // mantık, skoru etkilemiyor (sonuç zaten dakiklik skorunu belirliyor), sadece bitiş saatinin
+  // sabit kaldığını (penceresinin kısaldığını) hatırlatan cezalandırıcı olmayan bir bilgi notu.
   const handleStartQuest = async (task: WorkspaceTask) => {
     try {
       const content = await readNoteContent(task.filePath);
@@ -508,6 +532,20 @@ export default function TasksView({
       const newLine = applyQuestStartToLine(lines[task.lineIdx]);
       if (!newLine) return;
       lines[task.lineIdx] = newLine;
+
+      if (task.timeSlot) {
+        const startMatch = task.timeSlot.match(/^(\d{2}):(\d{2})/);
+        if (startMatch) {
+          const plannedStartMin = parseInt(startMatch[1], 10) * 60 + parseInt(startMatch[2], 10);
+          const now = new Date();
+          const nowMin = now.getHours() * 60 + now.getMinutes();
+          const lateByMin = nowMin - plannedStartMin;
+          if (lateByMin >= 5) {
+            setLateStartNotice({ taskContent: task.content, lateByMin });
+            setTimeout(() => setLateStartNotice(null), 4000);
+          }
+        }
+      }
 
       const newContent = lines.join('\n');
       await onSaveNote(task.filePath, newContent);
@@ -813,60 +851,24 @@ export default function TasksView({
           </div>
         </div>
 
-        {/* GÖREV MACERASI (QUEST) BÖLÜMÜ */}
+        {/* DAKİKLİK PUSULASI BÖLÜMÜ */}
         <div className="drawer-row">
           <div className="row-label">
-            <Sword size={13} />
-            <span>ZORLUK</span>
-          </div>
-          <div className="row-control-pills">
-            {(['kolay', 'orta', 'zor'] as QuestDifficulty[]).map(d => (
-              <button
-                key={d}
-                type="button"
-                className={`pill-btn ${task.questDifficulty === d ? 'active' : ''}`}
-                onClick={() => handleUpdateQuestMetadata(task, d, task.questEstimatedMinutes)}
-              >
-                {d === 'kolay' ? 'Kolay' : d === 'orta' ? 'Orta' : 'Zor'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="drawer-row">
-          <div className="row-label">
-            <Clock size={13} />
-            <span>TAHMİNİ SÜRE</span>
-          </div>
-          <div className="row-control" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <input
-              type="number"
-              min={1}
-              value={task.questEstimatedMinutes ?? ''}
-              onChange={(e) => {
-                const val = e.target.value ? parseInt(e.target.value, 10) : null;
-                handleUpdateQuestMetadata(task, task.questDifficulty, val);
-              }}
-              placeholder="dakika"
-              className="drawer-date-input"
-              style={{ width: '90px' }}
-            />
-            <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>dakika</span>
-          </div>
-        </div>
-
-        <div className="drawer-row">
-          <div className="row-label">
-            <Play size={13} />
-            <span>QUEST</span>
+            <Compass size={13} />
+            <span>DAKİKLİK</span>
           </div>
           <div className="row-control">
             {task.questOutcome ? (
-              <span style={{ fontSize: '11px', fontWeight: 'bold', color: task.questOutcome === 'fast' ? '#fbbf24' : task.questOutcome === 'ontime' ? '#22c55e' : '#ef4444' }}>
-                {task.questOutcome === 'fast' ? '🥇 Hızlı tamamlandı' : task.questOutcome === 'ontime' ? '🥈 Zamanında tamamlandı' : '💀 Başarısız'}
+              <span style={{ fontSize: '11px', fontWeight: 'bold', color: task.questOutcome === 'fast' ? '#22c55e' : task.questOutcome === 'ontime' ? '#94a3b8' : '#ef4444' }}>
+                {task.questOutcome === 'fast' ? '⚡ Erken bitirdi' : task.questOutcome === 'ontime' ? '✅ Zamanında bitirdi' : '🐌 Geç kaldı'}
               </span>
             ) : task.questStartedAt ? (
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>▶️ Başladı, devam ediyor...</span>
+              (() => {
+                const deadline = task.dueDate ? getTaskDeadline(task) : null;
+                return deadline
+                  ? <TaskCountdownInline startedAt={task.questStartedAt} deadline={deadline} />
+                  : <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>▶️ Başladı, devam ediyor...</span>;
+              })()
             ) : (
               <button
                 type="button"
@@ -1037,6 +1039,29 @@ export default function TasksView({
 
   return (
     <div className="tasks-workspace-layout animate-fade">
+      {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          Geç başlama bilgi notu — cezalandırıcı değil, sadece bitiş saatinin sabit kaldığını
+          hatırlatır. CalendarView.tsx'teki aynı kavramın Görev Havuzu'na özel kopyası. */}
+      {lateStartNotice && (
+        <div
+          className="animate-fade"
+          style={{
+            margin: '10px 12px 0 12px',
+            padding: '9px 14px',
+            borderRadius: '8px',
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <span style={{ fontSize: '15px' }}>⏰</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+            "{lateStartNotice.taskContent}" planlanandan <strong>{lateStartNotice.lateByMin} dk</strong> geç başladın — bitiş saatin aynı kalıyor, penceren kısaldı.
+          </span>
+        </div>
+      )}
       {isFiltersOpen && (
         <div 
           className="drawer-overlay visible-mobile" 

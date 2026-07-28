@@ -15,7 +15,7 @@ import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../
 import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
 import { Preferences } from '@capacitor/preferences';
 import { App as CapacitorApp } from '@capacitor/app';
-import { applyCompletionToLine, applyQuestStartToLine, type LineCompletionResult } from '../questRpg';
+import { applyCompletionToLine, applyQuestStartToLine, type LineCompletionResult } from '../punctuality';
 import MindmapView from './MindmapView';
 import hljs from 'highlight.js/lib/core';
 import 'highlight.js/styles/atom-one-dark.css';

@@ -21,8 +21,8 @@ import { isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { registerPlugin } from '@capacitor/core';
 import {
   applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
-  type LineCompletionResult, type QuestDifficulty
-} from '../questRpg';
+  type LineCompletionResult
+} from '../punctuality';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -40,6 +40,111 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import Hourglass from './Hourglass';
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Bir görevin planlanan bitişine kalan süre için canlı geri sayım. Her saniye kendini
+// günceller. Başlatılmış olması ŞART DEĞİL — sadece bir zaman dilimi olan (henüz
+// başlanmamış da olsa) her görevde "bitmesine ne kadar kaldığını" gösterir. Kalan süre
+// 10 dakikanın altına düşünce kırmızıya döner ve hafifçe nabız atar (uyarı); süre dolunca
+// kum saati durur, "geçti" yazısı sabit kırmızı kalır.
+//
+// BUG DÜZELTMESİ (tutarsız görsel): kum saatinin doluluk oranı önceden görevin TOPLAM
+// planlanan süresine (başlangıçtan bitişe) göre hesaplanıyordu — uzun bir görevde (ör. 6
+// saatlik pencere) 1 saat kalsa bile bu oransal olarak yalnızca %17 ediyor, kum saati neredeyse
+// bitmiş görünüyordu; halbuki kırmızı uyarı zaten MUTLAK dakikaya (son 10dk) bakıyor, ikisi
+// tutarsızdı. Artık kum saati de aynı mantıkla, görevin toplam süresinden BAĞIMSIZ, sabit bir
+// "son 60 dakikalık pencere" üzerinden doluyor: 60dk+ kalınca tam dolu, 60dk'nın altına
+// düşünce görsel olarak akmaya başlıyor, kırmızı eşiğe (10dk) yaklaştıkça iyice azalıyor.
+const TASK_COUNTDOWN_URGENT_MS = 10 * 60 * 1000;
+const TASK_COUNTDOWN_VISUAL_WINDOW_MS = 60 * 60 * 1000;
+
+const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = ({ deadline, size = 'compact' }) => {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const deadlineMs = deadline.getTime();
+  const remainingMs = deadlineMs - now;
+  const isOverdue = remainingMs <= 0;
+  const isUrgent = !isOverdue && remainingMs <= TASK_COUNTDOWN_URGENT_MS;
+
+  const remainingFraction = Math.max(0, Math.min(1, remainingMs / TASK_COUNTDOWN_VISUAL_WINDOW_MS));
+
+  const formatRemaining = () => {
+    const abs = Math.abs(remainingMs);
+    const totalMin = Math.floor(abs / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    const txt = h > 0 ? `${h}s ${m}dk` : `${m}dk`;
+    return isOverdue ? `${txt} geçti` : `${txt} kaldı`;
+  };
+
+  const isDanger = isUrgent || isOverdue;
+  const color = isDanger ? '#fecaca' : '#e2e8f0';
+  const title = isOverdue ? 'Süre doldu' : isUrgent ? 'Son 10 dakika!' : 'Kalan süre';
+  const urgentClass = isDanger ? 'countdown-urgent-pulse' : '';
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ (silik görünüm): önceki soluk/yarı saydam stil, kartın kendi renkli
+  // arka planının üzerinde ve "şu an" çizgisinin geçtiği yerde neredeyse okunmaz oluyordu.
+  // Artık KOYU, OPAK bir rozet — hangi öncelik rengi kart altında olursa olsun, çizgi
+  // üzerinden geçse bile kendi zemini sayesinde okunur kalır.
+  if (size === 'compact') {
+    return (
+      <span
+        title={title}
+        className={urgentClass}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '3px',
+          fontSize: '9px',
+          fontWeight: 700,
+          color,
+          background: isDanger ? '#7f1d1d' : 'rgba(15,23,42,0.85)',
+          border: `1px solid ${isDanger ? '#ef4444' : 'rgba(226,232,240,0.35)'}`,
+          borderRadius: '4px',
+          padding: '1px 4px',
+          flexShrink: 0,
+          position: 'relative',
+          zIndex: 2
+        }}
+      >
+        <Hourglass remainingFraction={isOverdue ? 0 : remainingFraction} active={!isOverdue} size={11} />
+        {formatRemaining()}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      title={title}
+      className={urgentClass}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px',
+        fontSize: '11.5px',
+        fontWeight: 800,
+        color,
+        padding: '3px 8px',
+        borderRadius: '6px',
+        background: isDanger ? '#7f1d1d' : 'rgba(15,23,42,0.85)',
+        border: `1.5px solid ${isDanger ? '#ef4444' : 'rgba(226,232,240,0.35)'}`,
+        boxShadow: isDanger ? '0 0 8px rgba(239,68,68,0.5)' : '0 1px 3px rgba(0,0,0,0.4)',
+        alignSelf: 'flex-start',
+        position: 'relative',
+        zIndex: 2
+      }}
+    >
+      <Hourglass remainingFraction={isOverdue ? 0 : remainingFraction} active={!isOverdue} size={14} />
+      {formatRemaining()}
+    </span>
+  );
+};
 
 interface NoteItem {
   name: string;
@@ -59,6 +164,12 @@ interface CalendarViewProps {
   onSelectDateNotes: (dateStr: string) => void;
   embedded?: boolean; // Sağ hızlı erişim panelinde küçük "günlük takvim" olarak gömülüyken sadeleştirilmiş görünüm
   onQuestReward?: (reward: LineCompletionResult) => void;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // App.tsx'teki aktif "boşluğu doldur" önerisinin hedef görevinin [tamamlanma:] damgası
+  // (varsa). Parlak "⚡ X dk kazandın" katmanı SADECE bu göreve ait blokta, öneri hâlâ
+  // yanıtlanmamışken gösterilir — kullanıcı Evet/Vazgeç dediği an bu null'a döner ve blok
+  // normal (düz gölge şeridi) görünümüne iner.
+  activeCascadeCompletedAt?: string | null;
 }
 
 export interface WorkspaceSubTask {
@@ -90,10 +201,9 @@ export interface WorkspaceTask {
   subtasks?: WorkspaceSubTask[];
   isExternal?: boolean;
   externalSource?: 'google' | 'outlook';
-  questDifficulty: QuestDifficulty;
-  questEstimatedMinutes: number | null;
   questStartedAt: string | null;
-  questOutcome: 'fast' | 'ontime' | 'failed' | null;
+  questCompletedAt: string | null;
+  questOutcome: 'fast' | 'ontime' | 'late' | null;
 }
 
 interface ICSEvent {
@@ -392,7 +502,8 @@ export default function CalendarView({
   onCreateDailyNote,
   onSelectDateNotes,
   embedded = false,
-  onQuestReward
+  onQuestReward,
+  activeCascadeCompletedAt = null
 }: CalendarViewProps) {
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
     if (embedded) return 'day';
@@ -404,6 +515,10 @@ export default function CalendarView({
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // "Başla" planlanan saatten 5dk+ sonra basıldığında kısa süreliğine gösterilen, cezalandırıcı
+  // olmayan bilgi notu (bkz. handleStartTaskFromCalendar) — skoru etkilemez.
+  const [lateStartNotice, setLateStartNotice] = useState<{ taskContent: string; lateByMin: number } | null>(null);
 
   // External Calendar Sync States
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
@@ -521,9 +636,8 @@ export default function CalendarView({
       tags: [] as string[],
       isExternal: true,
       externalSource: evt.source,
-      questDifficulty: 'orta' as QuestDifficulty,
-      questEstimatedMinutes: null,
       questStartedAt: null,
+      questCompletedAt: null,
       questOutcome: null
     }))
   ];
@@ -887,9 +1001,8 @@ export default function CalendarView({
               isSubtask,
               parentTaskId,
               subtasks: [],
-              questDifficulty: questTags.difficulty,
-              questEstimatedMinutes: questTags.estimatedMinutes,
               questStartedAt: questTags.startedAt,
+              questCompletedAt: questTags.completedAt,
               questOutcome: questTags.outcome
             });
           } else {
@@ -974,9 +1087,8 @@ export default function CalendarView({
               tags: [],
               isSubtask: true,
               parentTaskId: p.id,
-              questDifficulty: 'orta' as QuestDifficulty,
-              questEstimatedMinutes: null,
               questStartedAt: null,
+      questCompletedAt: null,
               questOutcome: null
             };
             break;
@@ -1052,9 +1164,8 @@ export default function CalendarView({
               tags: [],
               isSubtask: true,
               parentTaskId: p.id,
-              questDifficulty: 'orta' as QuestDifficulty,
-              questEstimatedMinutes: null,
               questStartedAt: null,
+      questCompletedAt: null,
               questOutcome: null
             };
             break;
@@ -1200,6 +1311,11 @@ export default function CalendarView({
         const questReward = applyCompletionToLine(lines[task.lineIdx]);
         if (questReward) {
           lines[task.lineIdx] = questReward.newLine;
+          // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+          // "Boşluğu doldur" önerisinin tespiti/uygulaması artık BURADA değil, App.tsx'te
+          // (applyQuestRewardToState) — çünkü görev tamamlama Takvim dışında da (Görev Havuzu,
+          // not içi checkbox) olabiliyordu ve öneri sadece Takvim'den tamamlananlarda çıkıyordu.
+          // App.tsx tüm tamamlama yollarının ortak atası, oradan HER yerden tetiklenir.
           onQuestReward?.(questReward);
         }
       }
@@ -1209,6 +1325,43 @@ export default function CalendarView({
       setRefreshTrigger(prev => prev + 1);
     } catch (err) {
       console.error('Error toggling task:', err);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // TasksView.tsx'teki handleStartQuest ile AYNI mantık — Takvim kartından tek tıkla
+  // başlatabilmek için (önceden yalnızca Görev Havuzu'nun detay çekmecesinde vardı, kullanıcı
+  // her seferinde oraya gitmek zorunda kalıyordu).
+  //
+  // Geç başlama bilgilendirmesi: planlanan başlangıç saati çoktan geçmişse (kullanıcı geç
+  // "Başla" demişse) skoru ETKİLEMİYORUZ — sonuç (ne zaman bitirdiği) zaten dakiklik skorunu
+  // belirliyor, geç başlayıp hızlı bitirmek gerçek bir başarı sayılmalı. Ama kullanıcı bunu
+  // FARK ETSİN diye kısa, cezalandırıcı olmayan bir bilgi notu gösteriyoruz — bitiş saatinin
+  // SABİT kaldığını (kısalan pencereyi) hatırlatır.
+  const handleStartTaskFromCalendar = async (task: WorkspaceTask) => {
+    try {
+      const content = await readNoteContent(task.filePath);
+      const lines = content.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+      const newLine = applyQuestStartToLine(lines[task.lineIdx]);
+      if (!newLine) return;
+      lines[task.lineIdx] = newLine;
+
+      const timeData = task.timeSlot ? parseTime(task.timeSlot) : null;
+      if (timeData) {
+        const plannedStartMin = timeData.startHour * 60 + timeData.startMin;
+        const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+        const lateByMin = nowMin - plannedStartMin;
+        if (lateByMin >= 5) {
+          setLateStartNotice({ taskContent: task.content, lateByMin });
+          setTimeout(() => setLateStartNotice(null), 4000);
+        }
+      }
+
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error starting task from calendar:', err);
     }
   };
 
@@ -1567,7 +1720,31 @@ export default function CalendarView({
       )}
       {/* 1. Left Section: Main Calendar Workspace */}
       <div className="calendar-main-panel">
-        
+
+        {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            Geç başlama bilgi notu — cezalandırıcı değil, sadece bitiş saatinin sabit kaldığını
+            (yani penceresinin kısaldığını) hatırlatır. 4 saniye sonra kendiliğinden kaybolur. */}
+        {lateStartNotice && (
+          <div
+            className="animate-fade"
+            style={{
+              margin: '10px 12px 0 12px',
+              padding: '9px 14px',
+              borderRadius: '8px',
+              background: 'rgba(245, 158, 11, 0.1)',
+              border: '1px solid rgba(245, 158, 11, 0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <span style={{ fontSize: '15px' }}>⏰</span>
+            <span style={{ fontSize: '12px', color: 'var(--text-primary)' }}>
+              "{lateStartNotice.taskContent}" planlanandan <strong>{lateStartNotice.lateByMin} dk</strong> geç başladın — bitiş saatin aynı kalıyor, penceren kısaldı.
+            </span>
+          </div>
+        )}
+
         {/* Header Bar */}
         <div className="calendar-workspace-header">
           <div className="calendar-header-left">
@@ -1784,18 +1961,62 @@ export default function CalendarView({
                                   <Circle size={10} style={{ color: 'var(--text-muted)' }} />
                                 )}
                               </div>
-                              {!task.isExternal && (task.questOutcome || task.questStartedAt) && (
+                              {!task.isExternal && task.questOutcome && (
                                 <span
                                   title={
-                                    task.questOutcome === 'fast' ? 'Quest: Hızlı tamamlandı' :
-                                    task.questOutcome === 'ontime' ? 'Quest: Zamanında tamamlandı' :
-                                    task.questOutcome === 'failed' ? 'Quest: Başarısız' :
-                                    'Quest: Devam ediyor'
+                                    task.questOutcome === 'fast' ? 'Erken bitirdi' :
+                                    task.questOutcome === 'ontime' ? 'Zamanında bitirdi' :
+                                    'Geç kaldı'
                                   }
                                   style={{ fontSize: '9px', flexShrink: 0, marginRight: '2px' }}
                                 >
-                                  {task.questOutcome === 'fast' ? '🥇' : task.questOutcome === 'ontime' ? '🥈' : task.questOutcome === 'failed' ? '💀' : '▶️'}
+                                  {task.questOutcome === 'fast' ? '⚡' : task.questOutcome === 'ontime' ? '✅' : '🐌'}
                                 </span>
+                              )}
+                              {!task.isExternal && !task.questOutcome && task.questStartedAt && !task.isChecked && (() => {
+                                const deadline = task.dueDate
+                                  ? (() => {
+                                      const [y, m, d] = task.dueDate.split('-').map(Number);
+                                      if (task.timeSlot) {
+                                        const endPart = task.timeSlot.split('-')[1];
+                                        if (endPart) {
+                                          const [eh, em] = endPart.split(':').map(Number);
+                                          return new Date(y, m - 1, d, eh, em, 0);
+                                        }
+                                      }
+                                      return new Date(y, m - 1, d, 23, 59, 59);
+                                    })()
+                                  : null;
+                                return deadline
+                                  ? <TaskCountdown deadline={deadline} size="compact" />
+                                  : <span title="Devam ediyor" style={{ fontSize: '9px', flexShrink: 0, marginRight: '2px' }}>▶️</span>;
+                              })()}
+                              {!task.isExternal && !task.questOutcome && !task.questStartedAt && !task.isChecked && (
+                                // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                // Tek tıkla başlatma — önceden yalnızca Görev Havuzu'nun detay
+                                // çekmecesinden mümkündü, kullanıcı her seferinde oraya gitmek
+                                // zorunda kalıyordu.
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleStartTaskFromCalendar(task);
+                                  }}
+                                  title="Göreve başla"
+                                  style={{
+                                    fontSize: '9px',
+                                    flexShrink: 0,
+                                    marginRight: '2px',
+                                    background: 'rgba(99,102,241,0.15)',
+                                    border: '1px solid rgba(99,102,241,0.4)',
+                                    borderRadius: '4px',
+                                    padding: '1px 4px',
+                                    cursor: 'pointer',
+                                    lineHeight: 1
+                                  }}
+                                >
+                                  ▶️
+                                </button>
                               )}
                               <span
                                 className="mini-task-text"
@@ -2082,6 +2303,69 @@ export default function CalendarView({
                       // Scanned events scheduled in this day column
                       const dayScheduledEvents = allMergedEvents.filter(t => t.dueDate === dayStr && t.timeSlot);
 
+                      // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                      // BUG DÜZELTMESİ: zaman olarak çakışan görevler önceden hepsi aynı tam-genişlik
+                      // (left:4px, right:4px) bloğunda üst üste render ediliyordu — hangi görevin
+                      // hangisi olduğu anlaşılmıyordu. Google Calendar tarzı standart bir "çakışma
+                      // kümesi + açgözlü sütun ataması" algoritmasıyla, aynı anda çakışan görevler
+                      // artık yan yana, eşit genişlikte sütunlara bölünüyor. Çakışmayan görevler
+                      // (kümede tek başınalarsa) eskisi gibi tam genişlik kaplamaya devam eder.
+                      const overlapLayout = (() => {
+                        const layout = new Map<string, { col: number; cols: number }>();
+                        const parsed = dayScheduledEvents
+                          .map(t => {
+                            const td = parseTime(t.timeSlot);
+                            if (!td) return null;
+                            return { id: t.id, start: td.startHour * 60 + td.startMin, end: td.endHour * 60 + td.endMin };
+                          })
+                          .filter((x): x is { id: string; start: number; end: number } => !!x)
+                          .sort((a, b) => a.start - b.start);
+
+                        // 1) Zincirleme çakışan olayları kümelere ayır (sweep).
+                        let cluster: typeof parsed = [];
+                        let clusterMaxEnd = -Infinity;
+                        const clusters: (typeof parsed)[] = [];
+                        parsed.forEach(ev => {
+                          if (cluster.length === 0 || ev.start < clusterMaxEnd) {
+                            cluster.push(ev);
+                            clusterMaxEnd = Math.max(clusterMaxEnd, ev.end);
+                          } else {
+                            clusters.push(cluster);
+                            cluster = [ev];
+                            clusterMaxEnd = ev.end;
+                          }
+                        });
+                        if (cluster.length > 0) clusters.push(cluster);
+
+                        // 2) Her kümede açgözlü sütun ataması: bir sütundaki son olay bitmişse
+                        // (yeni olay başlamadan önce) o sütun yeniden kullanılır, yoksa yeni sütun açılır.
+                        clusters.forEach(clusterEvents => {
+                          const columns: (typeof parsed)[] = [];
+                          clusterEvents.forEach(ev => {
+                            let placed = false;
+                            for (const col of columns) {
+                              if (col[col.length - 1].end <= ev.start) {
+                                col.push(ev);
+                                layout.set(ev.id, { col: columns.indexOf(col), cols: 0 });
+                                placed = true;
+                                break;
+                              }
+                            }
+                            if (!placed) {
+                              layout.set(ev.id, { col: columns.length, cols: 0 });
+                              columns.push([ev]);
+                            }
+                          });
+                          const totalCols = columns.length;
+                          clusterEvents.forEach(ev => {
+                            const entry = layout.get(ev.id);
+                            if (entry) entry.cols = totalCols;
+                          });
+                        });
+
+                        return layout;
+                      })();
+
                       return (
                         <div
                           key={dayStr}
@@ -2348,9 +2632,152 @@ export default function CalendarView({
                               const parentTask = task.isSubtask && task.parentTaskId ? allMergedEvents.find(t => t.id === task.parentTaskId) : null;
                               const isSmallCard = height < 48;
 
+                              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                              // Yukarıda hesaplanan overlapLayout'tan bu görevin sütun konumunu al —
+                              // çakışmıyorsa (cols===1) eskisi gibi tam genişlik, çakışıyorsa eşit
+                              // genişlikte yan yana sütunlar. %4px iç boşluk küçük sütunlarda orantısız
+                              // büyüyeceğinden, sütun varken kenar boşluğu 2px'e düşürülür.
+                              const colInfo = overlapLayout.get(task.id) || { col: 0, cols: 1 };
+                              const colGap = colInfo.cols > 1 ? 2 : 4;
+                              const colWidthPercent = 100 / colInfo.cols;
+                              const colLeftPercent = colInfo.col * colWidthPercent;
+
+                              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                              // Görevin bitmesine ne kadar kaldığını gösteren canlı geri sayım
+                              // (TaskCountdown) için planlanan bitiş anı — Date nesnesi olarak,
+                              // dayStr + timeData'dan (zaten yukarıda ayrıştırıldı).
+                              const taskDeadlineDate = new Date(dayStr + 'T00:00:00');
+                              taskDeadlineDate.setHours(timeData.endHour, timeData.endMin, 0, 0);
+
+                              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                              // Geç başlamayı caydırma: yalnızca bilgilendirici toast yeterli değil —
+                              // kullanıcı "planlı yaşam mantığının önüne geçiyor" dedi. Planlanan
+                              // başlangıç saati geçmiş ama görev HENÜZ başlatılmamışsa (▶️'ye
+                              // basılmamışsa), kart kendiliğinden amber/turuncu bir uyarı çerçevesine
+                              // bürünür — kullanıcı "Başla"ya hiç dokunmadan bile geciktiğini görür,
+                              // bildirim açmasına gerek kalmaz.
+                              const taskPlannedStartMs = new Date(dayStr + 'T00:00:00').setHours(timeData.startHour, timeData.startMin, 0, 0);
+                              const isOverdueToStart = !task.isExternal && !task.isChecked && !task.questStartedAt &&
+                                (now.getTime() > taskPlannedStartMs);
+
+                              // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                              // "İz düşüm": göreve gerçekten ne zaman başlandığını/bitirildiğini
+                              // (ya da hâlâ devam ediyorsa şimdiye kadar geçeni) planlanan bloğun
+                              // ÜZERİNE yarı saydam bir gölge olarak çizer. Aynı 1px=1dk koordinat
+                              // sistemini (top/height, gece yarısından itibaren dakika) kullanır ki
+                              // iki blok piksel piksel karşılaştırılabilir olsun. Hiç başlanmamış
+                              // görevlerde (questStartedAt yok) karşılaştıracak bir şey olmadığından
+                              // gölge hiç render edilmez.
+                              const actualShadow = (() => {
+                                if (task.isExternal || !task.questStartedAt) return null;
+                                const actualStartMs = new Date(task.questStartedAt).getTime();
+                                if (isNaN(actualStartMs)) return null;
+                                const dayStartMs = new Date(dayStr + 'T00:00:00').getTime();
+                                const actualStartMin = Math.max(0, (actualStartMs - dayStartMs) / 60000);
+
+                                const actualEndMs = task.questCompletedAt
+                                  ? new Date(task.questCompletedAt).getTime()
+                                  : Date.now();
+                                const actualEndMin = Math.max(actualStartMin + 1, (actualEndMs - dayStartMs) / 60000);
+
+                                const plannedEndMin = startMinutes + (endMinutes - startMinutes);
+                                const isOver = actualEndMin > plannedEndMin;
+                                // Erken bitirme (kazanılan süre) yalnızca GERÇEKTEN tamamlanmış,
+                                // planı belirgin biçimde (5dk+) erken bitiren görevlerde anlamlı —
+                                // devam eden bir görevde "kazanç" henüz kesinleşmemiştir.
+                                const savedMinutes = (task.questCompletedAt && !isOver)
+                                  ? plannedEndMin - actualEndMin
+                                  : 0;
+
+                                return {
+                                  top: actualStartMin,
+                                  height: actualEndMin - actualStartMin,
+                                  isOver,
+                                  isOngoing: !task.questCompletedAt && !task.isChecked,
+                                  savedMinutes,
+                                  savedTop: actualEndMin,
+                                  savedHeight: plannedEndMin - actualEndMin
+                                };
+                              })();
+
                               return (
+                                <React.Fragment key={task.id}>
+                                {actualShadow && (
+                                  <div
+                                    className={`actual-time-shadow ${actualShadow.isOver ? 'overrun' : 'within-plan'} ${actualShadow.isOngoing ? 'ongoing' : ''}`}
+                                    style={{
+                                      position: 'absolute',
+                                      top: `${actualShadow.top}px`,
+                                      height: `${actualShadow.height}px`,
+                                      left: `calc(${colLeftPercent}% + ${colGap - 1}px)`,
+                                      width: '5px',
+                                      zIndex: 9,
+                                      borderRadius: '3px',
+                                      pointerEvents: 'none',
+                                      background: actualShadow.isOver
+                                        ? 'repeating-linear-gradient(135deg, rgba(239,68,68,0.9), rgba(239,68,68,0.9) 3px, rgba(239,68,68,0.5) 3px, rgba(239,68,68,0.5) 6px)'
+                                        : (actualShadow.isOngoing ? 'rgba(99,102,241,0.85)' : 'rgba(34,197,94,0.8)'),
+                                      boxShadow: actualShadow.isOver
+                                        ? '0 0 6px rgba(239,68,68,0.6)'
+                                        : (actualShadow.isOngoing ? '0 0 6px rgba(99,102,241,0.5)' : '0 0 4px rgba(34,197,94,0.4)')
+                                    }}
+                                    title={
+                                      actualShadow.isOver
+                                        ? 'Planlanan süreyi aştın'
+                                        : actualShadow.isOngoing
+                                          ? 'Devam ediyor'
+                                          : 'Plan içinde tamamlandı'
+                                    }
+                                  />
+                                )}
+                                {actualShadow && actualShadow.savedMinutes >= 5 && task.questCompletedAt && task.questCompletedAt === activeCascadeCompletedAt && (
+                                  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                  // YALNIZCA App.tsx'teki "boşluğu doldur" önerisi HÂLÂ bu göreve
+                                  // aitken gösterilir (activeCascadeCompletedAt eşleşmesi). Kullanıcı
+                                  // öneriyi yanıtlar yanıtlamaz (Evet ya da Vazgeç) App.tsx bu değeri
+                                  // null'a çeker, parlak katman kaybolur, blok normal (düz gölge
+                                  // şeridi) görünümüne iner — kullanıcının açıkça istediği davranış.
+                                  // Erken bitirme, ince gölge şeridiyle fark edilmiyordu — kullanıcı
+                                  // Takvim'de bunu net görmek istedi. Kazanılan (kullanılmayan)
+                                  // planlanan süreyi, bloğun kalan kısmını parlak/yeşil bir "kazanım"
+                                  // dolgusuyla kaplayıp üzerine "⚡ X dk kazandın" yazarak vurguluyoruz
+                                  // — sönük ince şerit yerine göze çarpan, olumlayıcı bir işaret.
+                                  <div
+                                    className="saved-time-highlight"
+                                    style={{
+                                      position: 'absolute',
+                                      top: `${actualShadow.savedTop}px`,
+                                      height: `${actualShadow.savedHeight}px`,
+                                      left: `calc(${colLeftPercent}% + ${colGap}px)`,
+                                      width: `calc(${colWidthPercent}% - ${colGap * 2}px)`,
+                                      zIndex: 8,
+                                      borderRadius: '0 0 6px 6px',
+                                      pointerEvents: 'none',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      overflow: 'hidden',
+                                      background: 'repeating-linear-gradient(135deg, rgba(74,222,128,0.28), rgba(74,222,128,0.28) 6px, rgba(74,222,128,0.14) 6px, rgba(74,222,128,0.14) 12px)',
+                                      border: '1.5px dashed rgba(74,222,128,0.75)',
+                                      boxShadow: '0 0 10px rgba(74,222,128,0.35), inset 0 0 12px rgba(74,222,128,0.15)',
+                                      animation: 'savedTimeGlow 2s ease-in-out infinite'
+                                    }}
+                                    title={`${Math.round(actualShadow.savedMinutes)} dakika erken bitirdin`}
+                                  >
+                                    {actualShadow.savedHeight >= 20 && (
+                                      <span style={{
+                                        fontSize: '10px',
+                                        fontWeight: 800,
+                                        color: '#22c55e',
+                                        textShadow: '0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(74,222,128,0.6)',
+                                        whiteSpace: 'nowrap'
+                                      }}>
+                                        ⚡ {Math.round(actualShadow.savedMinutes)} dk kazandın
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                                 <div
-                                  key={task.id}
                                   draggable={!task.isExternal && !resizingEvent}
                                   onDragStart={(e) => {
                                     e.stopPropagation();
@@ -2364,16 +2791,16 @@ export default function CalendarView({
                                   }}
                                   onMouseEnter={(e) => handleMouseEnterCard(e, task)}
                                   onMouseLeave={handleMouseLeaveCard}
-                                  className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''}`}
+                                  className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''}`}
                                   onClick={(e) => e.stopPropagation()}
                                   onMouseDown={(e) => e.stopPropagation()}
                                   style={{
                                     position: 'absolute',
                                     top: `${top}px`,
                                     height: `${height}px`,
-                                    left: '4px',
-                                    right: '4px',
-                                    zIndex: isResizingThis ? 50 : 10,
+                                    left: `calc(${colLeftPercent}% + ${colGap}px)`,
+                                    width: `calc(${colWidthPercent}% - ${colGap * 2}px)`,
+                                    zIndex: isResizingThis ? 50 : (10 + colInfo.col + (isOverdueToStart ? 5 : 0)),
                                     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                                     // .scheduled-event-card sınıfı `transition: all 0.25s` tanımlıyor.
                                     // Bu, yükseklik 15dk'lık adımlarla sıçrasa bile CSS'in bunu yumuşak
@@ -2386,9 +2813,17 @@ export default function CalendarView({
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: isSmallCard ? '4px' : '6px',
-                                    borderLeft: task.isExternal 
-                                      ? `3px solid ${task.externalSource === 'google' ? '#4285F4' : '#0078d4'}` 
-                                      : undefined
+                                    borderLeft: task.isExternal
+                                      ? `3px solid ${task.externalSource === 'google' ? '#4285F4' : '#0078d4'}`
+                                      : undefined,
+                                    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                    // Geç başlama caydırıcısı: planlanan başlangıç geçti ama "▶️ Başla"
+                                    // hiç basılmadıysa kart kendiliğinden amber çerçeve+nabız alır —
+                                    // sadece "Başla"ya basınca çıkan toast'tan daha proaktif bir uyarı.
+                                    ...(isOverdueToStart ? {
+                                      border: '1.5px solid #f59e0b',
+                                      boxShadow: '0 0 10px rgba(245,158,11,0.4)'
+                                    } : {})
                                   }}
                                 >
                                   {/* Drag Handle or Indicator bar */}
@@ -2432,15 +2867,73 @@ export default function CalendarView({
                                       <Circle size={13} className="event-check-icon" />
                                     )}
                                   </div>
-                                  
-                                  <div className="event-card-content" style={{ 
+
+                                  {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                      Kart çok kısa olduğunda (isSmallCard, ör. 10dk'dan kısa
+                                      görevler) event-card-content içindeki tam boyutlu sayaç hiç
+                                      sığmaz/görünmez — bu yüzden küçük kartlarda kompakt bir
+                                      geri sayım kartın sağ üst köşesine (start butonunun biraz
+                                      solunda) ayrıca eklenir, aksi halde tam da en acil (kısa
+                                      süreli) görevlerde sayaç hiç görünmezdi. */}
+                                  {isSmallCard && !task.isExternal && !task.isChecked && (
+                                    <div style={{ position: 'absolute', top: '2px', right: task.questOutcome || task.questStartedAt ? '4px' : '32px', zIndex: 11 }}>
+                                      <TaskCountdown deadline={taskDeadlineDate} size="compact" />
+                                    </div>
+                                  )}
+
+                                  {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                      Tek tıkla başlatma — önceden yalnızca Görev Havuzu'nun detay
+                                      çekmecesinden mümkündü. Kartın sağ üst köşesine mutlak
+                                      konumlanır ki mevcut flex düzenini (checkbox+içerik) bozmasın. */}
+                                  {!task.isExternal && !task.questOutcome && !task.questStartedAt && !task.isChecked && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleStartTaskFromCalendar(task);
+                                      }}
+                                      title={isOverdueToStart ? 'Planlanan saat geçti — başlaman gerekiyordu!' : 'Göreve başla'}
+                                      className={isOverdueToStart ? 'countdown-urgent-pulse' : ''}
+                                      style={{
+                                        position: 'absolute',
+                                        top: '4px',
+                                        right: '4px',
+                                        zIndex: 12,
+                                        fontSize: '10px',
+                                        fontWeight: isOverdueToStart ? 700 : 400,
+                                        color: isOverdueToStart ? '#fecaca' : undefined,
+                                        background: isOverdueToStart ? '#7f1d1d' : 'rgba(99,102,241,0.2)',
+                                        border: `1px solid ${isOverdueToStart ? '#f59e0b' : 'rgba(99,102,241,0.5)'}`,
+                                        borderRadius: '5px',
+                                        padding: '2px 5px',
+                                        cursor: 'pointer',
+                                        lineHeight: 1
+                                      }}
+                                    >
+                                      {isOverdueToStart ? '⏰▶️' : '▶️'}
+                                    </button>
+                                  )}
+
+                                  <div className="event-card-content" style={{
                                     paddingBottom: isSmallCard ? '0px' : (totalSub > 0 ? '12px' : '4px'),
                                     justifyContent: isSmallCard ? 'center' : 'space-between',
                                     height: '100%',
                                     display: 'flex',
                                     flexDirection: 'column'
                                   }}>
-                                    {!isSmallCard && <span className="event-time-lbl">{displayTimeSlot}</span>}
+                                    {!isSmallCard && (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                        <span className="event-time-lbl">{displayTimeSlot}</span>
+                                        {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                            Görevin bitmesine ne kadar kaldığını gösteren canlı sayaç —
+                                            kullanıcının "takvimde bir timer koyar mısın... son 10dk kala
+                                            kırmızı olsun" isteği. Görev başlatılmış olmasa bile gösterilir
+                                            (planlanan bitişe göre). */}
+                                        {!task.isExternal && !task.isChecked && (
+                                          <TaskCountdown deadline={taskDeadlineDate} size="full" />
+                                        )}
+                                      </div>
+                                    )}
                                     
                                     {height >= 50 ? (
                                       <p className="event-title-lbl" style={{ margin: '2px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -2560,6 +3053,7 @@ export default function CalendarView({
                                     />
                                   )}
                                 </div>
+                                </React.Fragment>
                               );
                             })}
                           </div>

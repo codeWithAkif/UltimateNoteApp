@@ -3514,6 +3514,27 @@ input:focus, textarea:focus, select:focus {
   100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
+/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+   Takvim'deki görev geri sayımı (TaskCountdown) son 10 dakikaya girince ya da süre dolunca
+   bu sınıfla hafifçe nabız atar — göze çarpan ama rahatsız etmeyen bir uyarı. */
+.countdown-urgent-pulse {
+  animation: countdownUrgentPulse 1.2s ease-in-out infinite;
+}
+@keyframes countdownUrgentPulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.55; }
+  100% { opacity: 1; }
+}
+
+/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+   Takvim'de erken bitirilen görevin "kazanılan süre" dolgusu için hafif nabız efekti —
+   CalendarView.tsx'teki .saved-time-highlight bunu kullanır. */
+@keyframes savedTimeGlow {
+  0% { box-shadow: 0 0 10px rgba(74,222,128,0.35), inset 0 0 12px rgba(74,222,128,0.15); }
+  50% { box-shadow: 0 0 16px rgba(74,222,128,0.55), inset 0 0 18px rgba(74,222,128,0.28); }
+  100% { box-shadow: 0 0 10px rgba(74,222,128,0.35), inset 0 0 12px rgba(74,222,128,0.15); }
+}
+
 .preview-task-score-badge {
   display: inline-flex;
   align-items: center;

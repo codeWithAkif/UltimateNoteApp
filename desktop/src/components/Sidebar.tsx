@@ -5,7 +5,8 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout, Award
 } from 'lucide-react';
 import { type DevPath, getRankForXp, getAllSystemNoteNames } from '../devPaths';
-import { type QuestRpgState, getRpgLevel } from '../questRpg';
+import { type PunctualityState, getPunctualityLabel, computeSavedTimeStats } from '../punctuality';
+import PunctualityGauge from './PunctualityGauge';
 import appLogo from '../assets/logo.png';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
@@ -56,7 +57,7 @@ interface SidebarProps {
   developmentPaths?: Record<string, DevPath>;
   onOpenPathDetail?: (path: string) => void;
   isQuestRpgEnabled?: boolean;
-  questRpg?: QuestRpgState;
+  punctuality?: PunctualityState;
   onOpenAdventure?: () => void;
   fileContents?: Record<string, string>;
   notes?: any[];
@@ -211,26 +212,29 @@ function DevPathsWidget({ isCollapsed, developmentPaths, onNavigateToPath, onOpe
 
 interface QuestRpgWidgetProps {
   isCollapsed: boolean;
-  questRpg: QuestRpgState;
+  punctuality: PunctualityState;
   onOpen: () => void;
+  fileContents: Record<string, string>;
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-// DevPathsWidget ile AYNI desen (daraltılmış/açık kart) — karakter unvanı + bir sonraki
-// unvana ilerleme çubuğu + altın miktarı. Tıklanınca "Macera" sekmesi (AdventureView) açılır.
-function QuestRpgWidget({ isCollapsed, questRpg, onOpen }: QuestRpgWidgetProps) {
+// DevPathsWidget ile AYNI desen (daraltılmış/açık kart) — küçük bir Dakiklik Pusulası
+// önizlemesi. Tıklanınca tam sayfa (AdventureView) açılır.
+function QuestRpgWidget({ isCollapsed, punctuality, onOpen, fileContents }: QuestRpgWidgetProps) {
+  const { label } = getPunctualityLabel(punctuality.score);
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Günlük toplam kazanılan süre — kullanıcının "dakiklik pusulasının yanında günlük toplam
+  // kazanılan saat olsun" isteğine karşılık. computeSavedTimeStats AdventureView ile AYNI
+  // paylaşılan hesaplamayı kullanır, ayrı bir depolama yok.
+  const todaySaved = useMemo(() => computeSavedTimeStats(fileContents).today, [fileContents]);
+
   if (isCollapsed) {
     return (
-      <div onClick={onOpen} style={{ padding: '8px', textAlign: 'center', color: 'var(--text-muted)', cursor: 'pointer' }} title="Görev Macerası">
-        <span style={{ fontSize: '16px' }}>⚔️</span>
+      <div onClick={onOpen} style={{ padding: '8px', textAlign: 'center', color: 'var(--text-muted)', cursor: 'pointer' }} title={`Dakiklik Pusulası: ${label}${todaySaved >= 1 ? ` — bugün +${Math.round(todaySaved)} dk` : ''}`}>
+        <span style={{ fontSize: '16px' }}>🧭</span>
       </div>
     );
   }
-
-  const level = getRpgLevel(questRpg.xp);
-  const progressPercent = level.nextMinXp
-    ? Math.min(100, Math.round(((questRpg.xp - level.minXp) / (level.nextMinXp - level.minXp)) * 100))
-    : 100;
 
   return (
     <div
@@ -247,14 +251,16 @@ function QuestRpgWidget({ isCollapsed, questRpg, onOpen }: QuestRpgWidgetProps) 
         cursor: 'pointer'
       }}
     >
-      <span style={{ fontSize: '10px', fontWeight: 'bold', color: 'var(--text-muted)' }}>⚔️ GÖREV MACERASI</span>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
-        <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-primary)' }}>{level.name}</span>
-        <span style={{ fontSize: '9.5px', color: 'var(--accent-color)' }}>💰 {questRpg.gold}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: '10px', fontWeight: 'bold', color: 'var(--text-muted)' }}>🧭 DAKİKLİK PUSULASI</span>
+        {todaySaved >= 1 && (
+          <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#22c55e' }} title="Bugün kazanılan süre">
+            +{Math.round(todaySaved)} dk
+          </span>
+        )}
       </div>
-      <div style={{ width: '100%', height: '4px', borderRadius: '2px', background: 'var(--bg-hover)', overflow: 'hidden' }}>
-        <div style={{ width: `${progressPercent}%`, height: '100%', borderRadius: '2px', background: 'var(--accent-color)', transition: 'width 0.3s ease' }} />
-      </div>
+      <PunctualityGauge score={punctuality.score} compact showLabel={false} />
+      <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-primary)', textAlign: 'center' }}>{label}</span>
     </div>
   );
 }
@@ -287,7 +293,7 @@ export default function Sidebar({
   developmentPaths = {},
   onOpenPathDetail,
   isQuestRpgEnabled = true,
-  questRpg,
+  punctuality,
   onOpenAdventure,
   fileContents = {},
   notes = [],
@@ -617,12 +623,13 @@ export default function Sidebar({
       )}
 
       {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-          Görev Macerası (RPG) karakter widget'ı, Gelişim Yolları widget'ının hemen altına eklenir. */}
-      {isQuestRpgEnabled && questRpg && (
+          Dakiklik Pusulası widget'ı, Gelişim Yolları widget'ının hemen altına eklenir. */}
+      {isQuestRpgEnabled && punctuality && (
         <QuestRpgWidget
           isCollapsed={isCollapsed}
-          questRpg={questRpg}
+          punctuality={punctuality}
           onOpen={() => onOpenAdventure?.()}
+          fileContents={fileContents}
         />
       )}
 
