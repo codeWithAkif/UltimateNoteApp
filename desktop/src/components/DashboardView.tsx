@@ -5,6 +5,9 @@ import {
   Play, Pause, RotateCcw, Clock, CheckSquare, FileText, BarChart2, GripVertical, Music, Plus, Check, SkipForward, SkipBack, AlertTriangle, Sun, Sparkles, RefreshCw
 } from 'lucide-react';
 import { generateWeeklySummary, isGeminiConfigured } from '../services/geminiMentor';
+import Hourglass from './Hourglass';
+
+const POMODORO_TOTAL_SECONDS = 25 * 60;
 
 interface DashboardViewProps {
   onProcessInput: (input: any) => Promise<any>;
@@ -415,6 +418,7 @@ export default function DashboardView({
               <span style={{ fontSize: '13px', fontWeight: 600 }}>Odaklanma Sayacı</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', background: 'var(--bg-tertiary)', padding: '16px', borderRadius: '8px' }}>
+              <Hourglass remainingFraction={pomodoroSeconds / POMODORO_TOTAL_SECONDS} active={isPomodoroRunning} size={30} />
               <div style={{ fontSize: '32px', fontWeight: 700, fontFamily: 'monospace' }}>
                 {formatTime(pomodoroSeconds)}
               </div>

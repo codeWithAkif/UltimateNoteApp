@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
+import {
   Play, Pause, RotateCcw, SkipForward, SkipBack, CheckSquare, Music, Clock, Minimize2, Plus, Check
 } from 'lucide-react';
+import Hourglass from './Hourglass';
+
+const POMODORO_TOTAL_SECONDS = 25 * 60;
 
 interface MiniWidgetViewProps {
   currentTrack: any;
@@ -119,10 +122,11 @@ export default function MiniWidgetView({
         {/* Tab 1: Pomodoro Timer */}
         {activeTab === 'timer' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+            <Hourglass remainingFraction={pomodoroSeconds / POMODORO_TOTAL_SECONDS} active={isPomodoroRunning} size={26} />
             <div style={{ fontSize: '38px', fontWeight: 700, fontFamily: 'monospace', letterSpacing: '-0.02em', color: '#fff', textShadow: '0 0 10px rgba(255,255,255,0.1)' }}>
               {formatTime(pomodoroSeconds)}
             </div>
-            
+
             <div style={{ display: 'flex', gap: '12px' }}>
               <button
                 onClick={onTogglePomodoro}

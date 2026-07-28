@@ -5816,20 +5816,8 @@ input:focus, textarea:focus, select:focus {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   margin: 4px 0;
 }
-.timer-progress-ring {
-  position: relative;
-  width: 46px;
-  height: 46px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.progress-ring-svg {
-  transform: rotate(-90deg);
-}
 .timer-time-display {
-  position: absolute;
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 800;
   font-family: monospace;
   color: #fff;

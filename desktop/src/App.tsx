@@ -31,7 +31,8 @@ import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMod
 import {
   type QuestRpgState, type InventoryItem,
   createDefaultQuestRpgState, getRpgLevel, XP_PER_QUEST,
-  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine
+  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine,
+  rollRandomItem, ITEM_PULL_COST, ITEM_REPAIR_COST, getItemSellPrice
 } from './questRpg';
 import {
   getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
@@ -65,6 +66,43 @@ interface ShortcutKey {
 
 // Not başına saklanacak maksimum sürüm geçmişi anlık görüntüsü sayısı.
 const MAX_NOTE_VERSIONS = 20;
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Global Pomodoro sayacının kaynak-of-truth'u artık gerçek zaman damgası (endsAt) ile
+// localStorage'a yazılır. Böylece Mini Mod'a geçiş (ayrı Electron penceresi/renderer olabilir)
+// veya bir sayfa yenilemesi state'i sıfırlasa bile, kalan süre bir sonraki mount'ta gerçek
+// geçen zamandan yeniden hesaplanır.
+interface PersistedGlobalPomodoro {
+  endsAt: number | null;
+  seconds: number;
+  isRunning: boolean;
+}
+const GLOBAL_POMODORO_STORAGE_KEY = 'global_pomodoro_v1';
+
+const loadGlobalPomodoro = (): PersistedGlobalPomodoro => {
+  try {
+    const raw = localStorage.getItem(GLOBAL_POMODORO_STORAGE_KEY);
+    if (!raw) return { endsAt: null, seconds: 25 * 60, isRunning: false };
+    const p: PersistedGlobalPomodoro = JSON.parse(raw);
+    if (p.isRunning && p.endsAt) {
+      const remaining = Math.max(0, Math.round((p.endsAt - Date.now()) / 1000));
+      return remaining > 0
+        ? { endsAt: p.endsAt, seconds: remaining, isRunning: true }
+        : { endsAt: null, seconds: 25 * 60, isRunning: false };
+    }
+    return { endsAt: null, seconds: p.seconds ?? 25 * 60, isRunning: false };
+  } catch {
+    return { endsAt: null, seconds: 25 * 60, isRunning: false };
+  }
+};
+
+const saveGlobalPomodoro = (p: PersistedGlobalPomodoro) => {
+  try {
+    localStorage.setItem(GLOBAL_POMODORO_STORAGE_KEY, JSON.stringify(p));
+  } catch {
+    // localStorage dolu/erişilemez olabilir — sayaç yine de bellekte çalışmaya devam eder.
+  }
+};
 
 const DEFAULT_SHORTCUTS: Record<string, { label: string; shortcut: ShortcutKey }> = {
   openBrowser: { label: 'Web Araştırma Tarayıcısını Aç', shortcut: { key: 'w', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false } },
@@ -520,6 +558,48 @@ export default function App() {
         ...prev,
         chronicles: [...prev.chronicles, { weekStart: weekStartStr, text }],
         worldState: { ...prev.worldState, ...newWorldStateFlags },
+        updatedAt: new Date().toISOString()
+      };
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Mağaza: biriken altının harcanacağı iki basit kalem — rastgele eşya çekilişi ve
+  // hasarlı eşya tamiri (bkz. questRpg.ts ITEM_PULL_COST/ITEM_REPAIR_COST).
+  const handleBuyRandomItem = () => {
+    setQuestRpg(prev => {
+      if (prev.gold < ITEM_PULL_COST) return prev;
+      return {
+        ...prev,
+        gold: prev.gold - ITEM_PULL_COST,
+        inventory: [...prev.inventory, rollRandomItem()],
+        updatedAt: new Date().toISOString()
+      };
+    });
+  };
+
+  const handleRepairItem = (itemId: string) => {
+    setQuestRpg(prev => {
+      if (prev.gold < ITEM_REPAIR_COST) return prev;
+      const target = prev.inventory.find(i => i.id === itemId);
+      if (!target || !target.damaged) return prev;
+      return {
+        ...prev,
+        gold: prev.gold - ITEM_REPAIR_COST,
+        inventory: prev.inventory.map(i => i.id === itemId ? { ...i, damaged: false } : i),
+        updatedAt: new Date().toISOString()
+      };
+    });
+  };
+
+  const handleSellItem = (itemId: string) => {
+    setQuestRpg(prev => {
+      const target = prev.inventory.find(i => i.id === itemId);
+      if (!target) return prev;
+      return {
+        ...prev,
+        gold: prev.gold + getItemSellPrice(target),
+        inventory: prev.inventory.filter(i => i.id !== itemId),
         updatedAt: new Date().toISOString()
       };
     });
@@ -2126,15 +2206,22 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Global Pomodoro sayacının kalan saniyesini tutar (tüm sayfalarda kesintisiz çalışması için).
-  const [pomodoroSeconds, setPomodoroSeconds] = useState<number>(25 * 60);
+  // Başlangıç değeri localStorage'daki gerçek zaman damgasından (endsAt) hesaplanır.
+  const [pomodoroSeconds, setPomodoroSeconds] = useState<number>(() => loadGlobalPomodoro().seconds);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Global Pomodoro sayacının aktif olup olmadığını (çalışma durumunu) tutar.
-  const [isPomodoroRunning, setIsPomodoroRunning] = useState<boolean>(false);
+  const [isPomodoroRunning, setIsPomodoroRunning] = useState<boolean>(() => loadGlobalPomodoro().isRunning);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Global Pomodoro sayacının zamanlayıcı (setInterval) referansını saklar.
   const pomodoroIntervalRef = useRef<any>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Çalışan sayacın "kaynak-of-truth"u — her tık bu zaman damgasından yeniden hesaplanır,
+  // saniyede bir azaltılan bir sayaç DEĞİLDİR (bu yüzden atlanan tick/arka plan kısıtlaması
+  // birikimli sapmaya yol açmaz).
+  const pomodoroEndsAtRef = useRef<number | null>(loadGlobalPomodoro().endsAt);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Pomodoro süresi dolduğunda çalacak olan uyarı bip sesini üreten fonksiyon.
@@ -2156,34 +2243,51 @@ export default function App() {
   };
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // Pomodoro zamanlayıcısını saniyede bir güncelleyen, bittiğinde istatistikleri ve evcil hayvan EXP/sağlığını arttıran mekanizma.
+  // Pomodoro zamanlayıcısını saniyede bir güncelleyen, bittiğinde istatistikleri arttıran mekanizma.
+  // ÖNEMLİ: setPomodoroSeconds burada fonksiyonel updater (prev => ...) OLARAK ÇAĞRILMAZ — React
+  // StrictMode geliştirme modunda updater fonksiyonlarını iki kez çağırabildiği için, içine bip
+  // sesi/bildirim/istatistik gibi yan etkiler koymak çifte tetiklenmeye yol açar (bkz. [[NotesView
+  // TimerWidget]] ile aynı sınıf hata). Bunun yerine kalan süre her tick'te endsAt zaman
+  // damgasından saf biçimde hesaplanır ve setPomodoroSeconds(value) DÜZ DEĞER olarak çağrılır.
   useEffect(() => {
     if (isPomodoroRunning) {
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
       }
 
+      if (!pomodoroEndsAtRef.current) {
+        pomodoroEndsAtRef.current = Date.now() + pomodoroSeconds * 1000;
+      }
+      const endsAt = pomodoroEndsAtRef.current;
+      saveGlobalPomodoro({ endsAt, seconds: pomodoroSeconds, isRunning: true });
+
       pomodoroIntervalRef.current = setInterval(() => {
-        setPomodoroSeconds((prev) => {
-          if (prev <= 1) {
-            clearInterval(pomodoroIntervalRef.current);
-            setIsPomodoroRunning(false);
-            playGlobalBeep();
+        const remaining = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
 
-            // Tamamlanan Pomodoro istatistiğini kaydet
-            const count = Number(localStorage.getItem('completed_pomodoros') || '0');
-            localStorage.setItem('completed_pomodoros', String(count + 1));
+        if (remaining <= 0) {
+          clearInterval(pomodoroIntervalRef.current);
+          pomodoroEndsAtRef.current = null;
+          setIsPomodoroRunning(false);
+          setPomodoroSeconds(25 * 60);
+          saveGlobalPomodoro({ endsAt: null, seconds: 25 * 60, isRunning: false });
 
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('⏱️ Pomodoro tamamlandı!', { body: 'Mola verme zamanı geldi.' });
-            }
+          playGlobalBeep();
 
-            return 25 * 60;
+          // Tamamlanan Pomodoro istatistiğini kaydet
+          const count = Number(localStorage.getItem('completed_pomodoros') || '0');
+          localStorage.setItem('completed_pomodoros', String(count + 1));
+
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('⏱️ Pomodoro tamamlandı!', { body: 'Mola verme zamanı geldi.' });
           }
-          return prev - 1;
-        });
+          return;
+        }
+
+        setPomodoroSeconds(remaining);
+        saveGlobalPomodoro({ endsAt, seconds: remaining, isRunning: true });
       }, 1000);
     } else {
+      pomodoroEndsAtRef.current = null;
       if (pomodoroIntervalRef.current) {
         clearInterval(pomodoroIntervalRef.current);
       }
@@ -2195,6 +2299,14 @@ export default function App() {
       }
     };
   }, [isPomodoroRunning]);
+
+  // Duraklatılmışken (isPomodoroRunning=false) manuel bir Sıfırla ile pomodoroSeconds değişirse,
+  // bunu da kalıcı depoya yaz — üstteki efekt yalnızca isPomodoroRunning değiştiğinde tetiklenir.
+  useEffect(() => {
+    if (!isPomodoroRunning) {
+      saveGlobalPomodoro({ endsAt: null, seconds: pomodoroSeconds, isRunning: false });
+    }
+  }, [pomodoroSeconds, isPomodoroRunning]);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
@@ -6705,6 +6817,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               notes={notes}
               fileContents={fileContents}
               onChronicleGenerated={handleChronicleGenerated}
+              onBuyRandomItem={handleBuyRandomItem}
+              onRepairItem={handleRepairItem}
+              onSellItem={handleSellItem}
             />
           )}
 

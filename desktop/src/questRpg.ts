@@ -56,6 +56,27 @@ export const DIFFICULTY_BASE_GOLD: Record<QuestDifficulty, number> = {
 export const XP_PER_QUEST = 25;
 export const FAST_SPEED_MULTIPLIER = 1.5;
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Mağaza: biriken altının harcanacağı bir yer olmadan ekonomi anlamsızlaşırdı. İki basit
+// harcama kalemi — rastgele eşya çekilişi (sadece "hızlı" tamamlamaya bağlı şans faktörünü
+// azaltır) ve hasarlı eşya tamiri (bkz. computeQuestOutcome'daki "failed" cezası).
+export const ITEM_PULL_COST = 30;
+export const ITEM_REPAIR_COST = 20;
+
+// Envanterdeki eşyaları mağazada satıp altına çevirmek için nadirliğe bağlı taban fiyat.
+// Bilerek ITEM_PULL_COST'un altında tutulur (ağırlıklı ortalama ~16 altın) — aksi halde
+// "rastgele çek, hemen sat" hiçbir riski olmayan bedava altın kaynağına dönerdi.
+export const ITEM_SELL_PRICES: Record<ItemRarity, number> = {
+  common: 8,
+  rare: 18,
+  epic: 35,
+  legendary: 70
+};
+
+// Hasarlı bir eşya yarı fiyatına satılır — tamir etmeden elden çıkarmak isteyenler için.
+export const getItemSellPrice = (item: InventoryItem): number =>
+  item.damaged ? Math.floor(ITEM_SELL_PRICES[item.rarity] / 2) : ITEM_SELL_PRICES[item.rarity];
+
 // RANK_LADDER (devPaths.ts:74) ile AYNI eşikler, RPG temalı yeni isimlerle.
 export const RPG_LEVEL_TITLES: { name: string; minXp: number }[] = [
   { name: 'Çırak Maceracı', minXp: 0 },

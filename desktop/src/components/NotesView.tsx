@@ -9,6 +9,7 @@ import {
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
   DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search
 } from 'lucide-react';
+import Hourglass from './Hourglass';
 import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../services/supabaseSync';
 import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
@@ -67,6 +68,66 @@ hljs.registerLanguage('markdown', markdown);
 
 const escapeHtmlForCode = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// [timer] widget'larının çalışma durumu artık gerçek zaman damgası (endsAt) ile localStorage'a
+// yazılır. Böylece sekme değiştirip NotesView unmount olsa (veya sayfa yenilense) bile,
+// kalan süre bir sonraki mount'ta gerçek geçen zamandan yeniden hesaplanır — ekranda görünen
+// bir setInterval'in hayatta kalmasına bağlı kalınmaz (bkz. bulletproof-fix tercihi).
+interface PersistedNoteTimer {
+  endsAt: number | null;
+  remainingSec: number;
+  durationSec: number;
+  isRunning: boolean;
+}
+const NOTE_TIMERS_STORAGE_KEY = 'note_timers_v1';
+
+const loadNoteTimersRaw = (): Record<string, PersistedNoteTimer> => {
+  try {
+    return JSON.parse(localStorage.getItem(NOTE_TIMERS_STORAGE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const saveNoteTimersRaw = (all: Record<string, PersistedNoteTimer>) => {
+  try {
+    localStorage.setItem(NOTE_TIMERS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // localStorage dolu/erişilemez olabilir — sayaç yine de bellekte çalışmaya devam eder.
+  }
+};
+
+interface RuntimeNoteTimerState {
+  remaining: number;
+  isRunning: boolean;
+  duration: number;
+  endsAt: number | null;
+  justCompletedAt: number | null;
+}
+
+// Kaydedilmiş kum saati verisini, o an gerçekte kaç saniye kaldığını hesaplayarak çalışma-zamanı state'ine çevirir.
+const hydrateTimersForNote = (notePath: string | null): Record<number, RuntimeNoteTimerState> => {
+  const all = loadNoteTimersRaw();
+  const prefix = `${notePath || ''}::`;
+  const result: Record<number, RuntimeNoteTimerState> = {};
+  Object.keys(all).forEach(key => {
+    if (!key.startsWith(prefix)) return;
+    const lineIdx = parseInt(key.slice(prefix.length), 10);
+    if (Number.isNaN(lineIdx)) return;
+    const t = all[key];
+    const remaining = t.isRunning && t.endsAt
+      ? Math.max(0, Math.round((t.endsAt - Date.now()) / 1000))
+      : t.remainingSec;
+    // Widget unmount haldeyken (not değiştirilmişken) süre zaten dolmuşsa, bunu "az önce bitti"
+    // olarak işaretle — aksi halde tamamlanma yan etkisi (bip/not-sonu log satırı) hiç tetiklenmez.
+    const justCompletedWhileAway = t.isRunning && t.endsAt && remaining <= 0;
+    result[lineIdx] = justCompletedWhileAway
+      ? { remaining: t.durationSec, isRunning: false, duration: t.durationSec, endsAt: null, justCompletedAt: Date.now() }
+      : { remaining, isRunning: t.isRunning && remaining > 0, duration: t.durationSec, endsAt: t.isRunning && remaining > 0 ? t.endsAt : null, justCompletedAt: null };
+  });
+  return result;
+};
 
 // Kod bloğu içeriğini, ``` sonrası yazılan dil etiketine göre (ör. ```csharp)
 // renklendirir; etiket tanınmıyorsa veya yoksa hljs'in otomatik dil algılamasına düşer.
@@ -775,8 +836,8 @@ const CopyHelperWidget: React.FC<CopyHelperWidgetProps> = ({ text }) => {
 interface TimerWidgetProps {
   lineIdx: number;
   durationMin: number;
-  activeTimers: Record<number, { remaining: number; isRunning: boolean; duration: number }>;
-  setActiveTimers: React.Dispatch<React.SetStateAction<Record<number, { remaining: number; isRunning: boolean; duration: number }>>>;
+  activeTimers: Record<number, RuntimeNoteTimerState>;
+  setActiveTimers: React.Dispatch<React.SetStateAction<Record<number, RuntimeNoteTimerState>>>;
   timerIntervalsRef: React.MutableRefObject<Record<number, any>>;
   playBeepSound: () => void;
   onTimerComplete?: () => void;
@@ -791,133 +852,125 @@ const TimerWidget: React.FC<TimerWidgetProps> = ({
   playBeepSound,
   onTimerComplete
 }) => {
-  const state = activeTimers[lineIdx] || { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60 };
-  
+  const state = activeTimers[lineIdx] || { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60, endsAt: null, justCompletedAt: null };
+
   const startTimer = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (state.isRunning) return;
-    
+
     // Tarayıcı bildirim iznini ilk oynat tuşuna basıldığında talep et (JIT)
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
-    
-    if (timerIntervalsRef.current[lineIdx]) {
-      clearInterval(timerIntervalsRef.current[lineIdx]);
-    }
-    
+
+    const endsAt = Date.now() + Math.max(0, state.remaining) * 1000;
     setActiveTimers(prev => ({
       ...prev,
-      [lineIdx]: { ...state, isRunning: true }
+      [lineIdx]: { ...state, isRunning: true, endsAt, justCompletedAt: null }
     }));
-    
-    const interval = setInterval(() => {
-      setActiveTimers(prev => {
-        const t = prev[lineIdx];
-        if (!t || t.remaining <= 1) {
-          clearInterval(timerIntervalsRef.current[lineIdx]);
-          delete timerIntervalsRef.current[lineIdx];
-          
-          playBeepSound();
-          
-          if (onTimerComplete) {
-            onTimerComplete();
-          }
-          
-          return {
-            ...prev,
-            [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60 }
-          };
-        }
-        return {
-          ...prev,
-          [lineIdx]: { ...t, remaining: t.remaining - 1 }
-        };
-      });
-    }, 1000);
-    
-    timerIntervalsRef.current[lineIdx] = interval;
   };
-  
+
   const pauseTimer = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (timerIntervalsRef.current[lineIdx]) {
-      clearInterval(timerIntervalsRef.current[lineIdx]);
-      delete timerIntervalsRef.current[lineIdx];
-    }
+    const remaining = state.endsAt ? Math.max(0, Math.round((state.endsAt - Date.now()) / 1000)) : state.remaining;
     setActiveTimers(prev => ({
       ...prev,
-      [lineIdx]: { ...state, isRunning: false }
+      [lineIdx]: { ...state, remaining, isRunning: false, endsAt: null }
     }));
   };
-  
+
   const resetTimer = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (timerIntervalsRef.current[lineIdx]) {
-      clearInterval(timerIntervalsRef.current[lineIdx]);
-      delete timerIntervalsRef.current[lineIdx];
-    }
     setActiveTimers(prev => ({
       ...prev,
-      [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60 }
+      [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60, endsAt: null, justCompletedAt: null }
     }));
   };
-  
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sayaç çalışırken gerçek kaynak-of-truth her zaman endsAt zaman damgasıdır — interval sadece
+  // saniyede bir bu damgadan kalan süreyi yeniden hesaplayıp ekranı günceller. Bu sayede widget
+  // unmount/remount olsa (sekme değişimi) bile bir sonraki mount'ta doğru süre hesaplanır ve
+  // (isRunning true ise) otomatik olarak tekrar tık tık işlemeye devam eder.
   useEffect(() => {
-    return () => {
+    if (!state.isRunning || !state.endsAt) {
       if (timerIntervalsRef.current[lineIdx]) {
         clearInterval(timerIntervalsRef.current[lineIdx]);
         delete timerIntervalsRef.current[lineIdx];
       }
-    };
-  }, [lineIdx]);
+      return;
+    }
 
+    const tick = () => {
+      setActiveTimers(prev => {
+        const t = prev[lineIdx];
+        if (!t || !t.isRunning || !t.endsAt) return prev;
+        const remaining = Math.max(0, Math.round((t.endsAt - Date.now()) / 1000));
+        if (remaining <= 0) {
+          // Saf state güncellemesi — bip sesi/bildirim/not-log yan etkileri buradan DEĞİL,
+          // aşağıdaki ayrı justCompletedAt efektinden tetiklenir (StrictMode'un updater'ı iki kez
+          // çağırabilmesi yüzünden burada yan etki çalıştırmak çift bildirim/log satırına yol açardı).
+          return {
+            ...prev,
+            [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60, endsAt: null, justCompletedAt: Date.now() }
+          };
+        }
+        return { ...prev, [lineIdx]: { ...t, remaining } };
+      });
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    timerIntervalsRef.current[lineIdx] = interval;
+
+    return () => {
+      clearInterval(interval);
+      delete timerIntervalsRef.current[lineIdx];
+    };
+  }, [state.isRunning, state.endsAt, lineIdx, durationMin, setActiveTimers]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Kullanıcı not içindeki sayaç süresini değiştirdiğinde (örn: timer 25 -> timer 5), çalışmıyorsa
+  // sayacı yeni süreye sıfırlar. Çalışıyorken süre etiketi değişirse mevcut geri sayımı bozmamak için
+  // dokunulmaz (kullanıcı isterse zaten Sıfırla'ya basabilir).
   useEffect(() => {
-    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // Bu kanca, kullanıcı not içindeki sayaç süresini değiştirdiğinde (örn: timer 25 -> timer 1)
-    // sayacın durumunu yeni süreye senkronize etmek için eklenmiştir.
     setActiveTimers(prev => {
       const t = prev[lineIdx];
-      if (t && t.duration !== durationMin * 60) {
-        if (timerIntervalsRef.current[lineIdx]) {
-          clearInterval(timerIntervalsRef.current[lineIdx]);
-          delete timerIntervalsRef.current[lineIdx];
-        }
+      if (t && !t.isRunning && t.duration !== durationMin * 60) {
         return {
           ...prev,
-          [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60 }
+          [lineIdx]: { remaining: durationMin * 60, isRunning: false, duration: durationMin * 60, endsAt: null, justCompletedAt: null }
         };
       }
       return prev;
     });
   }, [durationMin, lineIdx, setActiveTimers]);
-  
+
+  // Tamamlanma yan etkileri (bip sesi + not sonuna log ekleme) tam olarak BİR KEZ, ayrı bir
+  // efektten tetiklenir — pure state güncellemesinden ayrıştırıldığı için StrictMode'da bile çift çalışmaz.
+  useEffect(() => {
+    if (!state.justCompletedAt) return;
+    playBeepSound();
+    onTimerComplete?.();
+    setActiveTimers(prev => {
+      const t = prev[lineIdx];
+      if (!t || t.justCompletedAt !== state.justCompletedAt) return prev;
+      return { ...prev, [lineIdx]: { ...t, justCompletedAt: null } };
+    });
+  }, [state.justCompletedAt, lineIdx]);
+
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${String(s).padStart(2, '0')}`;
   };
-  
-  const progressPercent = ((state.duration - state.remaining) / state.duration) * 100;
-  
+
+  const remainingFraction = state.remaining / state.duration;
+
   return (
     <div className="timer-widget-container" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="timer-progress-ring">
-        <svg className="progress-ring-svg" width="46" height="46">
-          <circle className="progress-ring-bg" stroke="rgba(255,255,255,0.06)" strokeWidth="3.5" fill="transparent" r="19" cx="23" cy="23" />
-          <circle 
-            className="progress-ring-bar" 
-            stroke="var(--accent-color)" 
-            strokeWidth="3.5" 
-            fill="transparent" 
-            r="19" cx="23" cy="23" 
-            strokeDasharray="119.38"
-            strokeDashoffset={119.38 - (119.38 * progressPercent) / 100}
-            strokeLinecap="round"
-          />
-        </svg>
-        <span className="timer-time-display">{formatTime(state.remaining)}</span>
-      </div>
+      <Hourglass remainingFraction={remainingFraction} active={state.isRunning} size={32} />
+      <span className="timer-time-display">{formatTime(state.remaining)}</span>
       <div className="timer-controls">
         {state.isRunning ? (
           <button className="timer-ctrl-btn pause" onClick={pauseTimer} onMouseDown={(e) => e.stopPropagation()}><Pause size={10} /></button>
@@ -926,7 +979,7 @@ const TimerWidget: React.FC<TimerWidgetProps> = ({
         )}
         <button className="timer-ctrl-btn reset" onClick={resetTimer} onMouseDown={(e) => e.stopPropagation()}><RotateCcw size={10} /></button>
       </div>
-      <span className="timer-label">⏰ {durationMin} dk Sayaç</span>
+      <span className="timer-label">{durationMin} dk Sayaç</span>
     </div>
   );
 };
@@ -2451,6 +2504,7 @@ export default function NotesView({
       { id: 'tag', label: 'Tag', icon: Tag, desc: 'Etiket işareti (#) ekler' },
       { id: 'drawing', label: 'Embedded Drawing', icon: Palette, desc: 'Gömülü etkileşimli çizim ekler (draw.io / Excalidraw)' },
       { id: 'habit', label: 'Alışkanlık Zinciri', icon: Activity, desc: 'Aylık alışkanlık takip zinciri ekler (örn: [habit: Kitap Okuma])' },
+      { id: 'timer', label: 'Odaklanma Sayacı (Kum Saati)', icon: Clock, desc: 'Satıra canlı kum saati sayacı ekler (örn: timer 25)' },
       { id: 'voice', label: 'Ses Kaydet (Mikrofon)', icon: Mic, desc: 'Satıra yeni bir ses kaydı paneli yerleştirir' },
       { id: 'video', label: 'Video Kaydet (Kamera)', icon: Video, desc: 'Satıra yeni bir video kaydı paneli yerleştirir' },
       { id: 'toc', label: 'İçindekiler Tablosu (TOC)', icon: BookOpen, desc: 'Not başlıklarından otomatik İçindekiler Tablosu üretir' },
@@ -2606,6 +2660,8 @@ export default function NotesView({
         newLineText = prefixText + '#' + afterCaret;
       } else if (opt.id === 'habit') {
         newLineText = prefixText + '[habit: Yeni Alışkanlık] [stats:---]' + afterCaret;
+      } else if (opt.id === 'timer') {
+        newLineText = prefixText + 'timer 25' + afterCaret;
       } else if (opt.id === 'voice') {
         newLineText = prefixText + 'record' + afterCaret;
       } else if (opt.id === 'video') {
@@ -2687,6 +2743,8 @@ export default function NotesView({
       } else if (opt.id === 'tag') {
         newCaret = lastSlashIdx + 1;
       } else if (opt.id === 'habit') {
+        newCaret = lastSlashIdx + 8;
+      } else if (opt.id === 'timer') {
         newCaret = lastSlashIdx + 8;
       } else if (opt.id === 'voice') {
         newCaret = lastSlashIdx + 6;
@@ -3043,7 +3101,7 @@ export default function NotesView({
   }, []);
 
   // Ultimate Note Factory Widget states
-  const [activeTimers, setActiveTimers] = useState<Record<number, { remaining: number; isRunning: boolean; duration: number }>>({});
+  const [activeTimers, setActiveTimers] = useState<Record<number, RuntimeNoteTimerState>>(() => hydrateTimersForNote(activeNotePath));
   const [sketchingLines, setSketchingLines] = useState<Record<number, boolean>>({});
   const [voiceRecorderLines, setVoiceRecorderLines] = useState<Record<number, { isRecording: boolean }>>({});
   const voiceChunksRef = useRef<Record<number, Blob[]>>({});
@@ -3052,6 +3110,34 @@ export default function NotesView({
   const [dismissedAlarms, setDismissedAlarms] = useState<Record<number, boolean>>({});
   const [loadedMediaCache, setLoadedMediaCache] = useState<Record<string, string>>({});
   const timerIntervalsRef = useRef<Record<number, any>>({});
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Farklı bir nota geçildiğinde (aynı NotesView mount'u içinde), o notun kayıtlı sayaçlarını yükle.
+  // İlk mount'ta ATLANIR — o zaten üstteki useState initializer'ında hydrate edildi; burada
+  // tekrar hydrate etmek, "az önce bitti" tamamlanma anını farklı bir Date.now() ile ikinci kez
+  // üretip tamamlanma yan-etki efektiyle yarışa girer ve log satırının hiç eklenmemesine yol açardı.
+  const isFirstNoteMountRef = useRef(true);
+  useEffect(() => {
+    if (isFirstNoteMountRef.current) {
+      isFirstNoteMountRef.current = false;
+      return;
+    }
+    setActiveTimers(hydrateTimersForNote(activeNotePath));
+  }, [activeNotePath]);
+
+  // activeTimers her değiştiğinde, aktif notun sayaç durumunu localStorage'a yaz —
+  // sekme değişimi/NotesView unmount olması bu durumu artık silmez.
+  useEffect(() => {
+    const all = loadNoteTimersRaw();
+    const prefix = `${activeNotePath || ''}::`;
+    Object.keys(all).forEach(key => {
+      if (key.startsWith(prefix)) delete all[key];
+    });
+    Object.entries(activeTimers).forEach(([lineIdxStr, t]) => {
+      all[`${prefix}${lineIdxStr}`] = { endsAt: t.endsAt, remainingSec: t.remaining, durationSec: t.duration, isRunning: t.isRunning };
+    });
+    saveNoteTimersRaw(all);
+  }, [activeTimers, activeNotePath]);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // İmleç koordinatlarında parıldayan Doktor Strange portal kıvılcımı şeklinde piksel parçacıkları oluşturan yardımcı fonksiyon.
@@ -6070,9 +6156,9 @@ export default function NotesView({
 
     // 6. Odak Sayaç (Timer)
     // Geri sayım sayacı. Süre dolduğunda sistem/tarayıcı bildirimi tetikler ve not sonuna log yazar.
-    const timerMatch = line.match(/timer\s+(\d+)/i);
+    const timerMatch = line.match(/\btimer\b(?:\s+(\d+))?/i);
     if (timerMatch) {
-      const durationMin = parseInt(timerMatch[1], 10);
+      const durationMin = timerMatch[1] ? parseInt(timerMatch[1], 10) : 25;
       return (
         <TimerWidget
           lineIdx={idx}

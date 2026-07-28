@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { Sword, Coins, Package, ScrollText, Sparkles, Loader2 } from 'lucide-react';
-import { type QuestRpgState, getRpgLevel } from '../questRpg';
+import { Sword, Coins, Package, ScrollText, Sparkles, Loader2, ShoppingBag, X, Wrench, Dices, Tag } from 'lucide-react';
+import { type QuestRpgState, getRpgLevel, ITEM_PULL_COST, ITEM_REPAIR_COST, getItemSellPrice } from '../questRpg';
 import { generateChronicle } from '../services/geminiMentor';
 
 interface NoteItem {
@@ -14,6 +14,9 @@ interface AdventureViewProps {
   notes: NoteItem[];
   fileContents: Record<string, string>;
   onChronicleGenerated: (text: string, newWorldStateFlags: Record<string, string>) => void;
+  onBuyRandomItem: () => void;
+  onRepairItem: (itemId: string) => void;
+  onSellItem: (itemId: string) => void;
 }
 
 const RARITY_COLORS: Record<string, string> = {
@@ -23,9 +26,10 @@ const RARITY_COLORS: Record<string, string> = {
   legendary: '#f59e0b'
 };
 
-export default function AdventureView({ questRpg, notes, fileContents, onChronicleGenerated }: AdventureViewProps) {
+export default function AdventureView({ questRpg, notes, fileContents, onChronicleGenerated, onBuyRandomItem, onRepairItem, onSellItem }: AdventureViewProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [isStoreOpen, setIsStoreOpen] = useState(false);
 
   const level = getRpgLevel(questRpg.xp);
   const progressPercent = level.nextMinXp
@@ -74,9 +78,17 @@ export default function AdventureView({ questRpg, notes, fileContents, onChronic
     <div style={{ height: '100%', overflowY: 'auto', padding: '24px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }} className="custom-scroll">
       <div style={{ maxWidth: '720px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Sword size={20} style={{ color: 'var(--accent-color)' }} />
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>Görev Macerası</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Sword size={20} style={{ color: 'var(--accent-color)' }} />
+            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>Görev Macerası</h2>
+          </div>
+          <button
+            onClick={() => setIsStoreOpen(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer' }}
+          >
+            <ShoppingBag size={14} /> Mağaza
+          </button>
         </div>
 
         <div style={{ padding: '18px', borderRadius: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
@@ -120,6 +132,21 @@ export default function AdventureView({ questRpg, notes, fileContents, onChronic
                   <span style={{ fontSize: '9.5px', color: 'var(--text-secondary)', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
                     {item.name}{item.damaged ? ' (hasarlı)' : ''}
                   </span>
+                  {item.damaged && (
+                    <button
+                      onClick={() => onRepairItem(item.id)}
+                      disabled={questRpg.gold < ITEM_REPAIR_COST}
+                      title={`Tamir Et (${ITEM_REPAIR_COST} altın)`}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '3px', padding: '3px 6px', borderRadius: '5px', border: 'none',
+                        background: questRpg.gold >= ITEM_REPAIR_COST ? 'var(--accent-color)' : 'var(--bg-hover)',
+                        color: questRpg.gold >= ITEM_REPAIR_COST ? '#fff' : 'var(--text-muted)',
+                        fontSize: '9px', cursor: questRpg.gold >= ITEM_REPAIR_COST ? 'pointer' : 'default'
+                      }}
+                    >
+                      <Wrench size={9} /> {ITEM_REPAIR_COST}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -160,6 +187,75 @@ export default function AdventureView({ questRpg, notes, fileContents, onChronic
           )}
         </div>
       </div>
+
+      {isStoreOpen && (
+        <div className="modal-overlay animate-fade" onClick={() => setIsStoreOpen(false)} style={{ zIndex: 6100 }}>
+          <div className="modal-content animate-pop" onClick={(e) => e.stopPropagation()} style={{ width: '380px', maxWidth: '92%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <ShoppingBag size={15} /> Mağaza
+              </h3>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Coins size={12} /> {questRpg.gold}
+              </span>
+              <button onClick={() => setIsStoreOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={16} /></button>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', borderRadius: '8px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Dices size={20} style={{ color: 'var(--accent-color)' }} />
+                <div>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)' }}>Rastgele Eşya Çek</div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Ortak/nadir/epik/efsanevi şans</div>
+                </div>
+              </div>
+              <button
+                onClick={onBuyRandomItem}
+                disabled={questRpg.gold < ITEM_PULL_COST}
+                style={{ padding: '6px 12px', borderRadius: '6px', border: 'none', fontSize: '11.5px', fontWeight: 600, cursor: questRpg.gold >= ITEM_PULL_COST ? 'pointer' : 'default', background: questRpg.gold >= ITEM_PULL_COST ? 'var(--accent-color)' : 'var(--bg-hover)', color: questRpg.gold >= ITEM_PULL_COST ? '#fff' : 'var(--text-muted)' }}
+              >
+                💰 {ITEM_PULL_COST}
+              </button>
+            </div>
+
+            <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '14px' }}>
+              Hasarlı eşyaları envanterden {ITEM_REPAIR_COST} altın karşılığında tamir edebilirsin (her eşyanın yanındaki 🔧 butonu).
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+              <Tag size={13} style={{ color: 'var(--text-secondary)' }} />
+              <h4 style={{ margin: 0, fontSize: '12px', fontWeight: 'bold' }}>Envanterini Sat</h4>
+            </div>
+            {questRpg.inventory.length === 0 ? (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '10px', textAlign: 'center', border: '1px dashed var(--border-color)', borderRadius: '8px' }}>
+                Satacak eşyan yok.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '180px', overflowY: 'auto' }} className="custom-scroll">
+                {questRpg.inventory.map(item => (
+                  <div
+                    key={item.id}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 10px', borderRadius: '7px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <span style={{ fontSize: '16px', filter: item.damaged ? 'grayscale(1)' : 'none' }}>{item.emoji}</span>
+                      <span style={{ fontSize: '11.5px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.name}{item.damaged ? ' (hasarlı)' : ''}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => onSellItem(item.id)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '5px 10px', borderRadius: '6px', border: 'none', background: 'var(--bg-hover)', color: 'var(--text-primary)', fontSize: '11px', fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+                    >
+                      Sat · 💰 {getItemSellPrice(item)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
