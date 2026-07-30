@@ -57,7 +57,7 @@ export interface WorkspaceTask {
   parentTaskId?: string | null;
   subtasks?: WorkspaceSubTask[];
   questStartedAt: string | null;
-  questOutcome: 'fast' | 'ontime' | 'late' | null;
+  questOutcome: 'fast' | 'ontime' | 'late' | 'incomplete' | null;
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -261,7 +261,7 @@ export default function TasksView({
               }
             }
 
-            const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX])\])\s+(.*)$/);
+            const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX/])\])\s+(.*)$/);
             if (checklistMatch) {
               const leadingWhitespace = checklistMatch[1];
               const indent = leadingWhitespace.length;
@@ -333,6 +333,13 @@ export default function TasksView({
               while ((tagMatch = tagRegex.exec(rawText)) !== null) {
                 taskTags.push(tagMatch[1].toLowerCase());
               }
+              // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug"
+              // yerine bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
+              const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+              let projTagMatch;
+              while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
+                taskTags.push(projTagMatch[1].toLowerCase());
+              }
 
               // Calculate Amplenote Score
               let score = 0;
@@ -363,6 +370,11 @@ export default function TasksView({
                 .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
                 .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
                 .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+                .replace(/\[baslangic:[^\]]+\]/gi, '')
+                .replace(/\[tamamlanma:[^\]]+\]/gi, '')
+                .replace(/\[dakiklik:(?:fast|ontime|late)\]/gi, '')
+                .replace(/\[proje:[^\]]+\]/gi, '')
+                .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
                 .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
                 .replace(/\s+/g, ' ')
                 .trim();
@@ -439,7 +451,7 @@ export default function TasksView({
       if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
 
       const line = lines[task.lineIdx];
-      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s+.*)$/);
+      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s+.*)$/);
       if (!checklistMatch) return;
 
       const prefix = checklistMatch[1];
@@ -480,7 +492,7 @@ export default function TasksView({
 
       // Re-read the raw line to preserve capture timestamps; strip only annotation tags
       const rawLine = lines[task.lineIdx];
-      const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s+)(.*)$/);
+      const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
       if (!lineBodyMatch) return;
 
       let cleanText = lineBodyMatch[2]
@@ -578,7 +590,7 @@ export default function TasksView({
       if (subtask.lineIdx < 0 || subtask.lineIdx >= lines.length) return;
 
       const line = lines[subtask.lineIdx];
-      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s+.*)$/);
+      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s+.*)$/);
       if (!checklistMatch) return;
 
       const prefix = checklistMatch[1];
@@ -860,7 +872,7 @@ export default function TasksView({
           <div className="row-control">
             {task.questOutcome ? (
               <span style={{ fontSize: '11px', fontWeight: 'bold', color: task.questOutcome === 'fast' ? '#22c55e' : task.questOutcome === 'ontime' ? '#94a3b8' : '#ef4444' }}>
-                {task.questOutcome === 'fast' ? '⚡ Erken bitirdi' : task.questOutcome === 'ontime' ? '✅ Zamanında bitirdi' : '🐌 Geç kaldı'}
+                {task.questOutcome === 'fast' ? '⚡ Erken bitirdi' : task.questOutcome === 'ontime' ? '✅ Zamanında bitirdi' : task.questOutcome === 'incomplete' ? '❌ Bitirilmedi' : '🐌 Geç kaldı'}
               </span>
             ) : task.questStartedAt ? (
               (() => {
@@ -972,7 +984,7 @@ export default function TasksView({
           </div>
         )}
 
-        <form 
+        <form
           onSubmit={(e) => {
             e.preventDefault();
             if (newSubtaskText.trim()) {
@@ -986,6 +998,20 @@ export default function TasksView({
             type="text"
             value={newSubtaskText}
             onChange={(e) => setNewSubtaskText(e.target.value)}
+            onKeyDown={(e) => {
+              // BUG DÜZELTMESİ: Enter'a basınca alt görev eklenmiyordu — tarayıcının
+              // formu Enter'da otomatik submit etmesi (implicit submission) senkron
+              // olmayan/güvenilmeyen tuş olaylarında (bazı Electron/otomasyon
+              // bağlamlarında) tetiklenmeyebiliyor. Native davranışa güvenmek yerine
+              // Enter'ı burada doğrudan yakalayıp aynı ekleme mantığını çalıştırıyoruz.
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (newSubtaskText.trim()) {
+                  handleAddSubtask(task, newSubtaskText);
+                  setNewSubtaskText('');
+                }
+              }
+            }}
             placeholder="Yeni alt görev ekle..."
             className="drawer-date-input"
             style={{ flex: 1, minWidth: 0, padding: '6px 12px' }}

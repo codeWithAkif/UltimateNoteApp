@@ -39,7 +39,7 @@ import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMod
 import {
   type PunctualityState,
   createDefaultPunctualityState, nudgeScore, getPunctualityLabel, SCORE_EMA_ALPHA,
-  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine, getDeadlineFromLine
+  applyCompletionToLine, applyQuestStartToLine, applyAutoFailToLine, applyAutoStopUnfinishedToLine, getDeadlineFromLine
 } from './punctuality';
 import {
   getGeminiApiKey, setGeminiApiKey, isGeminiConfigured, getGeminiModel, setGeminiModel,
@@ -353,6 +353,12 @@ export default function App() {
   // App-wide unified Timeline Items (Combined tasks & logs)
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>([]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  // 60 saniyelik periyodik tarama (applyAutoStopUnfinishedToLine) her tetiklendiğinde GÜNCEL
+  // fileContents'a erişebilmek için — effect'in bağımlılığı kasıtlı olarak dar tutulduğundan
+  // (bkz. useEffect([notes.length > 0])), setInterval içindeki closure'ın state'i bayat
+  // yakalamaması gerekir.
+  const fileContentsRef = useRef(fileContents);
+  useEffect(() => { fileContentsRef.current = fileContents; }, [fileContents]);
   const [recentInputs, setRecentInputs] = useState<any[]>([]);
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -870,7 +876,7 @@ export default function App() {
   // her biri için ayrı bir push bildirimi göndermek can sıkıcı bir bildirim yağmuruna yol
   // açardı, bu yüzden o yol skoru sessizce günceller, bildirim/toast göndermez.
   const applyQuestRewardToState = async (
-    reward: { outcome: 'fast' | 'ontime' | 'late'; outcomeScore: number; completedAt?: string; gapMinutes?: number; dueDate?: string | null; plannedEndAbsMin?: number | null },
+    reward: { outcome: 'fast' | 'ontime' | 'late' | 'incomplete'; outcomeScore: number; completedAt?: string; gapMinutes?: number; dueDate?: string | null; plannedEndAbsMin?: number | null },
     silent: boolean = false
   ) => {
     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -908,7 +914,7 @@ export default function App() {
         Object.values(fileContents).forEach(content => {
           if (!content) return;
           content.split('\n').forEach(line => {
-            const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+            const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
             if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
             const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
             if (!dueMatch || dueMatch[1] !== dueDate) return;
@@ -949,7 +955,7 @@ export default function App() {
       Object.entries(fileContents).forEach(([path, content]) => {
         if (!content) return;
         content.split('\n').forEach(line => {
-          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
           if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
           const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
           if (!dueMatch || dueMatch[1] !== dueDate) return;
@@ -971,7 +977,7 @@ export default function App() {
         const content = await (isBrowser ? Promise.resolve(localStorage.getItem(`mock_note_${path}`) || '') : platform.readNote(path));
         const lines = content.split('\n');
         const newLines = lines.map(line => {
-          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+          const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
           if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return line;
           const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
           if (!dueMatch || dueMatch[1] !== dueDate) return line;
@@ -1043,6 +1049,62 @@ export default function App() {
     // yeniden taramak (her tuş vuruşunda tetiklenebileceğinden) performansı ciddi
     // etkiler ve zaten gerekli değildir (yeni biten görevler kendi tamamlama anında
     // ödüllendirilir, bu efekt sadece "unutulmuş/asla başlanmamış" görevler içindir).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes.length > 0]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "▶️ Başla" ile başlanmış ama planlanan bitişin üzerinden 30+ dakika geçtiği hâlde
+  // hâlâ tamamlanmamış görevler otomatik DURDURULSUN ve "bitirilmedi" olarak damgalansın
+  // (bkz. punctuality.ts applyAutoStopUnfinishedToLine) — applyAutoFailToLine'ın (üstteki
+  // efekt, hiç başlanmamış/önceki günden kalma görevler) tamamlayıcısı. Yukarıdaki efektten
+  // farklı olarak SADECE uygulama açılışında değil, 60 saniyede bir de kontrol edilir — çünkü
+  // "30 dakika geçti mi" durumu uygulama AÇIKKEN de gerçek zamanlı olarak oluşabilir.
+  const runAutoStopUnfinishedScan = () => {
+    const now = new Date();
+    let anyStopped = false;
+    const writes: { path: string; content: string }[] = [];
+    const currentFileContents = fileContentsRef.current;
+
+    Object.keys(currentFileContents).forEach(path => {
+      const content = currentFileContents[path];
+      if (!content) return;
+      const lines = content.split('\n');
+      let changed = false;
+      const newLines = lines.map(line => {
+        const result = applyAutoStopUnfinishedToLine(line, now);
+        if (!result) return line;
+        changed = true;
+        anyStopped = true;
+        applyQuestRewardToState(result, true);
+        return result.newLine;
+      });
+      if (changed) {
+        writes.push({ path, content: newLines.join('\n') });
+      }
+    });
+
+    if (anyStopped) {
+      writes.forEach(async ({ path, content }) => {
+        if (!isBrowser) {
+          await platform.writeNote(path, content);
+        } else {
+          localStorage.setItem(`mock_note_${path}`, content);
+        }
+        handleLocalSave(path, content);
+      });
+      setFileContents(prev => {
+        const next = { ...prev };
+        writes.forEach(({ path, content }) => { next[path] = content; });
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!(notes.length > 0)) return;
+    runAutoStopUnfinishedScan();
+    const interval = setInterval(runAutoStopUnfinishedScan, 60000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notes.length > 0]);
 
@@ -3262,6 +3324,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             while ((tagMatch = tagRegex.exec(rawText)) !== null) {
               taskTags.push(tagMatch[1].toLowerCase());
             }
+            // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug" yerine
+            // bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
+            const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            let projTagMatch;
+            while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
+              taskTags.push(projTagMatch[1].toLowerCase());
+            }
 
             const timestampMatch = rawText.match(/\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/);
             const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/);
@@ -3296,11 +3365,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             }
 
             // Clean display content
+            // BUG DÜZELTMESİ: Kanban/Timeline gibi görünümler bu "content" alanını doğrudan
+            // kart başlığı olarak gösteriyordu — [baslangic:]/[tamamlanma:]/[dakiklik:] gibi
+            // iç metadata etiketleri ve #proje hashtag'i hiç temizlenmediği için kart başlığında
+            // ham olarak görünüyordu (kullanıcı isteği: bunlar hiçbir yerde görünmesin).
             const cleanContent = rawText
               .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
               .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+              .replace(/\[baslangic:[^\]]+\]/gi, '')
+              .replace(/\[tamamlanma:[^\]]+\]/gi, '')
+              .replace(/\[dakiklik:(?:fast|ontime|late)\]/gi, '')
+              .replace(/\[proje:[^\]]+\]/gi, '')
+              .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
               .replace(/\s+/g, ' ')
               .trim();
@@ -5829,14 +5907,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             lineIdx = lines.findIndex(l => {
               const hasTimestamp = l.includes(fullTimeStr);
               const hasContent = l.includes(item.content);
-              const isChecklist = /^\s*[*\-]\s+\[([ xX])\]/.test(l);
+              const isChecklist = /^\s*[*\-]\s+\[([ xX/])\]/.test(l);
               return isChecklist && hasTimestamp && hasContent;
             });
           }
 
           if (lineIdx !== -1 && lineIdx < lines.length) {
             const line = lines[lineIdx];
-            const match = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+            const match = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
             if (match) {
               const statusChar = nextState ? 'x' : ' ';
               lines[lineIdx] = `${match[1]}${statusChar}${match[3]}`;
@@ -7186,8 +7264,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <EforView
               notes={notes}
               fileContents={fileContents}
-              clientNames={clientNames}
-              clientProjectSlugs={clientProjectSlugs}
+              projectNames={projectNames}
             />
           )}
 

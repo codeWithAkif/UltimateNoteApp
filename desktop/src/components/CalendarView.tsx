@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   format, 
   startOfMonth, 
@@ -224,7 +225,7 @@ export interface WorkspaceTask {
   externalSource?: 'google' | 'outlook';
   questStartedAt: string | null;
   questCompletedAt: string | null;
-  questOutcome: 'fast' | 'ontime' | 'late' | null;
+  questOutcome: 'fast' | 'ontime' | 'late' | 'incomplete' | null;
 }
 
 interface ICSEvent {
@@ -860,6 +861,28 @@ export default function CalendarView({
     isEditMode: boolean;
   } | null>(null);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "Yeni Görev Ekle/Düzenle" modalında önce MÜŞTERİ seçilsin, sonra proje dropdown'u
+  // sadece o müşterinin projeleriyle sınırlansın. Bu filtre, activeSchedulingModal'ın kendi
+  // state şeklini (7 farklı yerde oluşturuluyor) değiştirmeden, modal her açıldığında/mevcut
+  // projeye göre senkronize edilen AYRI bir yerel state olarak tutulur.
+  const [modalClientFilter, setModalClientFilter] = useState('');
+  useEffect(() => {
+    if (!activeSchedulingModal) {
+      setModalClientFilter('');
+      return;
+    }
+    if (activeSchedulingModal.projectTag) {
+      const owningClient = clientNames.find(c =>
+        (clientProjectSlugs[c] || []).includes(activeSchedulingModal.projectTag.toLowerCase().replace(/\s+/g, '-'))
+      );
+      setModalClientFilter(owningClient || '');
+    } else {
+      setModalClientFilter('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSchedulingModal?.taskId, activeSchedulingModal !== null]);
+
   // Drag, Drop, and Resize states
   const [tempEventHeights, setTempEventHeights] = useState<{ [key: string]: number }>({});
   const [resizingEvent, setResizingEvent] = useState<{
@@ -989,7 +1012,7 @@ export default function CalendarView({
         const parentStack: { indent: number; id: string }[] = [];
 
         lines.forEach((line, idx) => {
-          const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX])\])\s+(.*)$/);
+          const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX/])\])\s+(.*)$/);
           if (checklistMatch) {
             const leadingWhitespace = checklistMatch[1];
             const indent = leadingWhitespace.length;
@@ -1076,6 +1099,16 @@ export default function CalendarView({
             while ((tagMatch = tagRegex.exec(rawText)) !== null) {
               taskTags.push(tagMatch[1].toLowerCase());
             }
+            // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+            // İSTEK: kullanıcı proje etiketinin ("#borusan" gibi) görev metninde görünmesini
+            // istemiyor. Yeni oluşturulan görevler artık görünmez [proje:slug] köşeli parantez
+            // etiketiyle işaretleniyor (bkz. CalendarView.tsx handleCreateQuickTask/handleEditTask).
+            // Eski #slug etiketli notlarla geriye dönük uyumluluk için HER İKİSİ de taranır.
+            const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            let projTagMatch;
+            while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
+              taskTags.push(projTagMatch[1].toLowerCase());
+            }
 
             // Calculate Score
             let score = 0;
@@ -1106,6 +1139,7 @@ export default function CalendarView({
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
               .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+              .replace(/\[proje:[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // Strip capture timestamp
               .replace(/\s+/g, ' ')
               .trim();
@@ -1199,6 +1233,59 @@ export default function CalendarView({
     return () => { active = false; };
   }, [notes, refreshTrigger]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: planlanan bir görevin başlangıcı VE bitişi geçtiği hâlde hiç başlatılmamışsa
+  // (▶️'ye hiç basılmamış — questStartedAt yok), görev "Planlanmamış Görevler"e geri
+  // düşsün — kullanıcı elle "planı kaldır" yapmak zorunda kalmadan. Bunun için sadece
+  // PLANLANAN BAŞLANGIÇ saatini değil, bloğun TAMAMEN bitmiş olmasını (planlanan bitiş
+  // saatini) bekliyoruz — "isOverdueToStart" (kartı turuncu yapan uyarı) kasıtlı olarak
+  // daha erken tetiklenir, bu farklı ve daha temkinli bir eşik. handleUnscheduleTask ile
+  // AYNI [due:]/[time:] temizleme mantığını kullanır, ama aynı dosyaya ait birden fazla
+  // geciken görev varsa hepsini TEK okuma/yazma turunda işler (yarış durumu olmasın diye).
+  const autoRevertedTaskIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const now = Date.now();
+    const overdueUnstarted = tasks.filter(t => {
+      if (t.isExternal || t.isChecked || t.questStartedAt || !t.dueDate || !t.timeSlot) return false;
+      if (autoRevertedTaskIdsRef.current.has(t.id)) return false;
+      const endPart = t.timeSlot.split('-')[1];
+      if (!endPart) return false;
+      const [eh, em] = endPart.split(':').map(Number);
+      if (isNaN(eh) || isNaN(em)) return false;
+      const plannedEndMs = new Date(`${t.dueDate}T00:00:00`).setHours(eh, em, 0, 0);
+      return now > plannedEndMs;
+    });
+    if (overdueUnstarted.length === 0) return;
+
+    const byFile = new Map<string, WorkspaceTask[]>();
+    overdueUnstarted.forEach(t => {
+      autoRevertedTaskIdsRef.current.add(t.id);
+      if (!byFile.has(t.filePath)) byFile.set(t.filePath, []);
+      byFile.get(t.filePath)!.push(t);
+    });
+
+    (async () => {
+      for (const [filePath, tasksInFile] of byFile) {
+        try {
+          const fileContent = await readNoteContent(filePath);
+          const lines = fileContent.split('\n');
+          tasksInFile.forEach(t => {
+            if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
+              lines[t.lineIdx] = lines[t.lineIdx]
+                .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+                .replace(/\s*\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+                .replace(/\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '');
+            }
+          });
+          await onSaveNote(filePath, lines.join('\n'));
+        } catch (err) {
+          console.error('Error auto-reverting overdue unstarted tasks:', filePath, err);
+        }
+      }
+      setRefreshTrigger(prev => prev + 1);
+    })();
+  }, [tasks]);
+
   // Handle Drag scheduling
   const handleScheduleTask = async (taskId: string, dateStr: string, timeSlot: string | null) => {
     let task = tasks.find(t => t.id === taskId);
@@ -1242,7 +1329,7 @@ export default function CalendarView({
       if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
 
       const rawLine = lines[task.lineIdx];
-      const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s+)(.*)$/);
+      const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
       
       let cleanText = '';
       let prefix = '';
@@ -1316,12 +1403,14 @@ export default function CalendarView({
       // due/time HER ZAMAN tarih/saat alanlarından yeniden yazılır — diğer tüm köşeli
       // parantezli etiketler ([p:], [repeat:], [baslangic:], [tamamlanma:], [dakiklik:] vb.)
       // ham satırdan olduğu gibi korunur (düzenleme alanı bunları hiç göstermiyor).
-      const preservedBracketTags = (body.match(/\[[^\]]+\]/g) || [])
+      let preservedBracketTags = (body.match(/\[[^\]]+\]/g) || [])
         .filter(tag => !/^\[due:/i.test(tag) && !/^\[time:/i.test(tag));
 
-      // Proje etiketi: eski proje etiketi (varsa) metinden çıkarılır, yeni seçilen projenin
-      // etiketi (metinde zaten yoksa) eklenir. Kullanıcı metni elle düzenlediyse (ör. etiketi
-      // kendi silmişse) buna saygı duyulur — sadece SEÇİCİDEKİ değişiklik uygulanır.
+      // BUG DÜZELTMESİ (kullanıcı isteği): proje bağlantısı artık görünür "#borusan" hashtag'i
+      // olarak METNE eklenmiyor — görünmez [proje:slug] köşeli parantez etiketi olarak (diğer
+      // metadata etiketleri gibi) saklanıyor, GÖREV ADI hiçbir zaman kirlenmiyor. Eski #slug
+      // etiketli notlarla geriye dönük uyumluluk için hem hashtag hem köşeli parantez biçimi
+      // temizlenip yeniden yazılıyor.
       const oldProjectSlug = projectNames
         .map(n => n.toLowerCase().replace(/\s+/g, '-'))
         .find(slug => task.ownTags.includes(slug));
@@ -1329,9 +1418,10 @@ export default function CalendarView({
       let editedText = newText.trim();
       if (oldProjectSlug && oldProjectSlug !== newProjectSlug) {
         editedText = editedText.replace(new RegExp(`#${oldProjectSlug}\\b`, 'i'), '').replace(/\s+/g, ' ').trim();
+        preservedBracketTags = preservedBracketTags.filter(tag => !new RegExp(`^\\[proje:${oldProjectSlug}\\]$`, 'i').test(tag));
       }
-      if (newProjectSlug && !new RegExp(`#${newProjectSlug}\\b`, 'i').test(editedText)) {
-        editedText += ` #${newProjectSlug}`;
+      if (newProjectSlug && !preservedBracketTags.some(tag => new RegExp(`^\\[proje:${newProjectSlug}\\]$`, 'i').test(tag))) {
+        preservedBracketTags.push(`[proje:${newProjectSlug}]`);
       }
 
       let newBody = `${editedText} [due:${dateStr}]`;
@@ -1421,7 +1511,7 @@ export default function CalendarView({
         if (sub.lineIdx < 0 || sub.lineIdx >= lines.length) return;
         const rawLine = lines[sub.lineIdx];
         
-        const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s+)(.*)$/);
+        const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
         
         let cleanText = '';
         let prefix = '';
@@ -1504,7 +1594,7 @@ export default function CalendarView({
       if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
 
       const rawLine = lines[task.lineIdx];
-      const match = rawLine.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+      const match = rawLine.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
       if (!match) return;
 
       const prefix = match[1];
@@ -1604,11 +1694,12 @@ export default function CalendarView({
       }
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
       // Görev fiziksel olarak SADECE günün notuna yazılır (kullanıcının sevdiği yapı korunur) —
-      // ama bir proje seçildiyse satıra #proje-slug etiketi eklenir. Proje notu (bkz.
-      // ProjectsView.tsx getProjectProgress/currentProjectTasks) bu etiketi canlı olarak
+      // ama bir proje seçildiyse satıra GÖRÜNMEZ [proje:slug] köşeli parantez etiketi eklenir
+      // (kullanıcı isteği: görünür "#proje-slug" hashtag'i görev adını kirletmesin). Proje notu
+      // (bkz. ProjectsView.tsx getProjectProgress/currentProjectTasks) bu etiketi canlı olarak
       // sorgulayıp aynı satırı sayar, fiziksel ikinci bir kopya oluşturulmaz.
       if (projectSlug) {
-        taskLine += ` #${projectSlug}`;
+        taskLine += ` [proje:${projectSlug}]`;
       }
 
       await onSaveNote(relativePath, existingContent + taskLine);
@@ -2233,11 +2324,12 @@ export default function CalendarView({
                                   title={
                                     task.questOutcome === 'fast' ? 'Erken bitirdi' :
                                     task.questOutcome === 'ontime' ? 'Zamanında bitirdi' :
+                                    task.questOutcome === 'incomplete' ? 'Bitirilmedi (otomatik durduruldu)' :
                                     'Geç kaldı'
                                   }
                                   style={{ fontSize: '9px', flexShrink: 0, marginRight: '2px' }}
                                 >
-                                  {task.questOutcome === 'fast' ? '⚡' : task.questOutcome === 'ontime' ? '✅' : '🐌'}
+                                  {task.questOutcome === 'fast' ? '⚡' : task.questOutcome === 'ontime' ? '✅' : task.questOutcome === 'incomplete' ? '❌' : '🐌'}
                                 </span>
                               )}
                               {!task.isExternal && !task.questOutcome && task.questStartedAt && !task.isChecked && (() => {
@@ -3814,7 +3906,7 @@ export default function CalendarView({
         )}
       </div>
 
-      {popoverState && (
+      {popoverState && createPortal(
         <div
           className="subtask-hover-popover animate-fade"
           onMouseEnter={handlePopoverMouseEnter}
@@ -3893,7 +3985,7 @@ export default function CalendarView({
                     const lines = fileContent.split('\n');
                     if (sub.lineIdx >= 0 && sub.lineIdx < lines.length) {
                       const rawLine = lines[sub.lineIdx];
-                      const match = rawLine.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+                      const match = rawLine.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
                       if (match) {
                         const prefix = match[1];
                         const currentStatus = match[2];
@@ -3929,7 +4021,8 @@ export default function CalendarView({
               </div>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {schedulingModalData && (
@@ -4178,12 +4271,16 @@ export default function CalendarView({
               />
             </div>
 
-            {(!activeSchedulingModal.taskId || activeSchedulingModal.isEditMode) && projectNames.length > 0 && (
+            {(!activeSchedulingModal.taskId || activeSchedulingModal.isEditMode) && clientNames.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>PROJE (opsiyonel)</label>
+                <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>MÜŞTERİ (opsiyonel)</label>
                 <select
-                  value={activeSchedulingModal.projectTag}
-                  onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, projectTag: e.target.value })}
+                  value={modalClientFilter}
+                  onChange={(e) => {
+                    // Müşteri değişince, artık listede olmayan bir proje seçili kalmasın
+                    setModalClientFilter(e.target.value);
+                    setActiveSchedulingModal({ ...activeSchedulingModal, projectTag: '' });
+                  }}
                   style={{
                     background: 'var(--bg-tertiary)',
                     border: '1px solid var(--border-color)',
@@ -4194,13 +4291,45 @@ export default function CalendarView({
                     outline: 'none'
                   }}
                 >
-                  <option value="">Proje seçme</option>
-                  {projectNames.map(name => (
+                  <option value="">Müşteri seçme</option>
+                  {clientNames.map(name => (
                     <option key={name} value={name}>{name}</option>
                   ))}
                 </select>
               </div>
             )}
+
+            {(!activeSchedulingModal.taskId || activeSchedulingModal.isEditMode) && projectNames.length > 0 && (() => {
+              const visibleProjectNames = modalClientFilter
+                ? projectNames.filter(name => (clientProjectSlugs[modalClientFilter] || []).includes(name.toLowerCase().replace(/\s+/g, '-')))
+                : projectNames;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>PROJE (opsiyonel)</label>
+                  <select
+                    value={activeSchedulingModal.projectTag}
+                    onChange={(e) => setActiveSchedulingModal({ ...activeSchedulingModal, projectTag: e.target.value })}
+                    style={{
+                      background: 'var(--bg-tertiary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      color: 'var(--text-primary)',
+                      padding: '8px 12px',
+                      fontSize: '13px',
+                      outline: 'none'
+                    }}
+                  >
+                    <option value="">Proje seçme</option>
+                    {visibleProjectNames.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  {modalClientFilter && visibleProjectNames.length === 0 && (
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Bu müşterinin projesi yok.</span>
+                  )}
+                </div>
+              );
+            })()}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>TARİH</label>

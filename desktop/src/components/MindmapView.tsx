@@ -215,7 +215,7 @@ export default function MindmapView({
       }
       // B. GÖREV LİSTELERİ
       else {
-        const taskMatch = line.match(/^(\s*)[-*+]\s+\[([ xX])\]\s*(.*)$/);
+        const taskMatch = line.match(/^(\s*)[-*+]\s+\[([ xX/])\]\s*(.*)$/);
         if (taskMatch) {
           const indentSpaces = taskMatch[1].length;
           const checked = taskMatch[2].toLowerCase() === 'x';
@@ -248,7 +248,7 @@ export default function MindmapView({
         }
         // C. LİSTE MADDELERİ
         else {
-          const listMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX]\])(.*)$/);
+          const listMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX/]\])(.*)$/);
           if (listMatch) {
             const indentSpaces = listMatch[1].length;
             const text = listMatch[2].trim();

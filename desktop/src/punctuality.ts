@@ -8,7 +8,7 @@
 // satırında satır-içi etiket olarak yaşar, ayrı bir depolama katmanı YOK. Sadece toplu skor
 // (App.tsx'teki PunctualityState) kendi küçük localStorage anahtarı + Supabase tablosunda durur.
 
-export type PunctualityOutcome = 'fast' | 'ontime' | 'late';
+export type PunctualityOutcome = 'fast' | 'ontime' | 'late' | 'incomplete';
 
 export interface PunctualityState {
   score: number; // 0-100, başlangıç 50 (nötr)
@@ -38,7 +38,7 @@ export const nudgeScore = (oldScore: number, outcomeScore: number): number => {
 
 export const STARTED_TAG_REGEX = /\[baslangic:([^\]]+)\]/i;
 export const COMPLETED_TAG_REGEX = /\[tamamlanma:([^\]]+)\]/i;
-export const PUNCTUALITY_OUTCOME_TAG_REGEX = /\[dakiklik:(fast|ontime|late)\]/i;
+export const PUNCTUALITY_OUTCOME_TAG_REGEX = /\[dakiklik:(fast|ontime|late|incomplete)\]/i;
 
 export const parseQuestTags = (rawText: string) => {
   const startedMatch = rawText.match(STARTED_TAG_REGEX);
@@ -133,7 +133,7 @@ export interface LineCompletionResult {
 // (idempotency guard) ya da bir checklist öğesi DEĞİLSE ya da işaretlenmemiş durumdaysa null
 // döner (ödül uygulanmaz).
 export const applyCompletionToLine = (line: string): LineCompletionResult | null => {
-  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
   if (!checklistMatch) return null;
   const isChecked = checklistMatch[2].toLowerCase() === 'x';
   if (!isChecked) return null;
@@ -170,7 +170,7 @@ export const applyCompletionToLine = (line: string): LineCompletionResult | null
 // "▶️ Başla" butonuna basıldığında çağrılır — satıra [baslangic:ISO] etiketini bir kere ekler
 // (zaten varsa dokunmaz, tekrar basmak süreyi sıfırlamaz).
 export const applyQuestStartToLine = (line: string): string | null => {
-  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
   if (!checklistMatch) return null;
   if (STARTED_TAG_REGEX.test(line)) return null;
   return `${line} [baslangic:${new Date().toISOString()}]`;
@@ -182,7 +182,7 @@ export const applyQuestStartToLine = (line: string): string | null => {
 // "hiç bitirilmeden gün geçmesi" kuralını uygular. Tarama App.tsx'te yapılır, bu sadece tek
 // bir satır için karar veren saf fonksiyondur.
 export const applyAutoFailToLine = (line: string, todayStr: string): LineCompletionResult | null => {
-  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
   if (!checklistMatch) return null;
   const isChecked = checklistMatch[2].toLowerCase() === 'x';
   if (isChecked) return null;
@@ -195,6 +195,41 @@ export const applyAutoFailToLine = (line: string, todayStr: string): LineComplet
     outcome: 'late',
     outcomeScore: 5,
     completedAt: new Date().toISOString(),
+    gapMinutes: 0,
+    dueDate: null,
+    plannedEndAbsMin: null
+  };
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// İSTEK: bir göreve "▶️ Başla" ile başlanmış ama planlanan bitişin üzerinden 30+ dakika
+// geçtiği hâlde hâlâ tamamlanmamışsa, süresiz "devam ediyor" görünmesindense otomatik
+// DURDURULUP "bitirilmedi" olarak damgalanır — applyAutoFailToLine'ın (hiç başlanmamış,
+// önceki günden kalma görevler için) tamamlayıcısı: bu fonksiyon SADECE başlanmış ama
+// bırakılmış görevler içindir. [tamamlanma:] eklenir (böylece canlı sayaç durur) ve yeni
+// 'incomplete' sonucuyla damgalanır — kullanıcı arayüzünde "❌ Bitirilmedi" rozeti olarak
+// gösterilir (bkz. NotesView.tsx dakiklik rozet render'ı).
+export const applyAutoStopUnfinishedToLine = (line: string, now: Date = new Date()): LineCompletionResult | null => {
+  const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
+  if (!checklistMatch) return null;
+  const isChecked = checklistMatch[2].toLowerCase() === 'x';
+  if (isChecked) return null;
+  if (PUNCTUALITY_OUTCOME_TAG_REGEX.test(line)) return null;
+  if (!STARTED_TAG_REGEX.test(line)) return null;
+  if (COMPLETED_TAG_REGEX.test(line)) return null;
+
+  const deadline = getDeadlineFromLine(line);
+  if (!deadline) return null;
+
+  const GRACE_MS = 30 * 60 * 1000;
+  if (now.getTime() < deadline.getTime() + GRACE_MS) return null;
+
+  const completedAt = now.toISOString();
+  return {
+    newLine: `${line} [tamamlanma:${completedAt}] [dakiklik:incomplete]`,
+    outcome: 'incomplete',
+    outcomeScore: 5,
+    completedAt,
     gapMinutes: 0,
     dueDate: null,
     plannedEndAbsMin: null

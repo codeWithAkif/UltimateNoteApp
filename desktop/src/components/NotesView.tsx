@@ -786,7 +786,7 @@ const isTimestampOnlyLine = (text: string): boolean => {
 
   // Strip markdown formatting to check if line consists solely of a timestamp
   const clean = trimmed
-    .replace(/^(?:\s*[-*+]\s+\[[ xX]\]\s*)/, '') // checklist prefix
+    .replace(/^(?:\s*[-*+]\s+\[[ xX/]\]\s*)/, '') // checklist prefix
     .replace(/^(?:\s*[-*+]\s*)/, '')            // bullet prefix
     .replace(/^(?:\s*\d+\.\s*)/, '')            // ordered list prefix
     .replace(/^(?:\s*#{1,6}\s*)/, '')           // heading prefix
@@ -1324,7 +1324,7 @@ const QueryWidget: React.FC<QueryWidgetProps> = ({ queryString, fileContents, no
         ) : (
           results.map((res, rIdx) => {
             const cleanText = res.lineText
-              .replace(/^[-*+]\s+\[[ xX]\]\s+/, '') // Görev listesi ön ekini kaldır
+              .replace(/^[-*+]\s+\[[ xX/]\]\s+/, '') // Görev listesi ön ekini kaldır
               .replace(/^[-*+]\s+/, '')             // Liste işaretini kaldır
               .replace(/\[due:[^\]]+\]/g, '')       // Tarih damgasını temizle
               .replace(/\[p:[^\]]+\]/g, '')         // Öncelik etiketini temizle
@@ -2560,6 +2560,7 @@ export default function NotesView({
     setEditorContent(version.content);
     previousContentRef.current = version.content;
     localStorage.removeItem(`active_note_draft_${activeNotePath}`);
+    localStorage.removeItem(`active_note_draft_baseline_${activeNotePath}`);
     await onSaveNote(activeNotePath, version.content);
     setIsHistoryModalOpen(false);
     setPreviewVersion(null);
@@ -4411,12 +4412,26 @@ export default function NotesView({
   useEffect(() => {
     if (activeNotePath) {
       const cachedDraft = localStorage.getItem(`active_note_draft_${activeNotePath}`);
+      const cachedDraftBaseline = localStorage.getItem(`active_note_draft_baseline_${activeNotePath}`);
       readNoteContent(activeNotePath).then((content) => {
         lastLoadedContentRef.current = content;
         lastLoadedPathRef.current = activeNotePath;
-        
-        // Use cached draft if it exists to prevent losing last second of typed text
-        if (cachedDraft !== null) {
+
+        // BUG DÜZELTMESİ (veri kaybı riski): taslak sadece kendi "baseline"ı (kaydedildiği
+        // andaki disk içeriği) ŞU AN okunan disk içeriğiyle AYNIYSA güvenilir — yani not
+        // kapatıldığından/son taslak alındığından beri disk hiç değişmemişse. Aksi halde
+        // (ör. Takvim ekranı bu arada nota yeni bir satır eklediyse) taslak BAYAT sayılır,
+        // sessizce atılır — yoksa birazdan otomatik kaydetme, başka bir ekranın eklediği
+        // satırı silip bu bayat taslağı üzerine yazardı.
+        const draftIsStale = cachedDraft !== null && cachedDraftBaseline !== null && cachedDraftBaseline !== content;
+        const draftIsUsable = cachedDraft !== null && !draftIsStale;
+        if (draftIsStale) {
+          localStorage.removeItem(`active_note_draft_${activeNotePath}`);
+          localStorage.removeItem(`active_note_draft_baseline_${activeNotePath}`);
+        }
+
+        // Use cached draft if it exists (and isn't stale) to prevent losing last second of typed text
+        if (draftIsUsable) {
           setEditorContent(cachedDraft);
         } else {
           setEditorContent(content);
@@ -4425,7 +4440,7 @@ export default function NotesView({
         // Reset undo/redo history for the new note
         historyRef.current = [];
         redoHistoryRef.current = [];
-        previousContentRef.current = cachedDraft !== null ? cachedDraft : content;
+        previousContentRef.current = draftIsUsable ? cachedDraft : content;
         
         setSyncStatus('saved');
         
@@ -4438,7 +4453,7 @@ export default function NotesView({
         // hiçbir şey yapmadan notu açar açmaz "başlık/etiketler gövdeye karışmış" hissi
         // buradan kaynaklanıyordu. Artık başlığa veya gizli metadata satırlarına ASLA
         // otomatik odaklanmıyoruz; onlar yalnızca kullanıcı bizzat tıklarsa görünür olur.
-        const freshLines = (cachedDraft !== null ? cachedDraft : content).split('\n');
+        const freshLines = (draftIsUsable ? cachedDraft : content).split('\n');
         const isAutoFocusOffLimits = (i: number): boolean => {
           const l = freshLines[i];
           if (l === undefined) return true;
@@ -4556,8 +4571,16 @@ export default function NotesView({
     const timer = setTimeout(() => {
       if (editorContent) {
         localStorage.setItem(`active_note_draft_${activeNotePath}`, editorContent);
+        // BUG DÜZELTMESİ (veri kaybı riski): taslakla BİRLİKTE, taslağın hangi disk
+        // durumundan türediğini de saklıyoruz. Not tekrar açıldığında, disk içeriği bu
+        // "baseline" ile eşleşmiyorsa (başka bir ekran — ör. Takvim — dosyayı bu arada
+        // değiştirmiş demektir) taslak artık BAYAT sayılır ve kullanılmaz; aksi halde
+        // otomatik kaydetme, başka bir görünümün az önce eklediği satırı sessizce silip
+        // eski taslağı üzerine yazabiliyordu.
+        localStorage.setItem(`active_note_draft_baseline_${activeNotePath}`, lastLoadedContentRef.current);
       } else {
         localStorage.removeItem(`active_note_draft_${activeNotePath}`);
+        localStorage.removeItem(`active_note_draft_baseline_${activeNotePath}`);
       }
     }, 200);
     return () => clearTimeout(timer);
@@ -4662,6 +4685,7 @@ export default function NotesView({
         lastLoadedPathRef.current = activeNotePath;
         setSyncStatus('saved');
         localStorage.removeItem(`active_note_draft_${activeNotePath}`);
+        localStorage.removeItem(`active_note_draft_baseline_${activeNotePath}`);
       } catch (error) {
         addDebugLog('Otomatik kaydetme hatası: ' + String(error));
       }
@@ -4790,7 +4814,7 @@ export default function NotesView({
   // Helper functions for parsing list/checklist structures
   const getChecklistInfo = (text: string) => {
     if (!text || typeof text !== 'string') return null;
-    const match = text.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s+)(.*)$/);
+    const match = text.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s+)(.*)$/);
     if (match) {
       return {
         prefix: match[1],
@@ -4800,7 +4824,7 @@ export default function NotesView({
       };
     }
     // Match empty checklist items e.g., "- [ ] " or "- [ ]"
-    const emptyMatch = text.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*)$/);
+    const emptyMatch = text.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*)$/);
     if (emptyMatch) {
       return {
         prefix: emptyMatch[1],
@@ -4883,7 +4907,7 @@ export default function NotesView({
       if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
 
       const line = linesArr[lineIdx];
-      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+      const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
       if (!checklistMatch) return prevContent;
 
       const prefix = checklistMatch[1];
@@ -4953,7 +4977,7 @@ export default function NotesView({
 
       const suffix = suffixParts.length > 0 ? ' ' + suffixParts.join(' ') : '';
       const fullLine = linesArr[lineIdx];
-      const chkMatch = fullLine.match(/^(\s*[*\-]\s+\[[ xX]\]\s*)/);
+      const chkMatch = fullLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s*)/);
       if (!chkMatch) return prevContent;
 
       linesArr[lineIdx] = `${chkMatch[1]}${cleanText}${suffix}`;
@@ -6403,7 +6427,7 @@ export default function NotesView({
   const parseInlineStylesAndTags = (text: string, lineIdx?: number): React.ReactNode[] => {
     if (!text) return [];
 
-    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
+    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[baslangic:[^\]]+\]|\[tamamlanma:[^\]]+\]|\[dakiklik:(?:fast|ontime|late|incomplete)\]|\[proje:[^\]]+\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
     const parts = text.split(regex);
     const { map: footnoteMap } = getDetailedFootnotes();
 
@@ -6761,6 +6785,44 @@ export default function NotesView({
             {label}
           </span>
         );
+      }
+      if ((part.startsWith('[baslangic:') || part.startsWith('[tamamlanma:')) && part.endsWith(']')) {
+        // BUG DÜZELTMESİ: [baslangic:]/[tamamlanma:] etiketleri UTC ISO damgası olarak
+        // saklanıyor (punctuality.ts hesaplamaları için doğru yaklaşım) ama önizlemede
+        // HİÇ biçimlendirilmeden ham UTC metni gösteriliyordu — kullanıcı Türkiye'de
+        // (UTC+3) olduğu için saatler hep "3 saat önce" gibi görünüyordu. Burada ISO
+        // damgasını YEREL saate çevirip okunabilir biçimde gösteriyoruz.
+        const isStart = part.startsWith('[baslangic:');
+        const iso = part.slice(isStart ? 11 : 12, -1);
+        const parsed = new Date(iso);
+        const label = isNaN(parsed.getTime())
+          ? iso
+          : parsed.toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        return (
+          <span key={i} className="preview-timestamp-badge" title={isStart ? 'Başlangıç Zamanı' : 'Tamamlanma Zamanı'}>
+            <Clock size={11} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle', opacity: 0.7 }} />
+            <span style={{ verticalAlign: 'middle' }}>{isStart ? 'Başlangıç' : 'Tamamlanma'}: {label}</span>
+          </span>
+        );
+      }
+      if (part.startsWith('[dakiklik:') && part.endsWith(']')) {
+        const val = part.slice(10, -1).toLowerCase();
+        let label = 'Dakiklik';
+        if (val === 'fast') label = '⚡ Erken';
+        else if (val === 'ontime') label = '✅ Zamanında';
+        else if (val === 'late') label = '⏰ Geç';
+        else if (val === 'incomplete') label = '❌ Bitirilmedi';
+        return (
+          <span key={i} className="preview-timestamp-badge" title="Dakiklik Durumu">
+            {label}
+          </span>
+        );
+      }
+      if (part.startsWith('[proje:') && part.endsWith(']')) {
+        // BUG DÜZELTMESİ (kullanıcı isteği): proje bağlantısı artık TAMAMEN görünmez —
+        // ne rozet ne ham metin olarak gösterilir; notun ham halini açsan bile görünmez.
+        // Takvim/Kanban/Efor bu etiketi görev metninden bağımsız olarak ownTags üzerinden okur.
+        return null;
       }
       if (part.startsWith('[') && part.endsWith(']') && /\d{4}-\d{2}-\d{2}/.test(part)) {
         const dateVal = part.slice(1, -1);
@@ -10149,6 +10211,12 @@ export default function NotesView({
                                       return (
                                         <button
                                           key={opt.id}
+                                          ref={(el) => {
+                                            // BUG DÜZELTMESİ: Ok tuşlarıyla seçim değişiyordu ama liste kaydırılmıyordu —
+                                            // görünür alanın dışına çıkan seçenekler klavyeyle "hiçbir şey olmuyormuş"
+                                            // gibi görünüyordu (fare tekerleğiyle manuel kaydırınca görülebiliyordu).
+                                            if (el && isActive) el.scrollIntoView({ block: 'nearest' });
+                                          }}
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             e.preventDefault();

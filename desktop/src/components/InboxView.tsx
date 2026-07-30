@@ -119,7 +119,7 @@ export default function InboxView({
       const trimmedLine = line.trim();
       
       // 1. Check checklist tasks
-      const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX])\])\s+(.*)$/);
+      const checklistMatch = line.match(/^(\s*)([*\-]\s+\[([ xX/])\])\s+(.*)$/);
       if (checklistMatch) {
         const leadingWhitespace = checklistMatch[1];
         const indent = leadingWhitespace.length;
@@ -168,7 +168,7 @@ export default function InboxView({
             blockLines.push(nextLine);
             
             // Check if this indented line is a checklist subtask
-            const subtaskMatch = nextLine.match(/^\s*[*\-]\s+\[([ xX])\]\s+(.*)$/);
+            const subtaskMatch = nextLine.match(/^\s*[*\-]\s+\[([ xX/])\]\s+(.*)$/);
             if (subtaskMatch) {
               const subTaskText = subtaskMatch[2].trim();
               if (subTaskText) {
@@ -212,7 +212,7 @@ export default function InboxView({
           const nextLine = lines[j];
           const nextTrimmed = nextLine.trim();
           
-          const isNextTodo = /^\s*[*\-]\s+\[([ xX])\]/.test(nextLine);
+          const isNextTodo = /^\s*[*\-]\s+\[([ xX/])\]/.test(nextLine);
           const isNextHeader = nextTrimmed.startsWith('### ');
           
           if (isNextTodo || isNextHeader) {
@@ -270,7 +270,7 @@ export default function InboxView({
   const handleToggleComplete = async (item: InboxItem) => {
     try {
       const fileContent = await readNoteContent(selectedInboxPath);
-      const match = item.raw.match(/^(\s*[*\-]\s+\[)([ xX])(\]\s*.*)$/);
+      const match = item.raw.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
       if (!match) return;
       const nextState = !item.isCompleted;
       const newRaw = `${match[1]}${nextState ? 'x' : ' '}${match[3]}`;
@@ -410,11 +410,11 @@ export default function InboxView({
       let newRaw = '';
 
       if (editingItem.isTodo) {
-        const match = editingItem.raw.match(/^(\s*[*\-]\s+\[[ xX]\]\s+\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s+)(.*)$/);
+        const match = editingItem.raw.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s+)(.*)$/);
         if (match) {
           newRaw = `${match[1]}${editingText} ${editingItem.tags.map(t => `#${t}`).join(' ')}`;
         } else {
-          const matchNoTime = editingItem.raw.match(/^(\s*[*\-]\s+\[[ xX]\]\s+)(.*)$/);
+          const matchNoTime = editingItem.raw.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
           if (matchNoTime) {
             newRaw = `${matchNoTime[1]}${editingText} ${editingItem.tags.map(t => `#${t}`).join(' ')}`;
           } else {
