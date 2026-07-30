@@ -23,6 +23,7 @@ interface TimelineItem {
   folder: string | null;
   note: string | null;
   tags: string[];
+  ownTags: string[];
 }
 
 interface TimelineViewProps {

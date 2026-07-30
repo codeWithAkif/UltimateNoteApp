@@ -102,7 +102,10 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // yüzdesine/Kanban listesine sayılır — TEK gerçek kopya (günlük nottaki satır), iki görünüm.
   const isProjectTask = (t: TimelineItem, cleanProjectName: string) => {
     const slug = cleanProjectName.toLowerCase().replace(/\s+/g, '-');
-    return (t.note && t.note.toLowerCase() === cleanProjectName.toLowerCase()) || t.tags.includes(slug);
+    // BUG DÜZELTMESİ: `tags` (not-geneli birleştirilmiş) yerine `ownTags` (SADECE bu
+    // görevin kendi satırı) kullanılır — aksi halde aynı günlük nottaki BAŞKA bir görevin
+    // proje etiketi, alakasız görevleri de o projeye sayarmış gibi gösterirdi.
+    return (t.note && t.note.toLowerCase() === cleanProjectName.toLowerCase()) || (t.ownTags || t.tags).includes(slug);
   };
 
   const getProjectProgress = (noteName: string) => {

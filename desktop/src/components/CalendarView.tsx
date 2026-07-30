@@ -182,6 +182,12 @@ interface CalendarViewProps {
   // hesaplar (bkz. App.tsx projectColors). Bir görev bu slug'lardan birine sahipse, kartında
   // öncelik rengi yerine müşterinin rengi/iconu gösterilir.
   projectColors?: Record<string, { color: string; icon: string }>;
+  // İSTEK: "takvim ekranında dropdown olsun, müşteri seçince o müşterinin taskları
+  // gösterilsin." clientNames: dropdown seçenekleri. clientProjectSlugs: seçilen
+  // müşterinin hangi proje etiketlerine (#proje-slug) sahip görevleri kapsadığını
+  // belirlemek için (bkz. App.tsx clientProjectSlugs hesaplaması).
+  clientNames?: string[];
+  clientProjectSlugs?: Record<string, string[]>;
 }
 
 export interface WorkspaceSubTask {
@@ -208,6 +214,9 @@ export interface WorkspaceTask {
   repeat: string;
   score: number;
   tags: string[];
+  // Yalnızca bu görevin KENDİ satırındaki etiketler (not-geneli etiketler HARİÇ) — bkz.
+  // ilgili atama noktasındaki yorum. Proje/müşteri eşleştirmesi bunu kullanmalı.
+  ownTags: string[];
   isSubtask?: boolean;
   parentTaskId?: string | null;
   subtasks?: WorkspaceSubTask[];
@@ -533,8 +542,22 @@ export default function CalendarView({
   onQuestReward,
   activeCascadeCompletedAt = null,
   projectNames = [],
-  projectColors = {}
+  projectColors = {},
+  clientNames = [],
+  clientProjectSlugs = {}
 }: CalendarViewProps) {
+  // İSTEK: takvimde müşteri seçince sadece o müşterinin görevleri gösterilsin, "Tümü"
+  // (boş seçim) seçilince eskisi gibi hepsi görünsün.
+  const [selectedClientFilter, setSelectedClientFilter] = useState('');
+  const taskMatchesClientFilter = (t: { ownTags: string[] }): boolean => {
+    if (!selectedClientFilter) return true;
+    const slugs = clientProjectSlugs[selectedClientFilter] || [];
+    // BUG DÜZELTMESİ: `tags` (not-geneli birleştirilmiş) yerine `ownTags` (SADECE bu
+    // görevin kendi satırı) kullanılır — aksi halde aynı günlük nottaki BAŞKA bir görevin
+    // proje etiketi, alakasız görevleri de eşleşiyormuş gibi gösterirdi.
+    return t.ownTags.some(tag => slugs.includes(tag));
+  };
+
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
     if (embedded) return 'day';
     return (isElectron || isBrowser) ? 'week' : 'day';
@@ -664,6 +687,7 @@ export default function CalendarView({
       repeat: '',
       score: 5,
       tags: [] as string[],
+      ownTags: [] as string[],
       isExternal: true,
       externalSource: evt.source,
       questStartedAt: null,
@@ -716,30 +740,89 @@ export default function CalendarView({
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "ctrl + orta mouse (tekerlek) ileri-geri yuvarlama ile zaman scopelama" — takvimin
+  // saatlik satır yüksekliğini (dolayısıyla tüm gün/hafta görünümündeki zaman yoğunluğunu)
+  // Ctrl+tekerlek ile yakınlaştırıp uzaklaştırma. Izgara HER YERDE "1 dakika = 1px" varsayımıyla
+  // kuruluydu (fare pozisyonu <-> dakika dönüşümleri, sürükle-oluştur, yeniden boyutlandırma,
+  // şu-an çizgisi, saat satırı yükseklikleri) — bu yüzden tek bir çarpan (zoomLevel) ekleyip
+  // TÜM bu dönüşüm noktalarını ona göre güncelledik (bkz. minToPx/pxToMin). Tercih
+  // localStorage'da kalıcı — kullanıcı bir kez ayarlayınca her açılışta korunur.
+  const [zoomLevel, setZoomLevel] = useState<number>(() => {
+    const stored = parseFloat(localStorage.getItem('calendar_zoom_level') || '1');
+    return isNaN(stored) ? 1 : Math.max(0.5, Math.min(3, stored));
+  });
+  useEffect(() => {
+    localStorage.setItem('calendar_zoom_level', String(zoomLevel));
+  }, [zoomLevel]);
+  // px -> gerçek dakika (fare/piksel ölçümlerini zoom'dan bağımsız dakikaya çevirir)
+  const pxToMin = (px: number) => px / zoomLevel;
+  // gerçek dakika -> px (render için, zoom'a göre ölçeklenmiş yükseklik/konum)
+  const minToPx = (min: number) => min * zoomLevel;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "yaklaştıkça aradaki bölümler de çıksın, önce 11:30 sonra 11:15/11:45" — zoom
+  // arttıkça saat çizgisi granülaritesi kademeli olarak inceliyor (Google Calendar tarzı):
+  // uzaktan sadece tam saat, orta zoom'da yarım saat, yüksek zoom'da çeyrek saat çizgileri.
+  // Saat etiketi (time-axis-column) VE arka plan çizgileri (grid-lines-layer) AYNI dizinin
+  // (minuteMarks) üzerinden üretilir — bir önceki hizalama hatasının (satır sayısı/yüksekliği
+  // iki yerde ayrı hesaplanınca kayması) tekrar etmemesi için TEK bir kaynak kullanılır.
+  const minuteMarks = zoomLevel >= 2.2 ? [0, 15, 30, 45] : zoomLevel >= 1.4 ? [0, 30] : [0];
+  const timeMarks: { hour: number; min: number }[] = [];
+  for (let h = 0; h < 24; h++) {
+    minuteMarks.forEach(m => timeMarks.push({ hour: h, min: m }));
+  }
+  const markHeightPx = minToPx(60 / minuteMarks.length);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const handleWheelZoom = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      // Fare imlecinin altındaki saatte kalınmasını sağlamak için, zoom öncesi o noktanın
+      // içerikteki (scroll edilmemiş) mutlak konumunu saklayıp zoom sonrası aynı ekran
+      // konumuna geri kaydırıyoruz — aksi halde her zoom'da görünüm rastgele bir yere zıplar.
+      const rect = el.getBoundingClientRect();
+      const pointerY = e.clientY - rect.top;
+      const absoluteY = el.scrollTop + pointerY;
+      setZoomLevel(prev => {
+        const next = Math.max(0.5, Math.min(3, prev + (e.deltaY < 0 ? 0.1 : -0.1)));
+        const ratio = next / prev;
+        requestAnimationFrame(() => {
+          if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = absoluteY * ratio - pointerY;
+          }
+        });
+        return next;
+      });
+    };
+    el.addEventListener('wheel', handleWheelZoom, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheelZoom);
+  }, []);
+
   // Auto-scroll to current time slot when view mode switches
   useEffect(() => {
     if (viewMode === 'month') return;
-    
+
     const timer = setTimeout(() => {
       if (scrollContainerRef.current) {
         const now = new Date();
         const currentHour = now.getHours();
         const currentMin = now.getMinutes();
-        
-        // 1 hour = 60px
-        const targetTop = currentHour * 60 + currentMin;
+
+        const targetTop = minToPx(currentHour * 60 + currentMin);
         const containerHeight = scrollContainerRef.current.clientHeight;
         const scrollTo = Math.max(0, targetTop - containerHeight / 2);
-        
+
         scrollContainerRef.current.scrollTo({
           top: scrollTo,
           behavior: 'smooth'
         });
       }
     }, 150); // slight delay to guarantee DOM renders container
-    
+
     return () => clearTimeout(timer);
-  }, [viewMode]);
+  }, [viewMode, zoomLevel]);
 
   // Subtasks popover and choice modal states
   const [popoverState, setPopoverState] = useState<{
@@ -1043,6 +1126,15 @@ export default function CalendarView({
               repeat,
               score,
               tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
+              // BUG DÜZELTMESİ (kullanıcı geri bildirimi: müşteri filtresi ilgisiz görevleri
+              // de gösteriyordu): `tags` notun TÜM içeriğindeki hashtag'leri (noteLevelTags)
+              // her göreve miras bırakır — bu, "günün notunda birden fazla, FARKLI projeye
+              // ait görev olabilir" senaryosunda proje/müşteri eşleştirmesini bozar (aynı
+              // günlük nottaki BAŞKA bir görevin #proje-slug'ı, alakasız bir göreve de
+              // sızar). `ownTags` SADECE bu görevin KENDİ satırındaki etiketleri tutar —
+              // proje/müşteri filtreleme ve düzenleme modalındaki "hangi proje seçili"
+              // tespiti bunu kullanır.
+              ownTags: taskTags,
               isSubtask,
               parentTaskId,
               subtasks: [],
@@ -1130,6 +1222,7 @@ export default function CalendarView({
               repeat: '',
               score: 0,
               tags: [],
+              ownTags: [],
               isSubtask: true,
               parentTaskId: p.id,
               questStartedAt: null,
@@ -1231,7 +1324,7 @@ export default function CalendarView({
       // kendi silmişse) buna saygı duyulur — sadece SEÇİCİDEKİ değişiklik uygulanır.
       const oldProjectSlug = projectNames
         .map(n => n.toLowerCase().replace(/\s+/g, '-'))
-        .find(slug => task.tags.includes(slug));
+        .find(slug => task.ownTags.includes(slug));
 
       let editedText = newText.trim();
       if (oldProjectSlug && oldProjectSlug !== newProjectSlug) {
@@ -1275,6 +1368,7 @@ export default function CalendarView({
               repeat: '',
               score: 0,
               tags: [],
+              ownTags: [],
               isSubtask: true,
               parentTaskId: p.id,
               questStartedAt: null,
@@ -1542,30 +1636,31 @@ export default function CalendarView({
     const timeDataForSnap = parseTime(resizingEvent.originalTimeSlot);
     const startMinutesAbs = timeDataForSnap ? timeDataForSnap.startHour * 60 + timeDataForSnap.startMin : 0;
 
-    // rawHeightPx: sürükleme sırasında piksel cinsinden ham süre (1px = 1dk).
+    // rawHeightMin: sürükleme sırasında GERÇEK dakika cinsinden ham süre (zoom'dan
+    // bağımsız — pxToMin ile px'ten dakikaya çevrilmiş).
     // Geri dönüş: snap'lenmiş MUTLAK bitiş dakikası (gece yarısından itibaren).
-    const snapEndAbsMinutes = (rawHeightPx: number) => {
-      const rawEndAbs = startMinutesAbs + rawHeightPx;
+    const snapEndAbsMinutes = (rawHeightMin: number) => {
+      const rawEndAbs = startMinutesAbs + rawHeightMin;
       const snappedEndAbs = Math.round(rawEndAbs / SNAP_MINUTES) * SNAP_MINUTES;
       return Math.max(startMinutesAbs + SNAP_MINUTES, snappedEndAbs); // en az 15 dk süre
     };
 
     const handleMouseMove = (e: MouseEvent) => {
       const deltaY = e.clientY - resizingEvent.startY;
-      const rawHeight = Math.max(30, resizingEvent.startHeight + deltaY);
-      const snappedEndAbs = snapEndAbsMinutes(rawHeight);
-      const newHeight = snappedEndAbs - startMinutesAbs;
+      const rawHeightPx = Math.max(30 * zoomLevel, resizingEvent.startHeight + deltaY);
+      const snappedEndAbs = snapEndAbsMinutes(pxToMin(rawHeightPx));
+      const newHeightMin = snappedEndAbs - startMinutesAbs;
 
       setTempEventHeights(prev => ({
         ...prev,
-        [resizingEvent.taskId]: newHeight
+        [resizingEvent.taskId]: minToPx(newHeightMin)
       }));
     };
 
     const handleMouseUp = async (e: MouseEvent) => {
       const deltaY = e.clientY - resizingEvent.startY;
-      const finalHeight = Math.max(30, resizingEvent.startHeight + deltaY);
-      const newEndMinutes = snapEndAbsMinutes(finalHeight); // mutlak, 15 dk çizgisine yapışık
+      const finalHeightPx = Math.max(30 * zoomLevel, resizingEvent.startHeight + deltaY);
+      const newEndMinutes = snapEndAbsMinutes(pxToMin(finalHeightPx)); // mutlak, 15 dk çizgisine yapışık
 
       const timeData = timeDataForSnap;
       if (timeData) {
@@ -1592,7 +1687,7 @@ export default function CalendarView({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [resizingEvent]);
+  }, [resizingEvent, zoomLevel]);
 
   // Dynamic Drag-to-Create hook
   useEffect(() => {
@@ -1603,9 +1698,9 @@ export default function CalendarView({
       if (!colEl) return;
       const rect = colEl.getBoundingClientRect();
       const currentY = e.clientY - rect.top;
-      const currentMin = Math.max(0, Math.min(1440, currentY));
-      
-      const diff = Math.abs(currentMin - dragToCreate.startMin);
+      const currentMin = Math.max(0, Math.min(1440, pxToMin(currentY)));
+
+      const diff = Math.abs(currentY - minToPx(dragToCreate.startMin));
       const isDragging = diff > 5 || dragToCreate.isDragging;
 
       setDragToCreate(prev => prev ? {
@@ -1619,12 +1714,10 @@ export default function CalendarView({
       if (dragToCreate.isDragging) {
         const minA = dragToCreate.startMin;
         const minB = dragToCreate.currentMin;
-        const startPixel = Math.min(minA, minB);
-        const endPixel = Math.max(minA, minB);
 
-        // Convert pixels to absolute day minutes (00:00 = 0px, no offset)
-        const startAbsMin = startPixel;
-        const endAbsMin = endPixel;
+        // dragToCreate.startMin/currentMin zaten GERÇEK dakika (zoom'dan bağımsız).
+        const startAbsMin = Math.min(minA, minB);
+        const endAbsMin = Math.max(minA, minB);
 
         // Round to nearest 15-minute intervals
         const roundedStartAbsMin = Math.round(startAbsMin / 15) * 15;
@@ -1676,7 +1769,7 @@ export default function CalendarView({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragToCreate]);
+  }, [dragToCreate, zoomLevel]);
 
   // Navigate dates based on active view mode
   const handleNext = () => {
@@ -1736,6 +1829,9 @@ export default function CalendarView({
 
     // Tamamlanmış görevler "Planlanmamış Görevler" panelinde gösterilmez.
     if (t.isChecked) return false;
+
+    // Müşteri filtresi seçiliyse, o müşteriye ait olmayan görevleri gizle.
+    if (!taskMatchesClientFilter(t)) return false;
 
     // Check if task should be skipped/excluded from unplanned list
     const hasExcludeTag = t.tags && (
@@ -1797,9 +1893,9 @@ export default function CalendarView({
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     const mouseY = e.clientY - rect.top;
-    
-    // Grid matches 00:00 to 24:00 (24 hours = 1440px, so 1 hour = 60px, 1 min = 1px)
-    const startMinutes = mouseY; // direct pixel = minute from midnight
+
+    // Izgara 00:00-24:00 aralığına yayılır; px -> dakika dönüşümü zoom seviyesine göre yapılır.
+    const startMinutes = pxToMin(mouseY);
     const roundedMinutes = Math.round(startMinutes / 15) * 15; // 15 dk'lık çizgiye yapış (diğer akışlarla tutarlı)
     
     const startHour = Math.floor(roundedMinutes / 60);
@@ -1962,6 +2058,52 @@ export default function CalendarView({
                 Günlük
               </button>
             </div>}
+            {viewMode !== 'month' && (
+              // İSTEK: Ctrl+tekerlek zoom sırasında hangi ölçekte olduğunuzu net görmeniz için —
+              // tıklayınca %100'e (varsayılan saat yüksekliğine) sıfırlar.
+              <button
+                type="button"
+                onClick={() => setZoomLevel(1)}
+                title="Zaman ölçeğini sıfırla (Ctrl+fare tekerleği ile yakınlaştır/uzaklaştır)"
+                style={{
+                  marginLeft: '8px',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-color)',
+                  background: zoomLevel !== 1 ? 'var(--bg-hover)' : 'transparent',
+                  color: 'var(--text-muted)',
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  cursor: 'pointer'
+                }}
+              >
+                🔍 {Math.round(zoomLevel * 100)}%
+              </button>
+            )}
+            {clientNames.length > 0 && (
+              // İSTEK: "takvim ekranında dropdown olsun, müşteri seçince o müşterinin
+              // taskları gösterilsin, hepsi seçilince şimdiki gibi hepsi gösterilsin."
+              <select
+                value={selectedClientFilter}
+                onChange={(e) => setSelectedClientFilter(e.target.value)}
+                title="Müşteriye göre filtrele"
+                style={{
+                  marginLeft: '8px',
+                  padding: '5px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-color)',
+                  background: selectedClientFilter ? 'var(--accent-color)' : 'var(--bg-secondary)',
+                  color: selectedClientFilter ? '#fff' : 'var(--text-secondary)',
+                  fontSize: '12px',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value="">Tümü</option>
+                {clientNames.map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 
@@ -1985,7 +2127,7 @@ export default function CalendarView({
                   const isTod = isToday(day);
                   
                   // Filter tasks scheduled on this day
-                  const dayTasks = allMergedEvents.filter(t => t.dueDate === dayStr);
+                  const dayTasks = allMergedEvents.filter(t => t.dueDate === dayStr && taskMatchesClientFilter(t));
                   const pendingDayTasks = dayTasks.filter(t => !t.isChecked);
 
                   return (
@@ -2272,7 +2414,7 @@ export default function CalendarView({
                 <div className="allday-columns">
                   {activeDaysList.map(day => {
                     const dayStr = format(day, 'yyyy-MM-dd');
-                    const dayAlldayTasks = allMergedEvents.filter(t => t.dueDate === dayStr && !t.timeSlot);
+                    const dayAlldayTasks = allMergedEvents.filter(t => t.dueDate === dayStr && !t.timeSlot && taskMatchesClientFilter(t));
                     return (
                       <div 
                         key={dayStr} 
@@ -2401,32 +2543,38 @@ export default function CalendarView({
 
               {/* Scrollable scheduler body */}
               <div className="scheduler-body-scroll" ref={scrollContainerRef}>
-                <div className="scheduler-grid-relative">
+                <div className="scheduler-grid-relative" style={{ height: `${minToPx(1440)}px` }}>
                   
                   {/* Left Column: Time Axis Labels */}
                   <div className="time-axis-column">
-                    {Array.from({ length: 24 }).map((_, i) => {
-                      const h = i;
-                      return (
-                        <div key={h} className="time-hour-row">
-                          <span>{String(h).padStart(2, '0')}:00</span>
-                        </div>
-                      );
-                    })}
+                    {timeMarks.map((mark, i) => (
+                      <div
+                        key={i}
+                        className={`time-hour-row ${mark.min !== 0 ? 'time-sub-row' : ''}`}
+                        style={{ height: `${markHeightPx}px` }}
+                      >
+                        <span>{String(mark.hour).padStart(2, '0')}:{String(mark.min).padStart(2, '0')}</span>
+                      </div>
+                    ))}
                   </div>
 
                   {/* Columns Grid columns for drops and events mapping */}
                   <div className="day-columns-grid">
                     {activeDaysList.map(day => {
                       const dayStr = format(day, 'yyyy-MM-dd');
-                      
-                      // Background grid lines drawing
-                      const gridLines = Array.from({ length: 24 }).map((_, i) => (
-                        <div key={i} className="scheduler-grid-hour-line" />
+
+                      // Background grid lines drawing — time-axis-column ile AYNI timeMarks/
+                      // markHeightPx kaynağını kullanır (bkz. yukarıdaki yorum).
+                      const gridLines = timeMarks.map((mark, i) => (
+                        <div
+                          key={i}
+                          className={`scheduler-grid-hour-line ${mark.min !== 0 ? 'sub-line' : ''}`}
+                          style={{ height: `${markHeightPx}px` }}
+                        />
                       ));
 
                       // Scanned events scheduled in this day column
-                      const dayScheduledEvents = allMergedEvents.filter(t => t.dueDate === dayStr && t.timeSlot);
+                      const dayScheduledEvents = allMergedEvents.filter(t => t.dueDate === dayStr && t.timeSlot && taskMatchesClientFilter(t));
 
                       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                       // BUG DÜZELTMESİ: zaman olarak çakışan görevler önceden hepsi aynı tam-genişlik
@@ -2500,7 +2648,7 @@ export default function CalendarView({
                             if (e.button !== 0) return; // Only trigger for left click
                             const rect = e.currentTarget.getBoundingClientRect();
                             const startY = e.clientY - rect.top;
-                            const startMin = Math.max(0, Math.min(1440, startY));
+                            const startMin = Math.max(0, Math.min(1440, pxToMin(startY)));
                             setDragToCreate({
                               dateStr: dayStr,
                               startMin,
@@ -2521,7 +2669,7 @@ export default function CalendarView({
                             const mouseY = e.clientY - rect.top;
                             // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                             // 15 dakikalık takvim çizgisine yapıştır (30 dk yerine) — resize ile tutarlı.
-                            const snappedMin = Math.round(mouseY / 15) * 15;
+                            const snappedMin = Math.round(pxToMin(mouseY) / 15) * 15;
                             const taskId = dragGhostTaskIdRef.current;
                             if (taskId) {
                               // Görevin KENDİ orijinal süresini koru (sabit 30/60dk varsayımı yerine).
@@ -2549,9 +2697,8 @@ export default function CalendarView({
                             const dragged = allMergedEvents.find(t => t.id === taskId);
                             const durationMin = getTaskDurationMinutes(dragged);
 
-                            // 1440px height corresponds to 24 hours (00:00 to 24:00)
-                            // 1 hour = 60px, so 1 min = 1px.
-                            const totalMinutes = mouseY;
+                            // Izgara 00:00-24:00 aralığına yayılır; px -> dakika dönüşümü zoom seviyesine göre yapılır.
+                            const totalMinutes = pxToMin(mouseY);
                             const roundedMinutes = Math.round(totalMinutes / 15) * 15; // 15 dk'lık çizgiye yapış
 
                             const startHour = Math.floor(roundedMinutes / 60);
@@ -2577,7 +2724,7 @@ export default function CalendarView({
                             const currentHour = now.getHours();
                             const currentMin = now.getMinutes();
                             const showIndicator = true; // always show — 24h grid covers full day
-                            const indicatorTop = currentHour * 60 + currentMin;
+                            const indicatorTop = minToPx(currentHour * 60 + currentMin);
 
                             if (dayStr === todayStr && showIndicator) {
                               return (
@@ -2631,12 +2778,12 @@ export default function CalendarView({
 
                           {/* Real-time drag-to-create draft card rendering */}
                           {dragToCreate && dragToCreate.dateStr === dayStr && dragToCreate.isDragging && (() => {
-                            const top = Math.min(dragToCreate.startMin, dragToCreate.currentMin);
-                            const height = Math.abs(dragToCreate.startMin - dragToCreate.currentMin);
-                            
-                            // Calculate dynamic time display for draft card (00:00 base)
-                            const startAbsMin = top;
-                            const endAbsMin = top + height;
+                            // dragToCreate.startMin/currentMin GERÇEK dakika (zoom'dan bağımsız);
+                            // render için minToPx ile px'e çevrilir.
+                            const startAbsMin = Math.min(dragToCreate.startMin, dragToCreate.currentMin);
+                            const endAbsMin = Math.max(dragToCreate.startMin, dragToCreate.currentMin);
+                            const top = minToPx(startAbsMin);
+                            const height = minToPx(endAbsMin - startAbsMin);
                             const roundedStart = Math.round(startAbsMin / 15) * 15;
                             const roundedEnd = Math.max(roundedStart + 15, Math.round(endAbsMin / 15) * 15);
                             
@@ -2683,8 +2830,8 @@ export default function CalendarView({
 
                           {/* Ghost card preview during drag-over (snapped to 30-min intervals) */}
                           {dragGhostState && dragGhostState.dayStr === dayStr && (() => {
-                            const ghostTop = dragGhostState.snappedMin;
-                            const ghostHeight = dragGhostState.durationMin;
+                            const ghostTop = minToPx(dragGhostState.snappedMin);
+                            const ghostHeight = minToPx(dragGhostState.durationMin);
                             const ghostStartH = Math.floor(dragGhostState.snappedMin / 60);
                             const ghostStartM = dragGhostState.snappedMin % 60;
                             const ghostEndTotalMin = dragGhostState.snappedMin + ghostHeight;
@@ -2729,21 +2876,22 @@ export default function CalendarView({
                               const startMinutes = timeData.startHour * 60 + timeData.startMin;
                               const endMinutes = timeData.endHour * 60 + timeData.endMin;
 
-                              // Starts at 00:00 (0 minutes) — pixel = minute from midnight
-                              const top = Math.max(0, startMinutes);
-                              
+                              // 00:00'dan itibaren geçen dakika, zoom seviyesine göre px'e çevrilir.
+                              const top = Math.max(0, minToPx(startMinutes));
+
                               // Check if we have a temporary dragging resize height in progress
+                              // (tempEventHeights zaten px cinsinden tutulur, bkz. yeniden boyutlandırma hook'u)
                               const isResizingThis = resizingEvent && resizingEvent.taskId === task.id;
                               const height = isResizingThis
-                                ? tempEventHeights[task.id] || (endMinutes - startMinutes) * 1
-                                : (endMinutes - startMinutes) * 1;
+                                ? tempEventHeights[task.id] || minToPx(endMinutes - startMinutes)
+                                : minToPx(endMinutes - startMinutes);
 
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                               // Süre sürüklenirken kart üzerindeki saat etiketi de canlı olarak
                               // güncellensin ki kullanıcı hangi saate geldiğini anında görebilsin.
                               const displayTimeSlot = isResizingThis
                                 ? (() => {
-                                    const liveEndTotal = startMinutes + height;
+                                    const liveEndTotal = startMinutes + pxToMin(height);
                                     const liveEndHour = Math.floor(liveEndTotal / 60) % 24;
                                     const liveEndMin = liveEndTotal % 60;
                                     const fmt = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -2758,7 +2906,7 @@ export default function CalendarView({
                               const isSmallCard = height < 48;
                               // İSTEK: müşteriye özel renk/icon — görevin proje etiketi (varsa) o
                               // projenin bağlı olduğu müşterinin rengini/iconunu miras alır.
-                              const clientColorInfo = task.tags.map(t => projectColors[t]).find(Boolean);
+                              const clientColorInfo = task.ownTags.map(t => projectColors[t]).find(Boolean);
 
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                               // Yukarıda hesaplanan overlapLayout'tan bu görevin sütun konumunu al —
@@ -2818,13 +2966,17 @@ export default function CalendarView({
                                   : 0;
 
                                 return {
-                                  top: actualStartMin,
-                                  height: actualEndMin - actualStartMin,
+                                  // Bu gölge/iz düşümü, ana kartla AYNI mutlak (gece yarısından
+                                  // itibaren) px koordinat uzayını paylaşan bir KARDEŞ (sibling)
+                                  // eleman olarak render edilir — bu yüzden top/height/savedTop/
+                                  // savedHeight de ana kartla aynı şekilde minToPx ile ölçeklenir.
+                                  top: minToPx(actualStartMin),
+                                  height: minToPx(actualEndMin - actualStartMin),
                                   isOver,
                                   isOngoing: !task.questCompletedAt && !task.isChecked,
                                   savedMinutes,
-                                  savedTop: actualEndMin,
-                                  savedHeight: plannedEndMin - actualEndMin
+                                  savedTop: minToPx(actualEndMin),
+                                  savedHeight: minToPx(plannedEndMin - actualEndMin)
                                 };
                               })();
 
@@ -2932,7 +3084,7 @@ export default function CalendarView({
                                     const [depStart, depEnd] = (task.timeSlot || '10:00-11:00').split('-');
                                     const currentProjectSlug = projectNames
                                       .map(n => n.toLowerCase().replace(/\s+/g, '-'))
-                                      .find(slug => task.tags.includes(slug));
+                                      .find(slug => task.ownTags.includes(slug));
                                     const currentProjectName = projectNames.find(
                                       n => n.toLowerCase().replace(/\s+/g, '-') === currentProjectSlug
                                     );

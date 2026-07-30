@@ -27,6 +27,7 @@ import MusicPlayerView from './components/MusicPlayerView';
 import MiniWidgetView from './components/MiniWidgetView';
 import AnalyticsView from './components/AnalyticsView';
 import ProjectsView from './components/ProjectsView';
+import EforView from './components/EforView';
 import DashboardView from './components/DashboardView';
 import CityBuilderView from './components/CityBuilderView';
 import type { Track } from './components/MusicPlayerView';
@@ -58,7 +59,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -176,6 +177,11 @@ export interface TimelineItem {
   folder: string | null;
   note: string | null;
   tags: string[];
+  // Yalnızca bu görevin KENDİ satırındaki etiketler (not-geneli etiketler HARİÇ) — bkz.
+  // scanTasksFromAllNotes'taki atama noktası. Proje/müşteri eşleştirmesi (ProjectsView.tsx
+  // isProjectTask) bunu kullanmalı, `tags` (not-geneli birleştirilmiş) değil — aksi halde
+  // aynı günün notundaki BAŞKA bir görevin proje etiketi buraya sızar.
+  ownTags: string[];
   isSubtask?: boolean;
   parentId?: string;
 }
@@ -722,6 +728,46 @@ export default function App() {
           map[projSlug] = { color, icon };
         }
       });
+    });
+    return map;
+  }, [notes, fileContents]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK 1: "takvim ekranında dropdown olsun, müşteri seçince o müşterinin taskları
+  // gösterilsin." İSTEK 2: "Efor" ekranı — bir günde hangi müşteriye kaç saat çalışılmış
+  // gösterilsin. Her ikisi de AYNI temel bilgiye ihtiyaç duyar: hangi proje etiketinin
+  // (#proje-slug) hangi müşteriye ait olduğu. projectColors'daki müşteri→proje eşleştirme
+  // mantığının AYNISI, ama tersine (müşteri adı -> o müşteriye bağlı proje slug'ları
+  // listesi) indekslenmiş hâli — CalendarView (filtre) ve EforView (gruplama) bunu kullanır.
+  const clientNames = useMemo(
+    () => notes
+      .filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#müşteri'))
+      .map(n => n.name.replace('.md', '')),
+    [notes, fileContents]
+  );
+
+  const clientProjectSlugs = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    const clientNotes = notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#müşteri'));
+    const projectNotesLocal = notes.filter(n => n.type === 'note' && (fileContents[n.path] || '').toLowerCase().includes('#proje'));
+
+    clientNotes.forEach(client => {
+      const clientContent = fileContents[client.path] || '';
+      const clientCleanName = client.name.replace('.md', '');
+      const clientSlug = clientCleanName.toLowerCase().replace(/\s+/g, '-');
+      const linkedSlugs: string[] = [];
+
+      projectNotesLocal.forEach(proj => {
+        const projCleanName = proj.name.replace('.md', '');
+        const projSlug = projCleanName.toLowerCase().replace(/\s+/g, '-');
+        const projContent = (fileContents[proj.path] || '').toLowerCase();
+        const linked = projContent.includes(`#${clientSlug}`) ||
+          clientContent.toLowerCase().includes(`[[${projCleanName.toLowerCase()}]]`) ||
+          clientContent.toLowerCase().includes(projCleanName.toLowerCase());
+        if (linked) linkedSlugs.push(projSlug);
+      });
+
+      map[clientCleanName] = linkedSlugs;
     });
     return map;
   }, [notes, fileContents]);
@@ -2523,6 +2569,7 @@ export default function App() {
   const titlebarWorkItems = [
     { id: 'projects', label: 'Proje Yönetimi', icon: KanbanSquare },
     { id: 'finance', label: 'Finans', icon: Wallet },
+    { id: 'efor', label: 'Efor', icon: Timer },
   ];
   const titlebarToolItems = [
     { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
@@ -3282,6 +3329,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               folder,
               note: noteName,
               tags: mergedTags,
+              ownTags: taskTags,
               isSubtask,
               parentId
             });
@@ -3340,7 +3388,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               isCompleted: false,
               folder,
               note: noteName,
-              tags: mergedTags
+              tags: mergedTags,
+              ownTags: logTags
             });
             if (line.trim().length > 0 && !line.match(/^\s*[*\-]\s+/)) {
               parentStack.length = 0;
@@ -3627,7 +3676,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             isCompleted: false,
             folder,
             note: null,
-            tags: Array.from(new Set(noteTags))
+            tags: Array.from(new Set(noteTags)),
+            ownTags: Array.from(new Set(noteTags))
           };
         });
 
@@ -5431,7 +5481,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       isCompleted: false,
       folder: parsed.folder,
       note: parsed.note,
-      tags: parsed.tags
+      tags: parsed.tags,
+      ownTags: parsed.tags
     };
 
     // Update tags list
@@ -7015,6 +7066,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
                         projectNames={projectNames}
                         projectColors={projectColors}
+                        clientNames={clientNames}
+                        clientProjectSlugs={clientProjectSlugs}
                       />
                     </div>
                   )}
@@ -7071,6 +7124,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               activeCascadeCompletedAt={cascadeSuggestion?.completedAt ?? null}
               projectNames={projectNames}
               projectColors={projectColors}
+              clientNames={clientNames}
+              clientProjectSlugs={clientProjectSlugs}
             />
           </div>
 
@@ -7124,6 +7179,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onDeleteFinanceCategory={handleDeleteFinanceCategory}
               alreadyImportedLegacyKeys={importedLegacyKeys}
               onImportLegacyEntries={handleImportLegacyEntries}
+            />
+          )}
+
+          {activeTab === 'efor' && (
+            <EforView
+              notes={notes}
+              fileContents={fileContents}
+              clientNames={clientNames}
+              clientProjectSlugs={clientProjectSlugs}
             />
           )}
 
