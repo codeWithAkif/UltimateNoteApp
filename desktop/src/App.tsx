@@ -34,7 +34,7 @@ import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
 import { initLiveUpdates } from './services/liveUpdate';
-import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, mergeDevPath, deleteDevPathRemote, nudgePunctualityScoreRemote, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, type SyncConflict } from './services/supabaseSync';
+import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, mergeDevPath, deleteDevPathRemote, nudgePunctualityScoreRemote, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, flushPendingUploads, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
 import {
   type PunctualityState,
@@ -2455,6 +2455,27 @@ export default function App() {
   // dinleyiciyi eklemek varsayılan geri tuşu davranışını TAMAMEN devre dışı bırakır,
   // bu yüzden başka hiçbir durumu ele almıyoruz burada onu manuel olarak yeniden
   // tetiklememiz gerekiyor.
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ (telefonda tamamlanan görev buluta hiç gitmiyor): NotesView.tsx içinde
+  // aynı amaçla bir appStateChange dinleyicisi vardı ama SADECE "Notlar" sekmesi açıkken
+  // mount ediliyordu (NotesView o sekme dışında unmount olur) — yani Takvim'de veya
+  // Görevler'de bir task tamamlanıp uygulama hemen arka plana alınırsa, o değişikliğin
+  // 500ms'lik yükleme zamanlayıcısı (handleLocalSave) hiç flush edilmiyor, Android WebView'ı
+  // dondurunca zamanlayıcı hiç ateşlenmiyordu. Bu dinleyici App.tsx kök seviyesinde (hep
+  // mount'lu) olduğu için hangi sekme açık olursa olsun çalışır.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    const listenerPromise = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) return;
+      flushPendingUploads().catch(error => {
+        console.error('Error flushing pending uploads on app background (App.tsx):', error);
+      });
+    });
+    return () => {
+      listenerPromise.then(handle => handle.remove());
+    };
+  }, []);
+
   useEffect(() => {
     if (!isCapacitor) return;
     const listenerPromise = CapacitorApp.addListener('backButton', () => {

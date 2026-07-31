@@ -114,6 +114,44 @@ const updateSyncStamp = (path: string, stamp: string) => {
   localStorage.setItem(getSyncStampsKey(), JSON.stringify(stamps));
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// BUG DÜZELTMESİ (telefonda tamamlanan görev buluta hiç gitmiyor): handleLocalSave
+// yüklemeyi 500ms geciktirir; Android bu süre dolmadan arka plandaki WebView'ı
+// dondurup zamanlayıcının hiç ateşlenmemesine yol açabilir. Bu durumu "bir sonraki
+// açılışta yakala" için, bir yolun onaylanmamış (henüz buluta başarıyla yüklenmemiş)
+// yerel değişikliği olduğunu KALICI olarak (localStorage'da, bellekte değil) işaretliyoruz.
+// startSync() başındaki "aynı cihaz kısayolu" bu liste boş değilse atlanır — aksi halde
+// kısayol, bu bekleyen değişikliği hiç kontrol etmeden sonsuza dek görmezden gelirdi.
+const getDirtyPathsKey = (): string => {
+  if (!supabase) return 'sync_dirty_default';
+  const url = (supabase as any).supabaseUrl || '';
+  return `sync_dirty_${getHash(url)}_${currentVault}`;
+};
+
+const getDirtyPaths = (): string[] => {
+  try {
+    return JSON.parse(localStorage.getItem(getDirtyPathsKey()) || '[]');
+  } catch (e) {
+    return [];
+  }
+};
+
+const addDirtyPath = (path: string) => {
+  const paths = getDirtyPaths();
+  if (!paths.includes(path)) {
+    paths.push(path);
+    localStorage.setItem(getDirtyPathsKey(), JSON.stringify(paths));
+  }
+};
+
+const removeDirtyPath = (path: string) => {
+  const paths = getDirtyPaths();
+  const next = paths.filter(p => p !== path);
+  if (next.length !== paths.length) {
+    localStorage.setItem(getDirtyPathsKey(), JSON.stringify(next));
+  }
+};
+
 const removeSyncStamp = (path: string) => {
   const stamps = getSyncStamps();
   delete stamps[path];
@@ -709,13 +747,22 @@ const startSync = async () => {
   // doğrudan senkronlanmış say ve gerçek zamanlı aboneliği kur. "sync_devices"
   // tablosu henüz yoksa (migration çalıştırılmadıysa) bu kısayol sessizce devre
   // dışı kalır ve her zamanki tam uzlaştırma çalışır.
+  // BUG DÜZELTMESİ (telefonda tamamlanan görev buluta hiç gitmiyor): yukarıdaki
+  // kısayol, bu cihazın gönderilmemiş/onaylanmamış yerel değişikliği (bkz. addDirtyPath,
+  // handleLocalSave arka planda öldürülüp yükleme hiç ateşlenmediğinde) olup olmadığına
+  // hiç bakmadan tüm uzlaştırmayı atlıyordu — böyle bir değişiklik varsa asla senkronlanma
+  // şansı bulamıyordu. Bekleyen dirty yol varsa kısayolu atlayıp normal tam uzlaştırmaya
+  // devam ediyoruz; o zaten yerel hash'i eski senkron hash'iyle karşılaştırıp bu değişikliği
+  // doğal olarak yakalayıp yükleyecektir.
+  const hasPendingDirtyPaths = getDirtyPaths().length > 0;
+
   try {
     const { data: deviceRow } = await supabase
       .from('sync_devices')
       .select('device_id')
       .eq('vault', currentVault)
       .maybeSingle();
-    if (deviceRow && deviceRow.device_id === getDeviceId()) {
+    if (!hasPendingDirtyPaths && deviceRow && deviceRow.device_id === getDeviceId()) {
       console.log('[Supabase Sync] Last full sync was from this same device — skipping reconciliation.');
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
       // Not/klasör uzlaştırması atlansa da dev_paths ayrı bir kanaldan (mergeDevPath ile
@@ -1074,6 +1121,7 @@ const uploadNoteDirect = async (path: string, content: string): Promise<string |
     if (error) throw error;
     updateSyncHash(path, getHash(normalizedContent));
     updateSyncStamp(path, sentStamp);
+    removeDirtyPath(path);
     return sentStamp;
   } finally {
     setTimeout(() => {
@@ -1131,6 +1179,7 @@ export const handleLocalSave = (path: string, content: string) => {
     clearTimeout(uploadDebounceTimers[path]);
   }
 
+  addDirtyPath(path);
   pendingUploadContent[path] = content;
   uploadDebounceTimers[path] = setTimeout(() => {
     delete uploadDebounceTimers[path];
@@ -1183,6 +1232,7 @@ export const handleLocalDelete = async (path: string) => {
     delete hashes[path];
     localStorage.setItem(getSyncHashesKey(), JSON.stringify(hashes));
     removeSyncStamp(path);
+    removeDirtyPath(path);
     if (onStatusChangeCallback) onStatusChangeCallback('synced', null);
   } catch (err: any) {
     console.error(`[Supabase Sync] Soft-delete failed for ${path}:`, err);
