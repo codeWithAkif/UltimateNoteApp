@@ -12,7 +12,8 @@ import {
 import Hourglass from './Hourglass';
 import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../services/supabaseSync';
-import { summarizeNoteAndSuggestTags, isGeminiConfigured } from '../services/geminiMentor';
+import { summarizeNoteAndSuggestTags, isGeminiConfigured, askAITeacher, generateQuiz, gradeQuiz, generateFlashcards, generateMiniProject, findYouTubeVideoForTopic, validateYouTubeVideo } from '../services/geminiMentor';
+import { getMasteryStreak, isMastered, setMasteryStreak, formatAITeacherQuestionBlock, formatAITeacherAnswerBody, formatAITeacherQuizResult, formatAITeacherFlashcards, dedupeNewFlashcards, buildAITeacherScheduleTaskLine, formatMiniProjectBlock, AI_TEACHER_MASTERY_TARGET } from '../aiTeacher';
 import { Preferences } from '@capacitor/preferences';
 import { App as CapacitorApp } from '@capacitor/app';
 import { applyCompletionToLine, applyQuestStartToLine, type LineCompletionResult } from '../punctuality';
@@ -2334,6 +2335,40 @@ export default function NotesView({
   const [isSummarizingNote, setIsSummarizingNote] = useState(false);
   const [noteSummaryResult, setNoteSummaryResult] = useState<{ summary: string; tags: string[] } | null>(null);
   const [noteSummaryError, setNoteSummaryError] = useState<string | null>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI Öğretmen (🤓 butonu): herhangi bir notun altında açılan sohbet çekmecesinin durumu.
+  // Ayrı bir görünüm/sekme yerine bilinçli olarak bu notun içine gömülü — cevaplar direkt
+  // notun kendisine yazılır, kullanıcı sonra istediği gibi düzenleyebilir.
+  const [isAITeacherOpen, setIsAITeacherOpen] = useState(false);
+  const [aiTeacherQuestion, setAITeacherQuestion] = useState('');
+  const [isAITeacherBusy, setIsAITeacherBusy] = useState(false);
+  const [aiTeacherError, setAITeacherError] = useState<string | null>(null);
+  const [aiTeacherQuiz, setAITeacherQuiz] = useState<{ questions: string[]; answers: string[] } | null>(null);
+  // "📅 Planla" formunun durumu: müsaitlik (tarih/saat/süre) sorup çalışma görevi oluşturur.
+  const [isAITeacherScheduleOpen, setIsAITeacherScheduleOpen] = useState(false);
+  const [aiTeacherScheduleDate, setAITeacherScheduleDate] = useState('');
+  const [aiTeacherScheduleTime, setAITeacherScheduleTime] = useState('');
+  const [aiTeacherScheduleDuration, setAITeacherScheduleDuration] = useState(45);
+  const [aiTeacherScheduleDone, setAITeacherScheduleDone] = useState(false);
+  // Not içeriği kaydırma alanının (.live-editor-container) referansı — daktilo efekti
+  // sırasında "yazdıkça aşağı kaysın" davranışı için kullanılır.
+  const liveEditorContainerRef = useRef<HTMLDivElement>(null);
+  const aiTeacherTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Not değiştirildiğinde bir önceki notun açık kalan AI Öğretmen çekmecesi/testi taşınmasın.
+  useEffect(() => {
+    setIsAITeacherOpen(false);
+    setAITeacherQuestion('');
+    setAITeacherError(null);
+    setAITeacherQuiz(null);
+    setIsAITeacherScheduleOpen(false);
+    setAITeacherScheduleDone(false);
+    if (aiTeacherTypingTimerRef.current) {
+      clearTimeout(aiTeacherTypingTimerRef.current);
+      aiTeacherTypingTimerRef.current = null;
+    }
+  }, [activeNotePath]);
   const [selectedSummaryTags, setSelectedSummaryTags] = useState<Set<string>>(new Set());
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -2377,6 +2412,214 @@ export default function NotesView({
     }
     setEditorContent(prev => prev + addition);
     setNoteSummaryResult(null);
+  };
+
+  const getAITeacherNoteTitle = () => activeNote?.name?.replace(/\.(md|excalidraw|drawio)$/i, '') || 'Bu not';
+
+  // Not içeriği kaydırma alanını (varsa) en alta kaydırır — daktilo efekti sırasında
+  // "yazdıkça aşağı kaysın" davranışı için her karakter eklemesinden sonra çağrılır.
+  const scrollAITeacherToBottom = () => {
+    const el = liveEditorContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+
+  const AI_TEACHER_TYPE_CHUNK_CHARS = 3;
+  const AI_TEACHER_TYPE_INTERVAL_MS = 18;
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Gemini yanıtı tek parça (streaming değil) geldiği için gerçek bir "token akışı" yok —
+  // bunun yerine elde bulunan TAM metni burada, istemci tarafında, karakter karakter
+  // notun içine yazıyoruz. Kullanıcının şikayeti "cevap birden belirdi, ne olduğunu
+  // anlamadım" idi; bu da hem daha okunabilir hem de her adımda otomatik aşağı kaydırma
+  // ile "cevap nereye yazılıyor" sorusunu çözüyor.
+  const typewriteIntoEditor = (baseContent: string, textToType: string): Promise<void> => {
+    return new Promise((resolve) => {
+      let i = 0;
+      const step = () => {
+        i = Math.min(textToType.length, i + AI_TEACHER_TYPE_CHUNK_CHARS);
+        setEditorContent(baseContent + textToType.slice(0, i));
+        scrollAITeacherToBottom();
+        if (i < textToType.length) {
+          aiTeacherTypingTimerRef.current = setTimeout(step, AI_TEACHER_TYPE_INTERVAL_MS);
+        } else {
+          aiTeacherTypingTimerRef.current = null;
+          resolve();
+        }
+      };
+      step();
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // AI'nin metninde bıraktığı "[youtube-search: terim]" etiketlerini, YAZILMADAN ÖNCE,
+  // GERÇEK ve DOĞRULANMIŞ bir videoyla değiştirmeye çalışır: önce Google Arama destekli
+  // (grounding) bir çağrıyla gerçek bir video bulunur, sonra YouTube'un kendi oEmbed
+  // servisinden o videonun GERÇEKTEN var olduğu teyit edilir. İkisi de başarılı olursa
+  // videonun çıplak URL'si kendi satırında yazılır — notun mevcut YouTube algılama
+  // mekanizması bunu otomatik olarak gerçek bir oynatıcıya çevirir. Bulunamaz/doğrulanamazsa
+  // (grounding desteklenmiyor, API hatası, video kaldırılmış vb.) SESSİZCE güvenli arama
+  // linkine düşer — kullanıcı hiçbir zaman kırık/uydurma bir videoyla karşılaşmaz.
+  const resolveYouTubeTagsInAnswer = async (text: string): Promise<string> => {
+    const matches = Array.from(text.matchAll(/\[youtube-search:\s*([^\]]+)\]/gi));
+    if (matches.length === 0) return text;
+    let resolved = text;
+    for (const m of matches) {
+      const query = m[1].trim();
+      const fallbackUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+      let replacement = `[▶️ YouTube'da ara: "${query}"](${fallbackUrl})`;
+      try {
+        const found = await findYouTubeVideoForTopic(query);
+        if (found && await validateYouTubeVideo(found.url)) {
+          replacement = `\n**🎥 ${found.title}**\n${found.url}\n`;
+        }
+      } catch (err) {
+        console.warn('[AI Öğretmen] YouTube video çözümlemesi başarısız, arama linkine düşülüyor:', err);
+      }
+      resolved = resolved.replace(m[0], replacement);
+    }
+    return resolved;
+  };
+
+  const handleAskAITeacher = async () => {
+    const question = aiTeacherQuestion.trim();
+    if (!question || isAITeacherBusy) return;
+    setIsAITeacherBusy(true);
+    setAITeacherError(null);
+    const contextContent = editorContent;
+    setAITeacherQuestion('');
+    try {
+      // Soru bloğu hemen eklenir ve oraya kaydırılır — "soruyu bastığı yere gitsin scroll"
+      // isteğine karşılık, cevap gelmeden önce kullanıcı sorunun nereye yazıldığını görür.
+      const baseContent = contextContent + formatAITeacherQuestionBlock(question);
+      setEditorContent(baseContent);
+      requestAnimationFrame(scrollAITeacherToBottom);
+
+      const result = await askAITeacher(getAITeacherNoteTitle(), contextContent, question);
+      const resolvedAnswer = await resolveYouTubeTagsInAnswer(result.answer);
+      await typewriteIntoEditor(baseContent, formatAITeacherAnswerBody(resolvedAnswer));
+    } catch (err: any) {
+      setAITeacherError(err?.message || 'Cevap alınamadı.');
+    } finally {
+      setIsAITeacherBusy(false);
+    }
+  };
+
+  const handleStartAITeacherQuiz = async () => {
+    if (isAITeacherBusy) return;
+    setIsAITeacherBusy(true);
+    setAITeacherError(null);
+    try {
+      const quiz = await generateQuiz(getAITeacherNoteTitle(), 'Bu not içindeki konu', editorContent);
+      setAITeacherQuiz({ questions: quiz.questions, answers: new Array(quiz.questions.length).fill('') });
+    } catch (err: any) {
+      setAITeacherError(err?.message || 'Test hazırlanamadı.');
+    } finally {
+      setIsAITeacherBusy(false);
+    }
+  };
+
+  const handleSubmitAITeacherQuiz = async () => {
+    if (!aiTeacherQuiz || isAITeacherBusy) return;
+    setIsAITeacherBusy(true);
+    setAITeacherError(null);
+    try {
+      const noteTitle = getAITeacherNoteTitle();
+      const qa = aiTeacherQuiz.questions.map((q, i) => ({ question: q, answer: aiTeacherQuiz.answers[i] || '' }));
+      const result = await gradeQuiz(noteTitle, qa);
+      const nextStreak = result.passed ? getMasteryStreak(editorContent) + 1 : 0;
+      const baseContent = setMasteryStreak(editorContent, nextStreak);
+      setEditorContent(baseContent);
+      setAITeacherQuiz(null);
+      requestAnimationFrame(scrollAITeacherToBottom);
+
+      await typewriteIntoEditor(baseContent, formatAITeacherQuizResult(result.passed, result.feedback, nextStreak));
+      let finalContent = baseContent + formatAITeacherQuizResult(result.passed, result.feedback, nextStreak);
+
+      // Ardışık başarı hedefine ulaşılamadıysa, kullanıcıya sormadan otomatik olarak
+      // eksik kalınan noktalara odaklı bir tekrar-anlatım üretip nota ekliyoruz
+      // (kullanıcının onayladığı davranış: "otomatik başlasın").
+      if (!result.passed && result.weakAreas && result.weakAreas.length > 0) {
+        const reTeachQuestion = `Şu konularda eksiğim var, bunları farklı örneklerle baştan anlatır mısın: ${result.weakAreas.join(', ')}`;
+        const baseContent2 = finalContent + formatAITeacherQuestionBlock(reTeachQuestion);
+        setEditorContent(baseContent2);
+        requestAnimationFrame(scrollAITeacherToBottom);
+
+        const reTeach = await askAITeacher(noteTitle, finalContent, reTeachQuestion);
+        const resolvedReTeachAnswer = await resolveYouTubeTagsInAnswer(reTeach.answer);
+        const answerBody = formatAITeacherAnswerBody(resolvedReTeachAnswer);
+        await typewriteIntoEditor(baseContent2, answerBody);
+        finalContent = baseContent2 + answerBody;
+      }
+
+      // Otomatik SRS kartı üretimi: her test turunda konuyla ilgili hatırlatma kartları
+      // üretilip nota eklenir — Soru-Cevap Kartları ekranına ekstra kod yazmadan dahil olur.
+      // Başarısız olursa (ör. geçici API hatası) sessizce yoksayılır, test sonucunu bozmaz.
+      try {
+        const cardsResult = await generateFlashcards(noteTitle, 'Bu not içindeki konu', finalContent);
+        const newCards = dedupeNewFlashcards(finalContent, cardsResult.cards);
+        if (newCards.length > 0) {
+          finalContent = finalContent + formatAITeacherFlashcards(newCards);
+          setEditorContent(finalContent);
+          requestAnimationFrame(scrollAITeacherToBottom);
+        }
+      } catch (cardErr) {
+        console.error('[AI Öğretmen] Otomatik kart üretimi başarısız:', cardErr);
+      }
+    } catch (err: any) {
+      setAITeacherError(err?.message || 'Test değerlendirilemedi.');
+    } finally {
+      setIsAITeacherBusy(false);
+    }
+  };
+
+  // "📅 Planla" formunu, makul varsayılanlarla (bugün, en yakın yarım saate yuvarlanmış
+  // şimdiki saat, 45 dk) açar — kullanıcı isterse değiştirir.
+  const handleOpenAITeacherSchedule = () => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const roundedDate = new Date(now);
+    roundedDate.setMinutes(Math.ceil(now.getMinutes() / 30) * 30, 0, 0);
+    const timeStr = `${String(roundedDate.getHours()).padStart(2, '0')}:${String(roundedDate.getMinutes()).padStart(2, '0')}`;
+    setAITeacherScheduleDate(todayStr);
+    setAITeacherScheduleTime(timeStr);
+    setAITeacherScheduleDone(false);
+    setIsAITeacherScheduleOpen(true);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Takvim/Görevler HERHANGİ bir nottaki [due:]/[time:] etiketli checklist satırını otomatik
+  // görev sayar (bkz. CalendarView.tsx fileContents taraması) — bu yüzden burada Takvim'e
+  // özel bir API çağrısı YOK, sadece doğru formatta tek satır eklemek yeterli. Görev
+  // başlatılınca/tamamlanınca geri sayım, dakiklik takibi, bildirimler otomatik devreye girer.
+  const handleConfirmAITeacherSchedule = () => {
+    if (!aiTeacherScheduleDate || !aiTeacherScheduleTime) return;
+    const [h, m] = aiTeacherScheduleTime.split(':').map(Number);
+    const endDate = new Date();
+    endDate.setHours(h, m + aiTeacherScheduleDuration, 0, 0);
+    const endTime = `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`;
+    const taskLine = buildAITeacherScheduleTaskLine(getAITeacherNoteTitle(), aiTeacherScheduleDate, aiTeacherScheduleTime, endTime);
+    setEditorContent(prev => prev.trimEnd() + '\n' + taskLine);
+    setIsAITeacherScheduleOpen(false);
+    setAITeacherScheduleDone(true);
+    setTimeout(() => setAITeacherScheduleDone(false), 4000);
+  };
+
+  const handleGenerateMiniProject = async () => {
+    if (isAITeacherBusy) return;
+    setIsAITeacherBusy(true);
+    setAITeacherError(null);
+    const baseContent = editorContent;
+    try {
+      const noteTitle = getAITeacherNoteTitle();
+      const project = await generateMiniProject(noteTitle, baseContent);
+      const resolvedInstructions = await resolveYouTubeTagsInAnswer(project.instructions);
+      requestAnimationFrame(scrollAITeacherToBottom);
+      await typewriteIntoEditor(baseContent, formatMiniProjectBlock(project.title, resolvedInstructions));
+    } catch (err: any) {
+      setAITeacherError(err?.message || 'Mini proje oluşturulamadı.');
+    } finally {
+      setIsAITeacherBusy(false);
+    }
   };
   // Not listesi sütunu: bir not açıldığında otomatik daralır, kullanıcı ok ile tekrar genişletebilir.
   const [isFileListCollapsed, setIsFileListCollapsed] = useState<boolean>(!!activeNotePath);
@@ -8662,7 +8905,7 @@ export default function NotesView({
       )}
 
       {/* Editor Content Area */}
-      <div className={`notes-editor ${!activeNotePath ? 'hidden-mobile empty' : ''}`}>
+      <div className={`notes-editor ${!activeNotePath ? 'hidden-mobile empty' : ''}`} style={{ position: 'relative' }}>
         {activeNotePath && activeNote ? (
           <>
             {/* Editor Toolbar */}
@@ -8866,6 +9109,30 @@ export default function NotesView({
                     title="Notu özetle ve etiket öner (AI)"
                   >
                     <Sparkles size={14} style={{ color: isSummarizingNote ? 'var(--text-muted)' : '#c084fc' }} />
+                  </button>
+                )}
+
+                {activeNote.type !== 'excalidraw' && activeNote.type !== 'drawio' && isGeminiConfigured() && (
+                  <button
+                    type="button"
+                    className={`toolbar-btn ai-teacher-btn ${isAITeacherOpen ? 'active' : ''}`}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      padding: 0,
+                      borderRadius: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '15px',
+                      lineHeight: 1,
+                      borderColor: isAITeacherOpen ? 'var(--accent)' : undefined,
+                      background: isAITeacherOpen ? 'rgba(99, 102, 241, 0.15)' : undefined
+                    }}
+                    onClick={() => setIsAITeacherOpen(v => !v)}
+                    title={isMastered(editorContent) ? 'AI Öğretmen — bu konuya hakimsin 🎓' : 'AI Öğretmen: soru sor, test ol'}
+                  >
+                    🤓
                   </button>
                 )}
 
@@ -9081,6 +9348,7 @@ export default function NotesView({
                 ) : (
                   <div
                     className="live-editor-container"
+                    ref={liveEditorContainerRef}
                     onClick={!isSourceMode ? handleContainerClick : undefined}
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
@@ -10397,6 +10665,165 @@ export default function NotesView({
             })()}
 
               </>
+            )}
+
+            {/* AI Öğretmen çekmecesi: notun altından açılan sohbet + test kutusu.
+                Bilinçli olarak overlay/absolute KULLANMIYORUZ — .notes-editor'ın normal
+                flex akışında (live-editor-container flex:1 olduğu için) sıradan bir kardeş
+                eleman olarak eklenince, metin alanı otomatik küçülüp yukarı itilir; hiçbir
+                satırın üstüne binmez. */}
+            {isAITeacherOpen && (
+              <div
+                className="ai-teacher-drawer"
+                style={{
+                  flexShrink: 0,
+                  maxHeight: '45vh',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: '14px 16px',
+                  background: 'rgba(15, 23, 42, 0.99)',
+                  boxShadow: '0 -6px 20px rgba(0,0,0,0.35)',
+                  borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#fff'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
+                  <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '16px' }}>🤓</span> AI Öğretmen
+                    <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-muted)' }}>
+                      ({getMasteryStreak(editorContent)}/{AI_TEACHER_MASTERY_TARGET} test)
+                    </span>
+                    {isMastered(editorContent) && <span style={{ fontSize: '12px' }}>🎓</span>}
+                  </h3>
+                  <button onClick={() => setIsAITeacherOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+                </div>
+
+                {aiTeacherError && (
+                  <div style={{ padding: '8px 10px', marginBottom: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                    {aiTeacherError}
+                  </div>
+                )}
+
+                {aiTeacherQuiz ? (
+                  <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
+                    {aiTeacherQuiz.questions.map((q, i) => (
+                      <div key={i}>
+                        <label style={{ display: 'block', fontSize: '12.5px', color: 'var(--text-secondary)', marginBottom: '5px', lineHeight: 1.5 }}>
+                          {i + 1}. {q}
+                        </label>
+                        <textarea
+                          value={aiTeacherQuiz.answers[i]}
+                          onChange={(e) => {
+                            const nextAnswers = [...aiTeacherQuiz.answers];
+                            nextAnswers[i] = e.target.value;
+                            setAITeacherQuiz({ ...aiTeacherQuiz, answers: nextAnswers });
+                          }}
+                          placeholder="Cevabını yaz..."
+                          rows={2}
+                          style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: '12.5px', resize: 'vertical' }}
+                        />
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                      <button type="button" className="btn-modal-cancel" onClick={() => setAITeacherQuiz(null)} disabled={isAITeacherBusy}>Vazgeç</button>
+                      <button type="button" className="btn-modal-confirm" onClick={handleSubmitAITeacherQuiz} disabled={isAITeacherBusy}>
+                        {isAITeacherBusy ? 'Değerlendiriliyor...' : 'Testi Gönder'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                      <input
+                        type="text"
+                        value={aiTeacherQuestion}
+                        onChange={(e) => setAITeacherQuestion(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !isAITeacherBusy) handleAskAITeacher(); }}
+                        placeholder="Anlamadığın bir yeri sor..."
+                        disabled={isAITeacherBusy}
+                        style={{ flex: 1, padding: '9px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: '13px' }}
+                      />
+                      <button
+                        type="button"
+                        className="btn-modal-confirm"
+                        onClick={handleAskAITeacher}
+                        disabled={isAITeacherBusy || !aiTeacherQuestion.trim()}
+                        style={{ whiteSpace: 'nowrap' }}
+                      >
+                        {isAITeacherBusy ? '...' : 'Sor'}
+                      </button>
+                    </div>
+
+                    {isAITeacherScheduleOpen ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Müsaitliğin ne zaman?</div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <input
+                            type="date"
+                            value={aiTeacherScheduleDate}
+                            onChange={(e) => setAITeacherScheduleDate(e.target.value)}
+                            style={{ flex: 1, padding: '7px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: '12px' }}
+                          />
+                          <input
+                            type="time"
+                            value={aiTeacherScheduleTime}
+                            onChange={(e) => setAITeacherScheduleTime(e.target.value)}
+                            style={{ flex: 1, padding: '7px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: '12px' }}
+                          />
+                          <select
+                            value={aiTeacherScheduleDuration}
+                            onChange={(e) => setAITeacherScheduleDuration(Number(e.target.value))}
+                            style={{ padding: '7px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: '12px' }}
+                          >
+                            <option value={30}>30 dk</option>
+                            <option value={45}>45 dk</option>
+                            <option value={60}>60 dk</option>
+                            <option value={90}>90 dk</option>
+                          </select>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                          <button type="button" className="btn-modal-cancel" onClick={() => setIsAITeacherScheduleOpen(false)}>Vazgeç</button>
+                          <button type="button" className="btn-modal-confirm" onClick={handleConfirmAITeacherSchedule} disabled={!aiTeacherScheduleDate || !aiTeacherScheduleTime}>Takvime Ekle</button>
+                        </div>
+                      </div>
+                    ) : aiTeacherScheduleDone ? (
+                      <div style={{ padding: '8px 10px', marginBottom: '8px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '6px', color: '#34d399', fontSize: '12px' }}>
+                        ✅ Çalışma görevi Takvim'e eklendi.
+                      </div>
+                    ) : null}
+
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        className="btn-modal-cancel"
+                        onClick={handleStartAITeacherQuiz}
+                        disabled={isAITeacherBusy || !editorContent.trim()}
+                        style={{ flex: 1 }}
+                      >
+                        {isAITeacherBusy ? 'Hazırlanıyor...' : '📝 Test Et'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-modal-cancel"
+                        onClick={handleOpenAITeacherSchedule}
+                        disabled={isAITeacherBusy}
+                        style={{ flex: 1 }}
+                      >
+                        📅 Planla
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-modal-cancel"
+                        onClick={handleGenerateMiniProject}
+                        disabled={isAITeacherBusy || !editorContent.trim()}
+                        style={{ flex: 1 }}
+                      >
+                        {isAITeacherBusy ? '...' : '🛠️ Mini Proje'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
 
           </>

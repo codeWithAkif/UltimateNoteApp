@@ -84,6 +84,88 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// callGemini'nin GERÇEK ARAMA yapabilen hâli — "google_search" aracı (grounding) açık,
+// ama responseSchema/JSON zorlaması YOK (Gemini API'de arama aracı ile zorunlu JSON şeması
+// aynı anda güvenilir çalışmıyor). Bu yüzden düz metin döner, çağıran taraf kendi ayrıştırır.
+// SADECE AI Öğretmen'in gerçek YouTube video arama akışı için kullanılır (bkz.
+// findYouTubeVideoForTopic) — normal ders anlatımı/quiz/kart üretimi hâlâ callGemini'yi
+// (yapılandırılmış JSON, arama YOK) kullanır.
+async function callGeminiGroundedText(prompt: string): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
+  }
+
+  const res = await fetch(
+    `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        tools: [{ google_search: {} }]
+      })
+    }
+  );
+
+  if (!res.ok) {
+    let errText = '';
+    try { errText = await res.text(); } catch (e) { /* yoksay */ }
+    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts;
+  const text = Array.isArray(parts) ? parts.map((p: any) => p.text).filter(Boolean).join('\n') : '';
+  return text;
+}
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// AI Öğretmen bir video önermek istediğinde ("[youtube-search: terim]" etiketi), önce
+// burada GERÇEKTEN Google Arama'yı kullanarak var olan bir videoyu bulmayı deneriz.
+// Grounding halüsinasyonu azaltır ama SIFIRLAMAZ — bu yüzden dönen URL, kullanılmadan
+// önce validateYouTubeVideo ile YouTube'un kendi oEmbed servisinden ayrıca doğrulanır
+// (bkz. NotesView.tsx'teki çağıran kod). Bulunamazsa/ayrıştırılamazsa null döner — çağıran
+// taraf bu durumda güvenli arama linkine (aiTeacher.ts resolveYouTubeSearchTags) düşer.
+export const findYouTubeVideoForTopic = async (
+  query: string
+): Promise<{ url: string; title: string } | null> => {
+  const prompt = `Google Arama aracını kullanarak "${query}" konusunu anlatan, GERÇEKTEN VAR OLAN, güncel ve kaliteli bir YouTube videosu bul.
+
+Yalnızca şu iki satırı döndür, başka HİÇBİR ŞEY yazma (açıklama, markdown, tırnak vb. ekleme):
+VIDEO_URL: <tam youtube.com/watch?v=... veya youtu.be/... linki>
+VIDEO_TITLE: <videonun gerçek başlığı>
+
+Eğer arama sonucunda uygun/gerçek bir video bulamazsan SADECE "NONE" yaz.`;
+
+  try {
+    const raw = await callGeminiGroundedText(prompt);
+    if (!raw || /^\s*NONE\s*$/i.test(raw.trim())) return null;
+    const urlMatch = raw.match(/VIDEO_URL:\s*(\S+)/i);
+    const titleMatch = raw.match(/VIDEO_TITLE:\s*(.+)/i);
+    if (!urlMatch) return null;
+    const url = urlMatch[1].trim();
+    if (!/(?:youtube\.com\/watch\?v=|youtu\.be\/)[a-zA-Z0-9_-]{11}/.test(url)) return null;
+    return { url, title: titleMatch ? titleMatch[1].trim() : query };
+  } catch (err) {
+    console.warn('[AI Öğretmen] Gerçek YouTube araması başarısız:', err);
+    return null;
+  }
+};
+
+// YouTube'un herkese açık oEmbed servisi: video gerçekten var ve herkese açıksa 200 + meta
+// veri döner, yoksa (silinmiş/özel/yanlış ID) hata döner. API anahtarı gerektirmez.
+// Bu, grounding'in bulduğu linki KÖRÜKÖRÜNE gömmek yerine son bir gerçeklik kontrolü sağlar.
+export const validateYouTubeVideo = async (url: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+    return res.ok;
+  } catch (err) {
+    return false;
+  }
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // callGemini'nin görsel destekli hâli — Gemini modelleri "inlineData" (base64) ile
 // gönderilen bir resmi de metin isteğiyle birlikte değerlendirebiliyor (multimodal).
 // Fiş tarama gibi tek amaçlı, seyrek kullanılan bir çağrı için mevcut callGemini'nin
@@ -346,6 +428,77 @@ Görev: Bu seviyeye eklenmesi gereken, mevcut konularla ÇAKIŞMAYAN, gerçekten
 Sadece JSON döndür. Türkçe yaz.`;
 
   return callGemini(prompt, SUGGEST_TOPIC_SCHEMA);
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// AI Öğretmen özelliği (bkz. NotesView.tsx not araç çubuğundaki 🤓 butonu): kullanıcı
+// herhangi bir notun altındaki sohbet kutusundan soru sorar, cevap doğrudan notun
+// içine eklenir. Ayrı bir konu/klasör sistemi yok — hangi not açıksa o notun kendi
+// içeriği bağlam olarak kullanılır.
+const AI_TEACHER_SCHEMA = {
+  type: 'object',
+  properties: {
+    answer: { type: 'string' }
+  },
+  required: ['answer']
+};
+
+export const askAITeacher = async (
+  noteTitle: string,
+  noteContent: string,
+  question: string
+): Promise<{ answer: string }> => {
+  const prompt = `Sen sabırlı, örneklerle anlatan deneyimli bir öğretmensin. Öğrenci "${noteTitle}" başlıklı notu öğreniyor.
+
+Notta şu ana kadar yazılanlar:
+"""
+${noteContent.slice(0, 8000)}
+"""
+
+Öğrencinin sorusu: "${question}"
+
+Görev: Bu soruyu, öğrencinin konuyu GERÇEKTEN ve en ince ayrıntısına kadar anlamasını sağlayacak şekilde, somut örneklerle açıkla. Notta zaten yazılanları aynen tekrar etme; üzerine ekle, derinleştir, gerekiyorsa karşılaştır. Markdown alt başlıkları (##, ###) ve madde işaretleri kullanabilirsin ama en üst seviye "# " başlığı KULLANMA (not zaten kendi başlığına sahip). Türkçe yaz.
+
+Notun biçimlendirme araçlarını AKTİF OLARAK kullan (yalnızca gerektiğinde, zorlamadan):
+- Önemli/vurgulanması gereken bir alt başlığın sonuna bir renk etiketi ekleyebilirsin: "## Başlık [color:blue]" — renk seçenekleri: red, blue, green, purple, amber, pink, orange, cyan, indigo.
+- İki kavramı/yaklaşımı yan yana karşılaştırmak öğretici olacaksa şu grid söz dizimini kullan — <<<row>>>, <<<col>>> ve <<<row-end>>> etiketlerinin HER BİRİ KENDİ SATIRINDA, ayrı satırlarda olmalı (bir paragrafın içine gömme): "<<<row>>>\\n<<<col>>>\\nSol içerik...\\n<<<col>>>\\nSağ içerik...\\n<<<row-end>>>".
+- Konuyu video ile pekiştirmek gerçekten faydalı olacaksa (ZORUNLU DEĞİL), TEK bir satırda "[youtube-search: kısa ve öz arama terimi]" yaz. SAKIN gerçek bir YouTube video URL'si veya video ID'si UYDURMA — var olmayan/yanlış bir videoya link vermek olur, bu yüzden SADECE bu arama-etiketi formatını kullan, kod bunu güvenli bir arama linkine kendisi çevirecek.
+
+Sadece JSON döndür.`;
+
+  return callGemini(prompt, AI_TEACHER_SCHEMA);
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// AI Öğretmen'in "🛠️ Mini Proje" butonu: pratik/uygulamalı konularda (programlama, tasarım
+// vb.) salt soru-cevaptan öteye geçip küçük, elle yapılabilir bir görev tarif eder.
+const MINI_PROJECT_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    instructions: { type: 'string' }
+  },
+  required: ['title', 'instructions']
+};
+
+export const generateMiniProject = async (
+  noteTitle: string,
+  notesContent: string
+): Promise<{ title: string; instructions: string }> => {
+  const prompt = `Sen uygulamalı öğretim tasarlayan deneyimli bir mentorsün. Öğrenci "${noteTitle}" konusunu öğreniyor.
+
+Notta şu ana kadar yazılanlar:
+"""
+${notesContent.slice(0, 8000)}
+"""
+
+Görev: Bu konuyu pekiştirecek, öğrencinin KENDİ BAŞINA elle yapabileceği küçük, somut bir mini proje/alıştırma tasarla (büyük bir uygulama değil — 15-45 dakikada bitirilebilecek boyutta). title (kısa, çekici bir başlık) ve instructions (adım adım ne yapması gerektiğini anlatan, madde işaretli, net bir talimat metni — beklenen çıktıyı da belirt) üret. Konu programlama/teknik değilse (ör. tarih, dil öğrenimi), o alana uygun pratik bir uygulama görevi tasarla (yazma, özetleme, senaryo kurma vb.). Türkçe yaz.
+
+instructions içinde gerekirse şu biçimlendirmeleri kullanabilirsin: önemli bir alt başlığın sonuna "[color:blue]" gibi bir renk etiketi (red, blue, green, purple, amber, pink, orange, cyan, indigo), iki seçeneği/yaklaşımı karşılaştırmak için "<<<row>>>\\n<<<col>>>\\n...\\n<<<col>>>\\n...\\n<<<row-end>>>" grid söz dizimi. Konuyla ilgili bir video örneği gerçekten faydalı olacaksa TEK satırda "[youtube-search: kısa arama terimi]" yaz — SAKIN gerçek bir video URL'si/ID'si UYDURMA.
+
+Sadece JSON döndür.`;
+
+  return callGemini(prompt, MINI_PROJECT_SCHEMA);
 };
 
 const QUIZ_SCHEMA = {
