@@ -2327,6 +2327,7 @@ export default function NotesView({
     }
     return '';
   });
+  const isNoteLoadedRef = useRef<boolean>(false);
   const [newNoteName, setNewNoteName] = useState('');
 
   // Not özeti + etiket önerisi (AI): "Özetle" butonuyla açılan sonuç modalının durumu.
@@ -4410,12 +4411,14 @@ export default function NotesView({
 
   // Fetch active note content when activeNotePath changes
   useEffect(() => {
+    isNoteLoadedRef.current = false;
     if (activeNotePath) {
       const cachedDraft = localStorage.getItem(`active_note_draft_${activeNotePath}`);
       const cachedDraftBaseline = localStorage.getItem(`active_note_draft_baseline_${activeNotePath}`);
       readNoteContent(activeNotePath).then((content) => {
         lastLoadedContentRef.current = content;
         lastLoadedPathRef.current = activeNotePath;
+        isNoteLoadedRef.current = true;
 
         // BUG DÜZELTMESİ (veri kaybı riski): taslak sadece kendi "baseline"ı (kaydedildiği
         // andaki disk içeriği) ŞU AN okunan disk içeriğiyle AYNIYSA güvenilir — yani not
@@ -4667,7 +4670,7 @@ export default function NotesView({
   // ama cleanup'ı YALNIZCA eski zamanlayıcıyı iptal eder — asla kendi başına kaydetmez.
   useEffect(() => {
     if (!activeNotePath) return;
-    if (activeNotePath !== lastLoadedPathRef.current) {
+    if (!isNoteLoadedRef.current || activeNotePath !== lastLoadedPathRef.current) {
       addDebugLog('Auto-save hook: Path changed but content not loaded yet. Skipping save. Path: ' + activeNotePath);
       return;
     }
@@ -4689,25 +4692,23 @@ export default function NotesView({
       } catch (error) {
         addDebugLog('Otomatik kaydetme hatası: ' + String(error));
       }
-    }, 2500); // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-    // 2.5 sn yazma sessizliği sonrası otomatik kaydet. 1 sn'lik önceki değer,
-    // kullanıcının doğal düşünme molalarında bile kayıt zincirini (disk yazma +
-    // sürüm geçmişi + senkron) tetikleyip yazmaya dönüşte takılma yaratıyordu.
-    // Not değiştirme/kapatma anında ayrıca anında flush eden Effect B var —
-    // veri kaybı riski yok.
+    }, 2500);
 
     return () => clearTimeout(timer);
   }, [editorContent, activeNotePath]);
 
   // Effect B: Yalnızca activeNotePath GERÇEKTEN değiştiğinde (ya da bileşen unmount
   // olduğunda) tetiklenir. Cleanup'ı, ayrılınan nota ait en güncel içeriği (ref üzerinden)
-  // henüz diske yazılmamışsa anında kaydeder. Her tuş vuruşunda ÇALIŞMAZ.
+  // henüz diske yazılmamışsa anında kaydeder.
   useEffect(() => {
     const pathBeingLeft = activeNotePath;
+    const contentBeingLeftBaseline = lastLoadedContentRef.current;
+    const wasNoteLoaded = isNoteLoadedRef.current && lastLoadedPathRef.current === pathBeingLeft;
+
     return () => {
-      if (!pathBeingLeft) return;
+      if (!pathBeingLeft || !wasNoteLoaded) return;
       const latest = latestEditorContentRef.current;
-      if (latest !== lastLoadedContentRef.current) {
+      if (latest !== contentBeingLeftBaseline) {
         addDebugLog('Note switch/unmount flush: Saving dirty content for path: ' + pathBeingLeft);
         onSaveNote(pathBeingLeft, latest).then(() => {
           lastLoadedContentRef.current = latest;

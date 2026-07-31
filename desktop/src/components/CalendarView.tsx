@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import NotesView from './NotesView';
 import { createPortal } from 'react-dom';
 import { 
   format, 
@@ -39,7 +40,10 @@ import {
   EyeOff,
   GripVertical,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Building2,
+  ExternalLink,
+  ListTodo
 } from 'lucide-react';
 import Hourglass from './Hourglass';
 
@@ -60,7 +64,7 @@ import Hourglass from './Hourglass';
 const TASK_COUNTDOWN_URGENT_MS = 10 * 60 * 1000;
 const TASK_COUNTDOWN_VISUAL_WINDOW_MS = 60 * 60 * 1000;
 
-const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = ({ deadline, size = 'compact' }) => {
+const TaskCountdown: React.FC<{ startTime?: Date; deadline: Date; size?: 'compact' | 'full' }> = ({ startTime, deadline, size = 'compact' }) => {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -68,31 +72,53 @@ const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = (
   }, []);
 
   const deadlineMs = deadline.getTime();
-  const remainingMs = deadlineMs - now;
-  const isOverdue = remainingMs <= 0;
-  const isUrgent = !isOverdue && remainingMs <= TASK_COUNTDOWN_URGENT_MS;
+  const startMs = startTime ? startTime.getTime() : 0;
+  const isNotStarted = startTime && now < startMs;
+  const isOverdue = now >= deadlineMs;
 
-  const remainingFraction = Math.max(0, Math.min(1, remainingMs / TASK_COUNTDOWN_VISUAL_WINDOW_MS));
+  const remainingToStartMs = isNotStarted ? startMs - now : 0;
+  const remainingToEndMs = !isNotStarted && !isOverdue ? deadlineMs - now : 0;
 
-  const formatRemaining = () => {
-    const abs = Math.abs(remainingMs);
-    const totalMin = Math.floor(abs / 60000);
+  const isUrgent = !isNotStarted && !isOverdue && remainingToEndMs <= TASK_COUNTDOWN_URGENT_MS;
+  const isDanger = isUrgent || isOverdue;
+
+  const color = isDanger ? '#fecaca' : isNotStarted ? '#93c5fd' : '#e2e8f0';
+  const background = isDanger ? '#7f1d1d' : isNotStarted ? 'rgba(30, 58, 138, 0.85)' : 'rgba(15,23,42,0.85)';
+  const borderColor = isDanger ? '#ef4444' : isNotStarted ? 'rgba(147, 197, 253, 0.4)' : 'rgba(226,232,240,0.35)';
+
+  const remainingFraction = isNotStarted
+    ? Math.max(0, Math.min(1, remainingToStartMs / TASK_COUNTDOWN_VISUAL_WINDOW_MS))
+    : isOverdue ? 0 : Math.max(0, Math.min(1, remainingToEndMs / TASK_COUNTDOWN_VISUAL_WINDOW_MS));
+
+  const formatText = () => {
+    if (isNotStarted) {
+      const totalMin = Math.ceil(remainingToStartMs / 60000);
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      const txt = h > 0 ? `${h}s ${m}dk` : `${m}dk`;
+      return size === 'compact' ? `${txt} sonra` : `${txt} sonra başlıyor`;
+    }
+    if (isOverdue) {
+      const abs = Math.abs(now - deadlineMs);
+      const totalMin = Math.floor(abs / 60000);
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      const txt = h > 0 ? `${h}s ${m}dk` : `${m}dk`;
+      return `${txt} geçti`;
+    }
+    const totalMin = Math.ceil(remainingToEndMs / 60000);
     const h = Math.floor(totalMin / 60);
     const m = totalMin % 60;
     const txt = h > 0 ? `${h}s ${m}dk` : `${m}dk`;
-    return isOverdue ? `${txt} geçti` : `${txt} kaldı`;
+    return `${txt} kaldı`;
   };
 
-  const isDanger = isUrgent || isOverdue;
-  const color = isDanger ? '#fecaca' : '#e2e8f0';
-  const title = isOverdue ? 'Süre doldu' : isUrgent ? 'Son 10 dakika!' : 'Kalan süre';
+  const title = isNotStarted
+    ? 'Başlamasına kalan süre'
+    : isOverdue ? 'Süre doldu' : isUrgent ? 'Son 10 dakika!' : 'Bitişe kalan süre';
+
   const urgentClass = isDanger ? 'countdown-urgent-pulse' : '';
 
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // BUG DÜZELTMESİ (silik görünüm): önceki soluk/yarı saydam stil, kartın kendi renkli
-  // arka planının üzerinde ve "şu an" çizgisinin geçtiği yerde neredeyse okunmaz oluyordu.
-  // Artık KOYU, OPAK bir rozet — hangi öncelik rengi kart altında olursa olsun, çizgi
-  // üzerinden geçse bile kendi zemini sayesinde okunur kalır.
   if (size === 'compact') {
     return (
       <span
@@ -105,8 +131,8 @@ const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = (
           fontSize: '9px',
           fontWeight: 700,
           color,
-          background: isDanger ? '#7f1d1d' : 'rgba(15,23,42,0.85)',
-          border: `1px solid ${isDanger ? '#ef4444' : 'rgba(226,232,240,0.35)'}`,
+          background,
+          border: `1px solid ${borderColor}`,
           borderRadius: '4px',
           padding: '1px 4px',
           flexShrink: 0,
@@ -114,8 +140,8 @@ const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = (
           zIndex: 2
         }}
       >
-        <Hourglass remainingFraction={isOverdue ? 0 : remainingFraction} active={!isOverdue} size={11} />
-        {formatRemaining()}
+        <Hourglass remainingFraction={remainingFraction} active={!isOverdue} size={11} />
+        {formatText()}
       </span>
     );
   }
@@ -133,16 +159,16 @@ const TaskCountdown: React.FC<{ deadline: Date; size?: 'compact' | 'full' }> = (
         color,
         padding: '3px 8px',
         borderRadius: '6px',
-        background: isDanger ? '#7f1d1d' : 'rgba(15,23,42,0.85)',
-        border: `1.5px solid ${isDanger ? '#ef4444' : 'rgba(226,232,240,0.35)'}`,
-        boxShadow: isDanger ? '0 0 8px rgba(239,68,68,0.5)' : '0 1px 3px rgba(0,0,0,0.4)',
+        background,
+        border: `1.5px solid ${borderColor}`,
+        boxShadow: isDanger ? '0 0 8px rgba(239,68,68,0.5)' : isNotStarted ? '0 1px 3px rgba(30,58,138,0.5)' : '0 1px 3px rgba(0,0,0,0.4)',
         alignSelf: 'flex-start',
         position: 'relative',
         zIndex: 2
       }}
     >
-      <Hourglass remainingFraction={isOverdue ? 0 : remainingFraction} active={!isOverdue} size={14} />
-      {formatRemaining()}
+      <Hourglass remainingFraction={remainingFraction} active={!isOverdue} size={14} />
+      {formatText()}
     </span>
   );
 };
@@ -159,36 +185,32 @@ interface CalendarViewProps {
   notes: NoteItem[];
   folders: string[];
   tags: string[];
+  fileContents: Record<string, string>;
   readNoteContent: (path: string) => Promise<string>;
   onSaveNote: (path: string, content: string) => Promise<void>;
+  onCreateNote: (name: string, folder: string | null, isExcalidraw?: boolean | 'drawio', initialContent?: string, switchActiveNote?: boolean) => Promise<void>;
+  onDeletePath: (path: string) => Promise<void>;
+  onRenameNote: (oldPath: string, newPath: string) => Promise<void>;
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
+  templatesFolder?: string;
+  mindmapLayouts?: Record<string, { coords: any; customs: any[] }>;
+  onSaveMindmapLayout?: (path: string, coords: any, customs: any[]) => Promise<void>;
+  pinnedWidgetLists?: string[];
+  pinnedWidgetList?: string | null;
+  onUpdatePinnedWidgets?: (newLists: string[], newActive: string | null) => Promise<void>;
+  isFlowEffectsEnabled?: boolean;
+  lineHeight?: number;
+  lineMargin?: number;
   onCreateDailyNote: (dateStr: string) => void;
   onSelectDateNotes: (dateStr: string) => void;
-  embedded?: boolean; // Sağ hızlı erişim panelinde küçük "günlük takvim" olarak gömülüyken sadeleştirilmiş görünüm
+  embedded?: boolean;
   onQuestReward?: (reward: LineCompletionResult) => void;
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // App.tsx'teki aktif "boşluğu doldur" önerisinin hedef görevinin [tamamlanma:] damgası
-  // (varsa). Parlak "⚡ X dk kazandın" katmanı SADECE bu göreve ait blokta, öneri hâlâ
-  // yanıtlanmamışken gösterilir — kullanıcı Evet/Vazgeç dediği an bu null'a döner ve blok
-  // normal (düz gölge şeridi) görünümüne iner.
   activeCascadeCompletedAt?: string | null;
-  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-  // "#proje" etiketli notlardan türetilen proje adları (bkz. App.tsx, ProjectsView.tsx'teki
-  // aynı tarama). "Yeni Görev Ekle" modalındaki proje seçici için — görevi doğrudan bir
-  // projeyle ilişkilendirmek üzere satıra #proje-slug etiketi eklenmesini sağlar (proje,
-  // ProjectsView.tsx'teki #müşteri bağlantısı üzerinden dolaylı olarak müşteriye de bağlanır).
   projectNames?: string[];
-  // İSTEK: "her müşteriye bir renk ve icon verilebilse ve takvimde o renk ile gösterilse
-  // ayırt etmek kolaylaşır." Anahtar proje slug'ı (bkz. yukarıdaki projectNames) — App.tsx
-  // bunu müşteri notundaki [renk:]/[icon:] etiketinden, proje→müşteri bağlantısı üzerinden
-  // hesaplar (bkz. App.tsx projectColors). Bir görev bu slug'lardan birine sahipse, kartında
-  // öncelik rengi yerine müşterinin rengi/iconu gösterilir.
   projectColors?: Record<string, { color: string; icon: string }>;
-  // İSTEK: "takvim ekranında dropdown olsun, müşteri seçince o müşterinin taskları
-  // gösterilsin." clientNames: dropdown seçenekleri. clientProjectSlugs: seçilen
-  // müşterinin hangi proje etiketlerine (#proje-slug) sahip görevleri kapsadığını
-  // belirlemek için (bkz. App.tsx clientProjectSlugs hesaplaması).
   clientNames?: string[];
   clientProjectSlugs?: Record<string, string[]>;
+  onOpenNotePath?: (path: string) => void;
 }
 
 export interface WorkspaceSubTask {
@@ -535,8 +557,22 @@ export default function CalendarView({
   notes,
   folders,
   tags,
+  fileContents,
   readNoteContent,
   onSaveNote,
+  onCreateNote,
+  onDeletePath,
+  onRenameNote,
+  onRequestConfirm,
+  templatesFolder = '',
+  mindmapLayouts = {},
+  onSaveMindmapLayout,
+  pinnedWidgetLists,
+  pinnedWidgetList,
+  onUpdatePinnedWidgets,
+  isFlowEffectsEnabled,
+  lineHeight,
+  lineMargin,
   onCreateDailyNote,
   onSelectDateNotes,
   embedded = false,
@@ -545,18 +581,68 @@ export default function CalendarView({
   projectNames = [],
   projectColors = {},
   clientNames = [],
-  clientProjectSlugs = {}
+  clientProjectSlugs = {},
+  onOpenNotePath
 }: CalendarViewProps) {
-  // İSTEK: takvimde müşteri seçince sadece o müşterinin görevleri gösterilsin, "Tümü"
-  // (boş seçim) seçilince eskisi gibi hepsi görünsün.
-  const [selectedClientFilter, setSelectedClientFilter] = useState('');
+  const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
+
+  // Right sidebar resizable width state
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('calendar_sidebar_width');
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 220 && parsed <= 900) return parsed;
+    }
+    return 320;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState<boolean>(false);
+
+  const handleStartResizeSidebar = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingSidebar(true);
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = startX - moveEvent.clientX;
+      const newWidth = Math.max(240, Math.min(800, startWidth + deltaX));
+      setSidebarWidth(newWidth);
+      localStorage.setItem('calendar_sidebar_width', String(newWidth));
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingSidebar(false);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleSelectTaskForNote = (task: { filePath?: string; noteName?: string; content: string; lineIdx?: number; isExternal?: boolean }) => {
+    if (task.isExternal || !task.filePath) return;
+    setSelectedTaskNotePath(task.filePath);
+  };
+  // İSTEK: takvimde müşteri seçince sadece o müşterilerin görevleri gösterilsin, "Tümü"
+  // (boş seçim) seçilince eskisi gibi hepsi görünsün (çoklu seçim desteği).
+  const [selectedClientFilters, setSelectedClientFilters] = useState<string[]>([]);
+  const [isClientFilterOpen, setIsClientFilterOpen] = useState(false);
+
   const taskMatchesClientFilter = (t: { ownTags: string[] }): boolean => {
-    if (!selectedClientFilter) return true;
-    const slugs = clientProjectSlugs[selectedClientFilter] || [];
-    // BUG DÜZELTMESİ: `tags` (not-geneli birleştirilmiş) yerine `ownTags` (SADECE bu
-    // görevin kendi satırı) kullanılır — aksi halde aynı günlük nottaki BAŞKA bir görevin
-    // proje etiketi, alakasız görevleri de eşleşiyormuş gibi gösterirdi.
+    if (selectedClientFilters.length === 0) return true;
+    const slugs = selectedClientFilters.flatMap(client => clientProjectSlugs[client] || []);
+    if (slugs.length === 0) return false;
     return t.ownTags.some(tag => slugs.includes(tag));
+  };
+
+  const toggleClientFilter = (clientName: string) => {
+    setSelectedClientFilters(prev =>
+      prev.includes(clientName)
+        ? prev.filter(c => c !== clientName)
+        : [...prev, clientName]
+    );
   };
 
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
@@ -1650,9 +1736,18 @@ export default function CalendarView({
   // asla üzerine yazmaz (yalnızca dosya hiç yokken çağrılır), bu yüzden burada önce
   // notes listesinde arama yapıp hangisinin çağrılacağına karar veriyoruz.
   const handleOpenDailyNote = (dateStr: string) => {
-    const exists = notes.some(n => n.type === 'note' && n.name.toLowerCase() === dateStr.toLowerCase());
-    if (exists) {
-      onSelectDateNotes(dateStr);
+    const cleanDate = dateStr.toLowerCase();
+    const foundNote = notes.find(n => 
+      n.type === 'note' && (
+        n.name.toLowerCase() === cleanDate ||
+        n.name.toLowerCase() === `${cleanDate}.md` ||
+        n.name.toLowerCase().replace(/\.md$/, '') === cleanDate ||
+        n.path.toLowerCase().endsWith(`/${cleanDate}.md`) ||
+        n.path.toLowerCase().endsWith(`/${cleanDate}`)
+      )
+    );
+    if (foundNote) {
+      onSelectDateNotes(foundNote.name);
     } else {
       onCreateDailyNote(dateStr);
     }
@@ -2282,28 +2377,122 @@ export default function CalendarView({
               </button>
             )}
             {clientNames.length > 0 && (
-              // İSTEK: "takvim ekranında dropdown olsun, müşteri seçince o müşterinin
-              // taskları gösterilsin, hepsi seçilince şimdiki gibi hepsi gösterilsin."
-              <select
-                value={selectedClientFilter}
-                onChange={(e) => setSelectedClientFilter(e.target.value)}
-                title="Müşteriye göre filtrele"
-                style={{
-                  marginLeft: '8px',
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-color)',
-                  background: selectedClientFilter ? 'var(--accent-color)' : 'var(--bg-secondary)',
-                  color: selectedClientFilter ? '#fff' : 'var(--text-secondary)',
-                  fontSize: '12px',
-                  cursor: 'pointer'
-                }}
-              >
-                <option value="">Tümü</option>
-                {clientNames.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
+              <div style={{ position: 'relative', display: 'inline-block', marginLeft: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsClientFilterOpen(prev => !prev)}
+                  title="Müşteriye göre filtrele (Çoklu Seçim)"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '5px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color)',
+                    background: selectedClientFilters.length > 0 ? 'var(--accent-color)' : 'var(--bg-secondary)',
+                    color: selectedClientFilters.length > 0 ? '#fff' : 'var(--text-secondary)',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Building2 size={13} />
+                  <span>
+                    {selectedClientFilters.length === 0
+                      ? 'Tümü'
+                      : (selectedClientFilters.length === 1
+                          ? selectedClientFilters[0]
+                          : `${selectedClientFilters.length} Müşteri`)}
+                  </span>
+                  <ChevronDown size={12} style={{ opacity: 0.7, transform: isClientFilterOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                </button>
+
+                {isClientFilterOpen && (
+                  <>
+                    <div
+                      onClick={() => setIsClientFilterOpen(false)}
+                      style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
+                    />
+                    <div
+                      className="context-menu-container"
+                      style={{
+                        position: 'absolute',
+                        top: '100%',
+                        right: 0,
+                        marginTop: '6px',
+                        minWidth: '220px',
+                        maxWidth: '280px',
+                        zIndex: 9999,
+                        background: '#18181b',
+                        border: '1px solid rgba(255, 255, 255, 0.12)',
+                        borderRadius: '10px',
+                        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.7)',
+                        padding: '8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 6px 4px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Müşteriler
+                        </span>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedClientFilters([...clientNames])}
+                            style={{ background: 'transparent', border: 'none', color: 'var(--accent-color, #60a5fa)', fontSize: '10px', cursor: 'pointer', fontWeight: '600' }}
+                          >
+                            Tümünü Seç
+                          </button>
+                          <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '10px' }}>|</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedClientFilters([])}
+                            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: '10px', cursor: 'pointer' }}
+                          >
+                            Temizle
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ maxHeight: '220px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        {clientNames.map(name => {
+                          const isChecked = selectedClientFilters.includes(name);
+                          return (
+                            <div
+                              key={name}
+                              onClick={() => toggleClientFilter(name)}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                padding: '6px 8px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                background: isChecked ? 'rgba(255,255,255,0.08)' : 'transparent',
+                                fontSize: '12px',
+                                color: isChecked ? '#fff' : 'var(--text-secondary)',
+                                transition: 'background 0.15s',
+                                userSelect: 'none'
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                readOnly
+                                style={{ accentColor: 'var(--accent-color, #3b82f6)', cursor: 'pointer', pointerEvents: 'none' }}
+                              />
+                              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -2656,6 +2845,10 @@ export default function CalendarView({
                               }}
                               onMouseEnter={(e) => handleMouseEnterCard(e, task)}
                               onMouseLeave={handleMouseLeaveCard}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSelectTaskForNote(task);
+                              }}
                               className={`allday-task-card priority-${task.priority} ${task.isChecked ? 'completed' : ''}`}
                               title={`${parentTask ? `${parentTask.content} › ` : ''}${task.content} (${task.noteName})${totalSub > 0 ? ` [Alt Görevler: ${completedSub}/${totalSub}]` : ''}`}
                               style={{ 
@@ -3136,6 +3329,9 @@ export default function CalendarView({
                               const taskDeadlineDate = new Date(dayStr + 'T00:00:00');
                               taskDeadlineDate.setHours(timeData.endHour, timeData.endMin, 0, 0);
 
+                              const taskStartDate = new Date(dayStr + 'T00:00:00');
+                              taskStartDate.setHours(timeData.startHour, timeData.startMin, 0, 0);
+
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                               // Geç başlamayı caydırma: yalnızca bilgilendirici toast yeterli değil —
                               // kullanıcı "planlı yaşam mantığının önüne geçiyor" dedi. Planlanan
@@ -3280,10 +3476,13 @@ export default function CalendarView({
                                     dragGhostTaskIdRef.current = null;
                                     setDragGhostState(null);
                                   }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSelectTaskForNote(task);
+                                  }}
                                   onMouseEnter={(e) => handleMouseEnterCard(e, task)}
                                   onMouseLeave={handleMouseLeaveCard}
                                   className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''}`}
-                                  onClick={(e) => e.stopPropagation()}
                                   onDoubleClick={(e) => {
                                     e.stopPropagation();
                                     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe
@@ -3418,7 +3617,7 @@ export default function CalendarView({
                                       süreli) görevlerde sayaç hiç görünmezdi. */}
                                   {isSmallCard && !task.isExternal && !task.isChecked && (
                                     <div style={{ position: 'absolute', top: '2px', right: task.questOutcome || task.questStartedAt ? '4px' : '32px', zIndex: 11 }}>
-                                      <TaskCountdown deadline={taskDeadlineDate} size="compact" />
+                                      <TaskCountdown startTime={taskStartDate} deadline={taskDeadlineDate} size="compact" />
                                     </div>
                                   )}
 
@@ -3471,7 +3670,7 @@ export default function CalendarView({
                                             kırmızı olsun" isteği. Görev başlatılmış olmasa bile gösterilir
                                             (planlanan bitişe göre). */}
                                         {!task.isExternal && !task.isChecked && (
-                                          <TaskCountdown deadline={taskDeadlineDate} size="full" />
+                                          <TaskCountdown startTime={taskStartDate} deadline={taskDeadlineDate} size="full" />
                                         )}
                                       </div>
                                     )}
@@ -3615,6 +3814,7 @@ export default function CalendarView({
       {/* 3. Right Section: Unscheduled Tasks Inbox panel */}
       <div 
         className={`calendar-unscheduled-sidebar ${isUnplannedOpen ? 'open' : ''} ${embedded ? 'force-hidden' : ''}`}
+        style={{ width: `${sidebarWidth}px`, position: 'relative' }}
         onDragOver={(e) => {
           e.preventDefault();
           e.currentTarget.classList.add('drop-hover');
@@ -3635,6 +3835,13 @@ export default function CalendarView({
           }
         }}
       >
+        {/* Resizer Handle */}
+        <div
+          className={`sidebar-resizer-handle ${isResizingSidebar ? 'active' : ''}`}
+          onMouseDown={handleStartResizeSidebar}
+          title="Kenar çubuğunu genişletmek/daraltmak için sürükleyin"
+        />
+
         <div className="sidebar-header-title">
           <CheckSquare size={16} className="text-accent" />
           <h3>Planlanmamış Görevler</h3>
@@ -3684,6 +3891,10 @@ export default function CalendarView({
                       onDragEnd={() => {
                         dragGhostTaskIdRef.current = null;
                         setDragGhostState(null);
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectTaskForNote(task);
                       }}
                       className={`unscheduled-task-card priority-${task.priority} ${task.isChecked ? 'completed' : ''}`}
                       style={task.isChecked ? { opacity: 0.6 } : {}}
@@ -3828,7 +4039,10 @@ export default function CalendarView({
                                 dragGhostTaskIdRef.current = null;
                                 setDragGhostState(null);
                               }}
-                              className={`unscheduled-subtask-card priority-${subPriority} ${isSubChecked ? 'completed' : ''}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSelectTaskForNote(sub);
+                              }}
                               style={{
                                 display: 'flex',
                                 alignItems: 'center',
@@ -3943,6 +4157,10 @@ export default function CalendarView({
                     dragGhostTaskIdRef.current = null;
                     setDragGhostState(null);
                   }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelectTaskForNote(task);
+                  }}
                   className={`unscheduled-task-card priority-${task.priority} ${task.isChecked ? 'completed' : ''}`}
                   style={task.isChecked ? { opacity: 0.6 } : {}}
                 >
@@ -4028,6 +4246,73 @@ export default function CalendarView({
             })}
           </div>
         )}
+
+        {/* Bottom Section: Selected Task Note Editor (NotesView) */}
+        <div
+          className="calendar-note-panel"
+          style={{
+            borderTop: '1px solid var(--border-color)',
+            paddingTop: '12px',
+            marginTop: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            minHeight: '220px',
+            overflow: 'hidden'
+          }}
+        >
+          {!selectedTaskNotePath ? (
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px',
+              textAlign: 'center',
+              background: 'rgba(255,255,255,0.02)',
+              borderRadius: '8px',
+              border: '1px dashed rgba(255,255,255,0.08)',
+              color: 'var(--text-muted)'
+            }}>
+              <FileText size={28} style={{ opacity: 0.4, marginBottom: '8px' }} />
+              <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                Göreve Tıklayarak Not Alın
+              </span>
+              <span style={{ fontSize: '11px', opacity: 0.7, maxWidth: '220px' }}>
+                Takvimdeki herhangi bir göreve tıkladığınızda not içeriği burada açılır ve doğrudan düzenleyebilirsiniz.
+              </span>
+            </div>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <NotesView
+                selectedFolder={null}
+                selectedTag={null}
+                fileContents={fileContents}
+                notes={notes}
+                activeNotePath={selectedTaskNotePath}
+                setActiveNotePath={setSelectedTaskNotePath}
+                onSaveNote={onSaveNote}
+                onDeletePath={onDeletePath}
+                onCreateNote={onCreateNote}
+                readNoteContent={readNoteContent}
+                onRenameNote={onRenameNote}
+                onRequestConfirm={onRequestConfirm}
+                onQuestReward={onQuestReward}
+                hideSidebar={true}
+                templatesFolder={templatesFolder}
+                mindmapLayouts={mindmapLayouts}
+                onSaveMindmapLayout={onSaveMindmapLayout || (async () => {})}
+                pinnedWidgetLists={pinnedWidgetLists}
+                pinnedWidgetList={pinnedWidgetList}
+                onUpdatePinnedWidgets={onUpdatePinnedWidgets}
+                isFlowEffectsEnabled={isFlowEffectsEnabled}
+                lineHeight={1.25}
+                lineMargin={2}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {popoverState && createPortal(

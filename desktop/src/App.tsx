@@ -6051,10 +6051,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       if (!folders.includes(folder)) {
         await platform.createFolder(folder);
       }
-      const header = `# Günlük Günce: ${formattedDate}\n\nBugünün Logları:\n`;
-      await platform.writeNote(relativePath, header);
-      handleLocalSave(relativePath, header);
-      await loadAllData();
+      let existingContent = fileContents[relativePath];
+      if (!existingContent) {
+        try {
+          existingContent = await platform.readNote(relativePath);
+        } catch (_e) {
+          existingContent = '';
+        }
+      }
+      if (!existingContent || existingContent.trim() === '') {
+        const header = `# Günlük Günce: ${formattedDate}\n\nBugünün Logları:\n`;
+        await platform.writeNote(relativePath, header);
+        handleLocalSave(relativePath, header);
+        await loadAllData();
+      }
       handleSetActiveNotePath(relativePath);
       setActiveTab('notes');
     } else {
@@ -6077,17 +6087,31 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         updatedAt: Date.now()
       };
       mockSaveNotes([...notes, newNote]);
-      localStorage.setItem(`mock_note_${relativePath}`, `# Günlük Günce: ${formattedDate}\n\n`);
+      if (!localStorage.getItem(`mock_note_${relativePath}`)) {
+        localStorage.setItem(`mock_note_${relativePath}`, `# Günlük Günce: ${formattedDate}\n\n`);
+      }
       handleSetActiveNotePath(relativePath);
       setActiveTab('notes');
     }
   };
 
   const handleSelectDateNotes = (noteName: string) => {
-    // Find note path that matches the selected name
-    const foundNote = notes.find(n => n.name.toLowerCase() === noteName.toLowerCase());
+    const cleanStr = noteName.toLowerCase();
+    const foundNote = notes.find(n => 
+      n.type === 'note' && (
+        n.name.toLowerCase() === cleanStr ||
+        n.name.toLowerCase() === `${cleanStr}.md` ||
+        n.name.toLowerCase().replace(/\.md$/, '') === cleanStr ||
+        n.path.toLowerCase().endsWith(`/${cleanStr}.md`) ||
+        n.path.toLowerCase().endsWith(`/${cleanStr}`)
+      )
+    );
     if (foundNote) {
       handleSetActiveNotePath(foundNote.path);
+      setActiveTab('notes');
+    } else {
+      const fallbackPath = `Günlükler/${noteName.replace(/\.md$/, '')}.md`;
+      handleSetActiveNotePath(fallbackPath);
       setActiveTab('notes');
     }
   };
@@ -7227,8 +7251,22 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         notes={notes}
                         folders={folders}
                         tags={tags}
+                        fileContents={fileContents}
                         readNoteContent={handleReadNoteContent}
                         onSaveNote={handleSaveNote}
+                        onCreateNote={handleCreateNote}
+                        onDeletePath={handleDeletePath}
+                        onRenameNote={handleRenameNote}
+                        onRequestConfirm={requestConfirm}
+                        templatesFolder={templatesFolder}
+                        mindmapLayouts={mindmapLayouts}
+                        onSaveMindmapLayout={handleSaveMindmapLayout}
+                        pinnedWidgetLists={pinnedWidgetLists}
+                        pinnedWidgetList={pinnedWidgetList}
+                        onUpdatePinnedWidgets={updatePinnedWidgets}
+                        isFlowEffectsEnabled={isFlowEffectsEnabled}
+                        lineHeight={lineHeight}
+                        lineMargin={lineMargin}
                         onCreateDailyNote={handleCreateDailyNote}
                         onSelectDateNotes={handleSelectDateNotes}
                         onQuestReward={applyQuestRewardToState}
@@ -7285,8 +7323,22 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               notes={notes}
               folders={folders}
               tags={tags}
+              fileContents={fileContents}
               readNoteContent={handleReadNoteContent}
               onSaveNote={handleSaveNote}
+              onCreateNote={handleCreateNote}
+              onDeletePath={handleDeletePath}
+              onRenameNote={handleRenameNote}
+              onRequestConfirm={requestConfirm}
+              templatesFolder={templatesFolder}
+              mindmapLayouts={mindmapLayouts}
+              onSaveMindmapLayout={handleSaveMindmapLayout}
+              pinnedWidgetLists={pinnedWidgetLists}
+              pinnedWidgetList={pinnedWidgetList}
+              onUpdatePinnedWidgets={updatePinnedWidgets}
+              isFlowEffectsEnabled={isFlowEffectsEnabled}
+              lineHeight={lineHeight}
+              lineMargin={lineMargin}
               onCreateDailyNote={handleCreateDailyNote}
               onSelectDateNotes={handleSelectDateNotes}
               onQuestReward={applyQuestRewardToState}
@@ -7295,6 +7347,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               projectColors={projectColors}
               clientNames={clientNames}
               clientProjectSlugs={clientProjectSlugs}
+              onOpenNotePath={(path) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
+              }}
             />
           </div>
 
