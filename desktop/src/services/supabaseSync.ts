@@ -176,7 +176,38 @@ const getMediaStamps = (): Record<string, { size: number; mtimeMs: number }> => 
   }
 };
 
-const mediaStoragePath = (relativePath: string): string => `${currentVault}/${encodeURIComponent(relativePath)}`;
+// BUG DÜZELTMESİ (egress fırtınası): relativePath ("media/voice_x.webm" gibi) TÜMÜYLE
+// encodeURIComponent'e veriliyordu — bu, içindeki "/" karakterini de "%2F" olarak
+// kodluyor, gerçek bir alt klasör yerine anahtarın İÇİNE gömülü LİTERAL "%2F" metni
+// üreten bozuk bir storage path'i oluşturuyordu (Supabase log'larında
+// ".../media/default/media%2Fvoice_....webm" olarak görülüyor). Bu, upload'ın sürekli
+// 400 ile reddedilmesine yol açıyordu. Doğrusu: sadece HER SEGMENT'i ayrı ayrı kodlamak,
+// "/" ayıraçlarını olduğu gibi bırakmak.
+const mediaStoragePath = (relativePath: string): string =>
+  `${currentVault}/${relativePath.split('/').map(encodeURIComponent).join('/')}`;
+
+// BUG DÜZELTMESİ (egress fırtınası): bir medya yüklemesi başarısız olduğunda eskiden
+// hiçbir iz bırakılmıyordu — bu yüzden dosya "hâlâ senkronize edilmemiş" görünüyor ve
+// HER senkron turunda (not kaydedildiğinde, odak değiştiğinde vb. — dakikada onlarca kez
+// olabilir) aynı (kalıcı biçimde başarısız olan) dosya tekrar tekrar yükleniyordu —
+// Supabase log'larında saniyede bir aynı dosya için POST 400 fırtınası olarak görülüyordu.
+// Başarısızlıkları bir bekleme süresiyle (cooldown) hafızada tutarak bu sonsuz döngüyü
+// durduruyoruz; dosya değişmeden tekrar tekrar denenmeye devam etmez.
+const MEDIA_RETRY_COOLDOWN_MS = 30 * 60 * 1000; // 30 dakika
+
+const getMediaFailuresKey = (): string => {
+  if (!supabase) return 'sync_media_failures_default';
+  const url = (supabase as any).supabaseUrl || '';
+  return `sync_media_failures_${getHash(url)}_${currentVault}`;
+};
+
+const getMediaFailures = (): Record<string, number> => {
+  try {
+    return JSON.parse(localStorage.getItem(getMediaFailuresKey()) || '{}');
+  } catch (e) {
+    return {};
+  }
+};
 
 const dataUrlToBlob = (dataUrl: string): Blob => {
   const [header, base64] = dataUrl.split(',');
@@ -224,13 +255,20 @@ const syncMediaFiles = async () => {
 
     const stamps = getMediaStamps();
     const newStamps: Record<string, { size: number; mtimeMs: number }> = { ...stamps };
+    const failures = getMediaFailures();
     let changed = false;
+    let failuresChanged = false;
 
     // A. Yerelde yeni/değişmiş medyaları yükle
     for (const f of localFiles) {
       const stamp = stamps[f.path];
       const localChanged = !stamp || stamp.size !== (f.size || 0) || stamp.mtimeMs !== f.updatedAt;
       if (!localChanged && remoteMap[f.path]) continue;
+
+      // Bu dosya yakın zamanda başarısız oldu ve içerik değişmedi — cooldown bitene
+      // kadar sessizce atla (aksi halde her senkron turunda aynı hatayla yeniden dener).
+      const lastFail = failures[f.path];
+      if (lastFail && !localChanged && (Date.now() - lastFail) < MEDIA_RETRY_COOLDOWN_MS) continue;
 
       try {
         const dataUrl = await localPlatform.readMedia(f.path);
@@ -241,38 +279,59 @@ const syncMediaFiles = async () => {
           .upload(mediaStoragePath(f.path), blob, { upsert: true, contentType: blob.type || undefined });
         if (upErr) {
           console.error(`[Supabase Sync] Medya yüklenemedi: ${f.path}`, upErr.message);
+          failures[f.path] = Date.now();
+          failuresChanged = true;
           continue;
         }
         newStamps[f.path] = { size: f.size || 0, mtimeMs: f.updatedAt };
         changed = true;
+        if (failures[f.path]) {
+          delete failures[f.path];
+          failuresChanged = true;
+        }
         console.log(`[Supabase Sync] Medya yüklendi: ${f.path}`);
       } catch (err) {
         console.error(`[Supabase Sync] Medya yükleme hatası: ${f.path}`, err);
+        failures[f.path] = Date.now();
+        failuresChanged = true;
       }
     }
 
     // B. Yerelde eksik olan uzak medyaları indir
     for (const remotePath in remoteMap) {
       if (localMap[remotePath]) continue;
+      const lastFail = failures[remotePath];
+      if (lastFail && (Date.now() - lastFail) < MEDIA_RETRY_COOLDOWN_MS) continue;
       try {
         const { data: blob, error: dlErr } = await supabase.storage.from(MEDIA_BUCKET).download(mediaStoragePath(remotePath));
         if (dlErr || !blob) {
           console.error(`[Supabase Sync] Medya indirilemedi: ${remotePath}`, dlErr?.message);
+          failures[remotePath] = Date.now();
+          failuresChanged = true;
           continue;
         }
         const dataUrl = await blobToDataUrl(blob);
         await localPlatform.writeNote(remotePath, dataUrl);
         newStamps[remotePath] = { size: blob.size, mtimeMs: Date.now() };
         changed = true;
+        if (failures[remotePath]) {
+          delete failures[remotePath];
+          failuresChanged = true;
+        }
         console.log(`[Supabase Sync] Medya indirildi: ${remotePath}`);
       } catch (err) {
         console.error(`[Supabase Sync] Medya indirme hatası: ${remotePath}`, err);
+        failures[remotePath] = Date.now();
+        failuresChanged = true;
       }
     }
 
     if (changed) {
       localStorage.setItem(getMediaStampsKey(), JSON.stringify(newStamps));
       if (onRemoteChangeCallback) onRemoteChangeCallback();
+    }
+    if (failuresChanged) {
+      localStorage.setItem(getMediaFailuresKey(), JSON.stringify(failures));
     }
   } catch (err) {
     console.error('[Supabase Sync] Medya senkronu başarısız:', err);

@@ -20,4 +20,10 @@ Masaüstündeki kısayolda en son kod değişikliklerini görmek için sadece we
 1. Web derlemesini yap: `npm run build`
 *(Kısayol yereldeki `dist` klasörünü çalıştırdığından, derleme sonrasında uygulamayı kapatıp açmanız yeterlidir).*
 
-
+## 4. Özel Komutlar (Pull & Release)
+- Kullanıcı **`pull`** dediğinde: `git pull origin main` çalıştırılarak uzak depodaki en son değişiklikler yerel projeye çekilir.
+- Kullanıcı **`release`** dediğinde:
+  1. `desktop/package.json` içindeki versiyon numarası güncellenir.
+  2. `npm run build` ile derleme yapılır.
+  3. Değişiklikler commit ve push edilir (`git add .` -> `git commit -m "release: vX.X.X"` -> `git push origin main`).
+  4. Yeni sürüm tag'i oluşturulup push edilir (`git tag vX.X.X` -> `git push origin vX.X.X`).

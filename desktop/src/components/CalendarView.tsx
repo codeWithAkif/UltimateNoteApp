@@ -619,6 +619,40 @@ export default function CalendarView({
     source: 'google' | 'outlook';
   }[]>([]);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: dış takvimlerden (Google/Outlook) gelen bazı tekrarlayan etkinlikler (ör. günlük
+  // "Daily" toplantıları) takvimi kalabalıklaştırıyor — kullanıcı bunları tek tek gizleyebilsin
+  // istedi. Gizleme, etkinliğin BAŞLIĞINA (content) göre kalıcı olarak (localStorage) saklanır —
+  // tekrarlayan bir toplantı her göründüğünde ayrı ayrı gizlenmesin diye. Kaynak, kullanıcının
+  // ICS URL'sini kendi kontrol ettiği (parseICS harici, üçüncü taraf bir kaynak) yerel bir
+  // tercih listesidir — sunucu tarafında hiçbir şey değişmez.
+  const HIDDEN_EXTERNAL_TITLES_KEY = 'calendar_hidden_external_titles';
+  const [hiddenExternalTitles, setHiddenExternalTitles] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(HIDDEN_EXTERNAL_TITLES_KEY) || '[]');
+    } catch (e) {
+      return [];
+    }
+  });
+  const hideExternalEventTitle = (title: string) => {
+    setHiddenExternalTitles(prev => {
+      if (prev.includes(title)) return prev;
+      const next = [...prev, title];
+      localStorage.setItem(HIDDEN_EXTERNAL_TITLES_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+  const restoreExternalEventTitle = (title: string) => {
+    setHiddenExternalTitles(prev => {
+      const next = prev.filter(t => t !== title);
+      localStorage.setItem(HIDDEN_EXTERNAL_TITLES_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+  const [externalEventInfoModal, setExternalEventInfoModal] = useState<{
+    content: string; source: 'google' | 'outlook'; dueDate: string; timeSlot: string;
+  } | null>(null);
+
   const fetchICSFeed = async (url: string) => {
     try {
       const res = await fetch(url);
@@ -674,7 +708,7 @@ export default function CalendarView({
   // Combined array for all calendar renderings
   const allMergedEvents: WorkspaceTask[] = [
     ...tasks,
-    ...externalEvents.map(evt => ({
+    ...externalEvents.filter(evt => !hiddenExternalTitles.includes(evt.content)).map(evt => ({
       id: evt.id,
       content: evt.content,
       isChecked: false,
@@ -756,6 +790,13 @@ export default function CalendarView({
   useEffect(() => {
     localStorage.setItem('calendar_zoom_level', String(zoomLevel));
   }, [zoomLevel]);
+  // Pinch-zoom dokunma olayı dinleyicisi (aşağıda) [] bağımlılığıyla bir kere kurulduğundan
+  // zoomLevel'i doğrudan kapatırsa BAYAT kalır (her zaman ilk değeri görür) — bu ref her
+  // render'da güncel değeri tutar, dokunma başlarken "şu anki zoom neydi" diye buradan okunur.
+  const zoomLevelRef = useRef(zoomLevel);
+  useEffect(() => {
+    zoomLevelRef.current = zoomLevel;
+  }, [zoomLevel]);
   // px -> gerçek dakika (fare/piksel ölçümlerini zoom'dan bağımsız dakikaya çevirir)
   const pxToMin = (px: number) => px / zoomLevel;
   // gerçek dakika -> px (render için, zoom'a göre ölçeklenmiş yükseklik/konum)
@@ -798,7 +839,60 @@ export default function CalendarView({
       });
     };
     el.addEventListener('wheel', handleWheelZoom, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheelZoom);
+
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // İSTEK: masaüstünde Ctrl+fare tekerleği ile yapılan yakınlaştırmanın AYNISI, telefonda
+    // iki parmakla sıkıştırma/açma (pinch) hareketiyle de çalışsın. Aynı zoomLevel state'ini
+    // ve aynı "işaret noktasının altında kalma" mantığını (wheel'deki pointerY/absoluteY gibi,
+    // burada iki dokunuşun orta noktası) paylaşır — tek fark tetikleyici olay türü.
+    const pinchState = { active: false, startDist: 0, startZoom: 1, anchorAbsoluteY: 0, anchorScreenY: 0 };
+    const touchDistance = (touches: TouchList) => {
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      pinchState.active = true;
+      pinchState.startDist = touchDistance(e.touches);
+      pinchState.startZoom = zoomLevelRef.current;
+      const rect = container.getBoundingClientRect();
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      pinchState.anchorScreenY = midY - rect.top;
+      pinchState.anchorAbsoluteY = container.scrollTop + pinchState.anchorScreenY;
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!pinchState.active || e.touches.length !== 2) return;
+      e.preventDefault();
+      const dist = touchDistance(e.touches);
+      if (pinchState.startDist <= 0) return;
+      const scale = dist / pinchState.startDist;
+      const next = Math.max(0.5, Math.min(3, pinchState.startZoom * scale));
+      const ratio = next / pinchState.startZoom;
+      setZoomLevel(next);
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = pinchState.anchorAbsoluteY * ratio - pinchState.anchorScreenY;
+        }
+      });
+    };
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinchState.active = false;
+    };
+    el.addEventListener('touchstart', handleTouchStart, { passive: false });
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('touchend', handleTouchEnd);
+    el.addEventListener('touchcancel', handleTouchEnd);
+
+    return () => {
+      el.removeEventListener('wheel', handleWheelZoom);
+      el.removeEventListener('touchstart', handleTouchStart);
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('touchend', handleTouchEnd);
+      el.removeEventListener('touchcancel', handleTouchEnd);
+    };
   }, []);
 
   // Auto-scroll to current time slot when view mode switches
@@ -1548,6 +1642,22 @@ export default function CalendarView({
   };
 
   // Unschedule: remove [due:...] and [time:...] tags from a task and its subtasks
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: takvimdeki gün başlığına (ör. "31 Temmuz") tıklayınca o günün günlük notu
+  // açılsın. Not zaten varsa doğrudan açılır (onSelectDateNotes — App.tsx bunu isme göre
+  // arar, günlük notların adı zaten YYYY-MM-DD olduğundan eşleşir); yoksa
+  // onCreateDailyNote ile OLUŞTURULUP açılır — handleCreateDailyNote var olan bir notu
+  // asla üzerine yazmaz (yalnızca dosya hiç yokken çağrılır), bu yüzden burada önce
+  // notes listesinde arama yapıp hangisinin çağrılacağına karar veriyoruz.
+  const handleOpenDailyNote = (dateStr: string) => {
+    const exists = notes.some(n => n.type === 'note' && n.name.toLowerCase() === dateStr.toLowerCase());
+    if (exists) {
+      onSelectDateNotes(dateStr);
+    } else {
+      onCreateDailyNote(dateStr);
+    }
+  };
+
   const handleUnscheduleTask = async (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
@@ -2382,7 +2492,12 @@ export default function CalendarView({
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (task.isExternal) {
-                                    alert(`Takvim Etkinliği:\n\n📅 ${task.content}\nKaynak: ${task.externalSource === 'google' ? 'Google Calendar' : 'Outlook Calendar'}\nTarih: ${task.dueDate} ${task.timeSlot ? `(${task.timeSlot})` : ''}`);
+                                    setExternalEventInfoModal({
+                                      content: task.content,
+                                      source: task.externalSource as 'google' | 'outlook',
+                                      dueDate: task.dueDate,
+                                      timeSlot: task.timeSlot
+                                    });
                                   } else {
                                     onSelectDateNotes(task.noteName);
                                   }
@@ -2485,10 +2600,14 @@ export default function CalendarView({
                 <div className="day-columns-headers">
                   {activeDaysList.map(day => {
                     const isTod = isToday(day);
+                    const dayStr = format(day, 'yyyy-MM-dd');
                     return (
-                      <div 
-                        key={format(day, 'yyyy-MM-dd')} 
+                      <div
+                        key={dayStr}
                         className={`day-col-header ${isTod ? 'today' : ''}`}
+                        onClick={() => handleOpenDailyNote(dayStr)}
+                        title="Bu günün notunu aç"
+                        style={{ cursor: 'pointer' }}
                       >
                         <span className="w-day-lbl">{format(day, 'eeee', { locale: tr })}</span>
                         <span className="w-date-num">{format(day, 'd MMMM', { locale: tr })}</span>
@@ -3252,7 +3371,12 @@ export default function CalendarView({
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (task.isExternal) {
-                                        alert(`Takvim Etkinliği:\n\n📅 ${task.content}\nKaynak: ${task.externalSource === 'google' ? 'Google Calendar' : 'Outlook Calendar'}\nTarih: ${task.dueDate} ${task.timeSlot ? `(${task.timeSlot})` : ''}`);
+                                        setExternalEventInfoModal({
+                                      content: task.content,
+                                      source: task.externalSource as 'google' | 'outlook',
+                                      dueDate: task.dueDate,
+                                      timeSlot: task.timeSlot
+                                    });
                                       } else {
                                         handleToggleTodo(task.id);
                                       }
@@ -4612,6 +4736,105 @@ export default function CalendarView({
                 </div>
               </div>
 
+              {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                  İSTEK: bazı dış takvim etkinlikleri (ör. günlük toplantılar) takvimi kalabalıklaştırıyor —
+                  kullanıcı bir etkinliğe tıklayıp "Gizle" diyerek başlığa göre kalıcı olarak gizleyebiliyor
+                  (bkz. hideExternalEventTitle). Burada gizlenenleri görüp geri getirebiliyor. */}
+              {hiddenExternalTitles.length > 0 && (
+                <div style={{
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  fontSize: '11px',
+                  color: 'var(--text-muted)'
+                }}>
+                  <div style={{ fontWeight: 'bold', color: '#e2e8f0', marginBottom: '8px' }}>
+                    🙈 Gizlenen Etkinlikler ({hiddenExternalTitles.length})
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '140px', overflowY: 'auto' }}>
+                    {hiddenExternalTitles.map(title => (
+                      <div key={title} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={title}>{title}</span>
+                        <button
+                          type="button"
+                          onClick={() => restoreExternalEventTitle(title)}
+                          style={{
+                            flexShrink: 0, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
+                            borderRadius: '5px', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '10.5px',
+                            fontWeight: 600, padding: '3px 8px'
+                          }}
+                        >
+                          Geri Getir
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
+
+      {externalEventInfoModal && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', zIndex: 2100,
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}
+          onClick={() => setExternalEventInfoModal(null)}
+        >
+          <div
+            style={{
+              width: '340px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
+              borderRadius: '12px', padding: '20px', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: '#fff'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: externalEventInfoModal.source === 'google' ? '#4285F4' : '#0078d4',
+                color: '#fff', fontSize: '10px', fontWeight: 'bold', borderRadius: '4px', width: '18px', height: '18px'
+              }}>
+                {externalEventInfoModal.source === 'google' ? 'G' : 'O'}
+              </span>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {externalEventInfoModal.source === 'google' ? 'Google Calendar' : 'Outlook Calendar'}
+              </span>
+            </div>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '15px', fontWeight: 700 }}>{externalEventInfoModal.content}</h3>
+            <p style={{ margin: '0 0 18px 0', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+              {externalEventInfoModal.dueDate}{externalEventInfoModal.timeSlot ? ` (${externalEventInfoModal.timeSlot})` : ''}
+            </p>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => setExternalEventInfoModal(null)}
+                style={{
+                  flex: 1, background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '8px',
+                  color: 'var(--text-secondary)', padding: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer'
+                }}
+              >
+                Kapat
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  hideExternalEventTitle(externalEventInfoModal.content);
+                  setExternalEventInfoModal(null);
+                }}
+                title="Bu başlıktaki tüm etkinlikleri takvimden gizler (Dış Takvim Eşitle menüsünden geri getirebilirsiniz)"
+                style={{
+                  flex: 1, background: '#ef4444', border: 'none', borderRadius: '8px',
+                  color: '#fff', padding: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer'
+                }}
+              >
+                🙈 Bu Etkinliği Gizle
+              </button>
             </div>
           </div>
         </div>

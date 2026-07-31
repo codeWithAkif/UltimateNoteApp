@@ -59,7 +59,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -1122,6 +1122,17 @@ export default function App() {
   const [moveOldPath, setMoveOldPath] = useState('');
   const [moveDestFolder, setMoveDestFolder] = useState('');
 
+  // New Note Modal state
+  const [isNewNoteModalOpen, setIsNewNoteModalOpen] = useState(false);
+  const [newNoteNameInput, setNewNoteNameInput] = useState('');
+  const [newNoteFolderInput, setNewNoteFolderInput] = useState<string | null>(null);
+
+  const openCreateNoteModal = (folder?: string | null) => {
+    setNewNoteFolderInput(folder !== undefined ? folder : (selectedFolder || null));
+    setNewNoteNameInput('');
+    setIsNewNoteModalOpen(true);
+  };
+
   // Selected Filters
   const [selectedFolder, setSelectedFolder] = useState<string | null>(() => {
     return localStorage.getItem('selected_folder');
@@ -1164,6 +1175,7 @@ export default function App() {
     });
   }, [activeNotePath]);
   const [historyDropdownPaneIdx, setHistoryDropdownPaneIdx] = useState<number | null>(null);
+  const [historyMenuPos, setHistoryMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   // Collapsible sidebar state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
@@ -1305,9 +1317,8 @@ export default function App() {
           activePane.tabs = [path];
           activePane.activeTabIdx = 0;
         } else {
-          const newTabs = [...activePane.tabs];
-          newTabs[activePane.activeTabIdx] = path;
-          activePane.tabs = newTabs;
+          activePane.tabs = [...activePane.tabs, path];
+          activePane.activeTabIdx = activePane.tabs.length - 1;
         }
       }
       newPanes[activePaneIdx] = activePane;
@@ -1370,14 +1381,25 @@ export default function App() {
     setActiveNotePath(path);
   };
 
+  // İSTEK: tarayıcılardaki "kapatılan sekmeyi geri aç" (Ctrl+Shift+T) gibi bir özellik —
+  // kapatılan her sekmenin yolu, hangi panelden kapatıldığıyla birlikte küçük bir yığında
+  // (en fazla 10, en yeni başta) tutulur. Kalıcı (localStorage) DEĞİL — tarayıcılardaki
+  // gibi oturuma özel; uygulama yeniden açıldığında sıfırlanması beklenen bir davranış.
+  const [closedTabsStack, setClosedTabsStack] = useState<{ paneId: string; path: string }[]>([]);
+
   // Bir paneldeki sekmeyi kapatır (X tıklaması veya fare orta tuşu ile çağrılır)
   const closeTabAt = (paneIdx: number, tabIdx: number) => {
     setPanes(prev => {
       const newPanes = [...prev];
       const activePane = { ...newPanes[paneIdx] };
+      const closedPath = activePane.tabs[tabIdx];
       activePane.tabs = activePane.tabs.filter((_, i) => i !== tabIdx);
       activePane.activeTabIdx = Math.max(0, activePane.activeTabIdx - 1);
       newPanes[paneIdx] = activePane;
+
+      if (closedPath) {
+        setClosedTabsStack(stack => [{ paneId: activePane.id, path: closedPath }, ...stack].slice(0, 10));
+      }
 
       if (activePane.tabs.length === 0 && newPanes.length > 1) {
         newPanes.splice(paneIdx, 1);
@@ -1386,6 +1408,35 @@ export default function App() {
         setActiveNotePath(activePane.tabs[activePane.activeTabIdx] || null);
       }
       return newPanes;
+    });
+  };
+
+  // Yığındaki en son kapatılan sekmeyi, kapatıldığı panele (o panel artık yoksa aktif
+  // panele) yeni bir sekme olarak geri açar. Aynı yol o panelde zaten açıksa (kullanıcı
+  // araya girip elle tekrar açmışsa) mükerrer sekme yerine var olana odaklanır.
+  const handleReopenLastClosedTab = () => {
+    setClosedTabsStack(stack => {
+      if (stack.length === 0) return stack;
+      const [mostRecent, ...rest] = stack;
+      setPanes(prev => {
+        const newPanes = [...prev];
+        let targetIdx = newPanes.findIndex(p => p.id === mostRecent.paneId);
+        if (targetIdx === -1) targetIdx = activePaneIdx;
+        const targetPane = { ...newPanes[targetIdx] };
+        const existingIdx = targetPane.tabs.indexOf(mostRecent.path);
+        if (existingIdx !== -1) {
+          targetPane.activeTabIdx = existingIdx;
+        } else {
+          targetPane.tabs = [...targetPane.tabs, mostRecent.path];
+          targetPane.activeTabIdx = targetPane.tabs.length - 1;
+        }
+        newPanes[targetIdx] = targetPane;
+        setActivePaneIdx(targetIdx);
+        return newPanes;
+      });
+      setActiveNotePath(mostRecent.path);
+      setActiveTab('notes');
+      return rest;
     });
   };
 
@@ -1413,27 +1464,31 @@ export default function App() {
 
       if (sourcePaneIdx === targetPaneIdx) {
         setPanes(prev => {
+          if (!prev[sourcePaneIdx]) return prev;
           const newPanes = [...prev];
-          const activePane = { ...newPanes[sourcePaneIdx] };
-          const tabs = [...activePane.tabs];
-          const [movedTab] = tabs.splice(sourceTabIdx, 1);
-          const insertIdx = targetTabIdx !== undefined ? targetTabIdx : tabs.length;
-          tabs.splice(insertIdx, 0, movedTab);
-          activePane.tabs = tabs;
+          const activePane = { ...newPanes[sourcePaneIdx], tabs: [...newPanes[sourcePaneIdx].tabs] };
+          const movedTab = activePane.tabs[sourceTabIdx];
+          if (!movedTab) return prev;
+          activePane.tabs.splice(sourceTabIdx, 1);
+          const insertIdx = targetTabIdx !== undefined ? Math.min(targetTabIdx, activePane.tabs.length) : activePane.tabs.length;
+          activePane.tabs.splice(insertIdx, 0, movedTab);
           activePane.activeTabIdx = insertIdx;
           newPanes[sourcePaneIdx] = activePane;
           return newPanes;
         });
       } else {
         setPanes(prev => {
+          if (!prev[sourcePaneIdx] || !prev[targetPaneIdx]) return prev;
           const newPanes = [...prev];
-          const sourcePane = { ...newPanes[sourcePaneIdx] };
-          const targetPane = { ...newPanes[targetPaneIdx] };
+          const sourcePane = { ...newPanes[sourcePaneIdx], tabs: [...newPanes[sourcePaneIdx].tabs] };
+          const targetPane = { ...newPanes[targetPaneIdx], tabs: [...newPanes[targetPaneIdx].tabs] };
 
-          const [movedTab] = sourcePane.tabs.splice(sourceTabIdx, 1);
-          sourcePane.activeTabIdx = Math.max(0, sourcePane.activeTabIdx - 1);
+          const movedTab = sourcePane.tabs[sourceTabIdx];
+          if (!movedTab) return prev;
+          sourcePane.tabs.splice(sourceTabIdx, 1);
+          sourcePane.activeTabIdx = Math.max(0, Math.min(sourcePane.activeTabIdx, sourcePane.tabs.length - 1));
 
-          const insertIdx = targetTabIdx !== undefined ? targetTabIdx : targetPane.tabs.length;
+          const insertIdx = targetTabIdx !== undefined ? Math.min(targetTabIdx, targetPane.tabs.length) : targetPane.tabs.length;
           targetPane.tabs.splice(insertIdx, 0, movedTab);
           targetPane.activeTabIdx = insertIdx;
 
@@ -1442,7 +1497,8 @@ export default function App() {
 
           if (sourcePane.tabs.length === 0 && newPanes.length > 1) {
             newPanes.splice(sourcePaneIdx, 1);
-            setActivePaneIdx(Math.max(0, targetPaneIdx - (sourcePaneIdx < targetPaneIdx ? 1 : 0)));
+            const newActivePaneIdx = Math.max(0, targetPaneIdx - (sourcePaneIdx < targetPaneIdx ? 1 : 0));
+            setActivePaneIdx(newActivePaneIdx);
           }
 
           return newPanes;
@@ -2654,6 +2710,13 @@ export default function App() {
     return localStorage.getItem('setting_templates_folder') || '.templates';
   });
 
+  // İSTEK: Ayarlar > Clients — yeni müşteri/proje oluşturma iskeletinin (bkz. ProjectsView.tsx
+  // handleCreateClient/handleCreateProject) kök klasörünü belirler:
+  // {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md ve {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md.
+  const [clientsFolder, setClientsFolder] = useState<string>(() => {
+    return localStorage.getItem('setting_clients_folder') || 'Musteriler';
+  });
+
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Global Pomodoro sayacının kalan saniyesini tutar (tüm sayfalarda kesintisiz çalışması için).
   // Başlangıç değeri localStorage'daki gerçek zaman damgasından (endsAt) hesaplanır.
@@ -2760,7 +2823,7 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
-  const [settingsTab, setSettingsTab] = useState<'sync' | 'ai' | 'appearance' | 'shortcuts' | 'trash' | 'about'>('sync');
+  const [settingsTab, setSettingsTab] = useState<'sync' | 'ai' | 'appearance' | 'clients' | 'shortcuts' | 'trash' | 'about'>('sync');
   // Çöp Kutusu: yerel .trash/index.json içeriği + Supabase'de is_deleted=true olan
   // (yerelde kopyası olmayabilecek) notlar birleştirilerek gösterilir.
   const [localTrashEntries, setLocalTrashEntries] = useState<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>>([]);
@@ -3951,6 +4014,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       const goNotesMatch = matches(shortcuts.goNotes.shortcut);
       const globalSearchMatch = matches(shortcuts.globalSearch.shortcut);
 
+      // İSTEK: tarayıcılardaki Ctrl+Shift+T ("kapatılan sekmeyi geri aç") kısayolu —
+      // kullanıcı tanımlı Kısayollar sistemine dahil edilmedi (sabit, tarayıcı
+      // kullanıcılarının zaten bildiği bir kombinasyon), sadece burada doğrudan kontrol edilir.
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        handleReopenLastClosedTab();
+        return;
+      }
+
       if (openBrowserMatch) {
         e.preventDefault();
         setActiveTab('browser');
@@ -3962,10 +4034,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         setIsSidebarOpen(prev => !prev);
       } else if (newNoteMatch) {
         e.preventDefault();
-        const name = prompt("Yeni notun adı:");
-        if (name && name.trim()) {
-          handleCreateNote(name.trim(), selectedFolder);
-        }
+        openCreateNoteModal(selectedFolder);
       } else if (goQuickAddMatch) {
         e.preventDefault();
         setActiveTab('notfactory');
@@ -6410,13 +6479,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 { label: 'Ezber Kartları', icon: BookOpen, onClick: () => setActiveTab('srs') },
                 { label: 'Notlarımla Sohbet', icon: MessageCircle, onClick: () => setActiveTab('aichat') },
                 { label: 'Müzik Kutusu', icon: Headphones, onClick: () => setActiveTab('music') },
-                { label: 'Yeni Not', icon: Plus, onClick: () => {
-                    const name = prompt('Yeni notun adı:');
-                    if (name && name.trim()) {
-                      handleCreateNote(name.trim(), selectedFolder);
-                    }
-                  }
-                },
+                { label: 'Yeni Not', icon: Plus, onClick: () => openCreateNoteModal(selectedFolder) },
                 { label: 'Fiş Tara', icon: CameraIcon, onClick: () => handleOpenReceiptScan() }
               ].map(item => (
                 <button
@@ -6736,7 +6799,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                       if (existingIdx !== -1) {
                         activePane.activeTabIdx = existingIdx;
                       } else {
-                        activePane.tabs[activePane.activeTabIdx] = path;
+                        if (activePane.tabs.length === 0) {
+                          activePane.tabs = [path];
+                          activePane.activeTabIdx = 0;
+                        } else {
+                          activePane.tabs = [...activePane.tabs, path];
+                          activePane.activeTabIdx = activePane.tabs.length - 1;
+                        }
                       }
                     } else {
                       activePane.tabs = activePane.tabs.filter((_, i) => i !== activePane.activeTabIdx);
@@ -6769,9 +6838,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   >
                     {/* Sekmeler Çubuğu (Tabs Bar) */}
                     <div className="pane-tabs-bar">
-                      {pane.tabs.map((tabPath, tabIdx) => {
+                      {(pane.tabs || []).filter(Boolean).map((tabPath, tabIdx) => {
                         const isTabActive = tabIdx === pane.activeTabIdx;
-                        const noteName = tabPath.split('/').pop()?.replace('.md', '') || 'Yeni Not';
+                        const noteName = tabPath ? (tabPath.split('/').pop()?.replace(/\.(md|excalidraw|drawio)$/, '') || 'Yeni Not') : 'Yeni Not';
                         return (
                           <div
                             key={tabPath}
@@ -6827,12 +6896,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         );
                       })}
                       <button
-                        onClick={() => {
-                          const name = prompt('Yeni Not Adı:');
-                          if (name && name.trim()) {
-                            handleCreateNote(name.trim(), selectedFolder);
-                          }
-                        }}
+                        onClick={() => openCreateNoteModal(selectedFolder)}
                         className="pane-tab-add"
                         title="Yeni Sekme"
                       >
@@ -6845,6 +6909,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setHistoryMenuPos({ top: rect.bottom + 4, right: Math.max(8, window.innerWidth - rect.right) });
                             setHistoryDropdownPaneIdx(historyDropdownPaneIdx === idx ? null : idx);
                           }}
                           className="pane-tab-add"
@@ -6856,12 +6922,37 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                           <>
                             <div
                               onClick={() => setHistoryDropdownPaneIdx(null)}
-                              style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+                              style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
                             />
                             <div
                               className="context-menu-container"
-                              style={{ position: 'absolute', top: '100%', right: 0, marginTop: '4px', minWidth: '220px', maxWidth: '280px', zIndex: 50 }}
+                              style={{
+                                position: 'fixed',
+                                top: `${historyMenuPos?.top || 40}px`,
+                                right: `${historyMenuPos?.right || 10}px`,
+                                minWidth: '240px',
+                                maxWidth: '300px',
+                                zIndex: 9999,
+                                background: '#18181b',
+                                border: '1px solid rgba(255, 255, 255, 0.12)',
+                                borderRadius: '10px',
+                                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.7)'
+                              }}
                             >
+                              {closedTabsStack.length > 0 && (
+                                <>
+                                  <ContextMenuItem
+                                    onClick={() => {
+                                      handleReopenLastClosedTab();
+                                      setHistoryDropdownPaneIdx(null);
+                                    }}
+                                  >
+                                    <RotateCcw size={14} />
+                                    <span>Son Kapatılan Sekmeyi Aç <span style={{ opacity: 0.5, fontSize: '10px' }}>(Ctrl+Shift+T)</span></span>
+                                  </ContextMenuItem>
+                                  <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
+                                </>
+                              )}
                               {(() => {
                                 const recentPaths = noteViewHistory.filter(p => p !== activePath && notes.some(n => n.path === p));
                                 if (recentPaths.length === 0) {
@@ -7214,6 +7305,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               scannedContents={fileContents}
               onChangeTaskStatus={handleChangeTaskStatus}
               onSaveNote={handleSaveNote}
+              clientsFolder={clientsFolder}
               onOpenNote={(item) => {
                 if (item.note) {
                   let relativePath = '';
@@ -7444,6 +7536,59 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   İptal
                 </button>
                 <button type="submit" className="btn-modal-confirm" disabled={!newFolderName.trim()}>
+                  Oluştur
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Premium Glassmorphic Modal for Creating a New Note */}
+      {isNewNoteModalOpen && (
+        <div className="modal-overlay animate-fade" onClick={() => setIsNewNoteModalOpen(false)}>
+          <div className="modal-content animate-pop" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Yeni Not Oluştur</h3>
+            </div>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const name = newNoteNameInput.trim() || 'Yeni Not';
+              setIsNewNoteModalOpen(false);
+              await handleCreateNote(name, newNoteFolderInput);
+            }}>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Klasör:</label>
+                  <select
+                    value={newNoteFolderInput || ''}
+                    onChange={(e) => setNewNoteFolderInput(e.target.value || null)}
+                    className="modal-input"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '10px', width: '100%', cursor: 'pointer' }}
+                  >
+                    <option value="">[Kök Dizin (Klasörsüz)]</option>
+                    {folders.map(f => (
+                      <option key={f} value={f}>{f}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Not Adı:</label>
+                  <input
+                    type="text"
+                    placeholder="Not adı (örn: Toplantı Notları)..."
+                    value={newNoteNameInput}
+                    onChange={(e) => setNewNoteNameInput(e.target.value)}
+                    className="modal-input"
+                    autoFocus
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-modal-cancel" onClick={() => setIsNewNoteModalOpen(false)}>
+                  İptal
+                </button>
+                <button type="submit" className="btn-modal-confirm">
                   Oluştur
                 </button>
               </div>
@@ -8243,6 +8388,29 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
               <button
                 type="button"
+                onClick={() => setSettingsTab('clients')}
+                style={{
+                  background: settingsTab === 'clients' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  border: 'none',
+                  color: settingsTab === 'clients' ? '#fff' : 'var(--text-muted)',
+                  borderLeft: settingsTab === 'clients' ? '3px solid var(--accent-color)' : '3px solid transparent',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: '12.5px',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <span>🧑‍💼</span> Clients
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setSettingsTab('shortcuts')}
                 style={{
                   background: settingsTab === 'shortcuts' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
@@ -8740,6 +8908,50 @@ grant execute on function get_db_size() to anon;`}
                 </div>
               )}
 
+              {settingsTab === 'clients' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>Clients (Müşteriler) Ayarları</h3>
+                    <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                      Proje Yönetimi ekranındaki "Yeni Müşteri" / "Yeni Proje" oluşturma özelliğinin klasör iskeletini belirler.
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
+                    <label style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Müşteriler Klasörü Adı</label>
+                    <input
+                      type="text"
+                      value={clientsFolder}
+                      onChange={(e) => {
+                        const val = e.target.value.trim().replace(/\/|\\/g, '');
+                        setClientsFolder(val || 'Musteriler');
+                        localStorage.setItem('setting_clients_folder', val || 'Musteriler');
+                      }}
+                      placeholder="Musteriler"
+                      style={{
+                        width: '100%',
+                        padding: '6px 10px',
+                        fontSize: '12px',
+                        background: '#1c1c24',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        borderRadius: '4px',
+                        color: '#fff',
+                        marginTop: '4px',
+                        outline: 'none'
+                      }}
+                    />
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Yeni bir müşteri oluşturduğunuzda kurulacak iskelet: <code>{clientsFolder || 'Musteriler'}/MüşteriAdı/MüşteriAdı.md</code> (#müşteri etiketli).
+                      Bir proje eklediğinizde: <code>{clientsFolder || 'Musteriler'}/MüşteriAdı/Projeler/ProjeAdı.md</code> (#proje + müşteri etiketli).
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <button type="button" style={{ flex: 1, padding: '8px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }} onClick={() => setIsSettingsModalOpen(false)}>Kapat ve Kaydet</button>
+                  </div>
+                </div>
+              )}
+
               {settingsTab === 'shortcuts' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <h3 style={{ margin: 0, fontSize: '16px', color: '#fff' }}>Klavye Kısayolları</h3>
@@ -9172,10 +9384,7 @@ grant execute on function get_db_size() to anon;`}
             <>
               <ContextMenuItem
                 onClick={() => {
-                  const name = prompt('Yeni Not Adı:');
-                  if (name && name.trim()) {
-                    handleCreateNote(name.trim(), contextMenu.target);
-                  }
+                  openCreateNoteModal(contextMenu.target);
                   setContextMenu(null);
                 }}
               >

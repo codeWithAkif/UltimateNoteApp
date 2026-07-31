@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Compass } from 'lucide-react';
+import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Compass, Search, ArrowUpDown, X, Plus } from 'lucide-react';
 import {
   applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
   type LineCompletionResult
@@ -172,6 +172,16 @@ export default function TasksView({
   const [selectedFolderFilter, setSelectedFolderFilter] = useState<string | null>(null);
   const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'score' | 'dueDate' | 'alpha' | 'priority'>('score');
+
+  // İSTEK: Görev Havuzu ekranından doğrudan yeni görev eklenebilsin. Diğer hızlı-ekleme
+  // noktalarıyla (Dashboard "Hızlı todo ekle", InboxView) AYNI deseni kullanır: seçilen
+  // klasörün (veya kök dizinin) "inbox.md" dosyasına yeni bir checklist satırı ekler —
+  // ayrı bir depolama katmanı yok, tarama zaten tüm notları kapsadığından görev anında listede belirir.
+  const [isNewTaskFormOpen, setIsNewTaskFormOpen] = useState(false);
+  const [newTaskText, setNewTaskText] = useState('');
+  const [newTaskFolder, setNewTaskFolder] = useState('');
 
   // Automatic background refresh on window focus & gentle 10-second interval
   useEffect(() => {
@@ -608,6 +618,27 @@ export default function TasksView({
     }
   };
 
+  const handleAddNewTask = async () => {
+    if (!newTaskText.trim()) return;
+    const destPath = newTaskFolder ? `${newTaskFolder}/inbox.md` : 'inbox.md';
+    try {
+      let currentContent = '';
+      try {
+        currentContent = await readNoteContent(destPath);
+      } catch (e) {
+        // Dosya henüz yoksa boş başlar — aşağıda oluşturulur.
+      }
+      const updated = currentContent.trim()
+        ? `${currentContent.trimEnd()}\n- [ ] ${newTaskText.trim()}\n`
+        : `- [ ] ${newTaskText.trim()}\n`;
+      await onSaveNote(destPath, updated);
+      setNewTaskText('');
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error adding new task:', err);
+    }
+  };
+
   const handleDeleteSubtask = async (subtask: WorkspaceSubTask) => {
     try {
       const content = await readNoteContent(subtask.filePath);
@@ -708,7 +739,36 @@ export default function TasksView({
     // Tag
     if (selectedTagFilter && !task.tags.includes(selectedTagFilter.toLowerCase())) return false;
 
+    // Arama: görev metni, not adı veya etiketlerde geçiyor mu
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const haystack = `${task.content} ${task.noteName} ${task.tags.join(' ')}`.toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+
     return true;
+  });
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: Görev Havuzu'na sıralama seçeneği eklendi. Varsayılan ('score') tarama sırasında
+  // zaten uygulanan puan-azalan sıralamayı korur (bkz. setTasks(...).sort al satırı); diğer
+  // seçenekler filteredTasks üzerinde AYRICA (kopyalanarak, orijinal diziyi mutasyona
+  // uğratmadan) uygulanır.
+  const sortedTasks = [...filteredTasks].sort((a, b) => {
+    if (sortBy === 'dueDate') {
+      if (!a.dueDate && !b.dueDate) return 0;
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate) || (a.timeSlot || '').localeCompare(b.timeSlot || '');
+    }
+    if (sortBy === 'alpha') {
+      return a.content.localeCompare(b.content, 'tr');
+    }
+    if (sortBy === 'priority') {
+      const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      return (rank[a.priority] ?? 4) - (rank[b.priority] ?? 4);
+    }
+    return b.score - a.score; // 'score' — varsayılan
   });
 
   // Category counts
@@ -721,7 +781,15 @@ export default function TasksView({
   const repeatCount = parentTasks.filter(t => !t.isChecked && t.repeat && t.repeat !== 'none').length;
 
   // Folder and Tag collections from active tasks
-  const activeFolders = Array.from(new Set(parentTasks.map(t => t.folderName).filter(Boolean))) as string[];
+  // BUG DÜZELTMESİ: .templates gibi nokta ile başlayan sistem klasörleri Sidebar.tsx'te
+  // zaten gizleniyor (bkz. Sidebar.tsx satır ~452) — buradaki klasör süzgeci listesi aynı
+  // kuralı uygulamıyordu, bu yüzden bir şablon notunun içinde görev varsa ".templates"
+  // kullanıcıya görünen bir süzgeç seçeneği olarak sızıyordu.
+  const activeFolders = Array.from(new Set(
+    parentTasks
+      .map(t => t.folderName)
+      .filter((f): f is string => !!f && !f.split('/')[0].startsWith('.'))
+  ));
   const activeTags = Array.from(new Set(parentTasks.flatMap(t => t.tags).filter(Boolean))) as string[];
 
   // Render detail panel drawer
@@ -1239,26 +1307,131 @@ export default function TasksView({
             <h2>Görev Havuzu (Global Workspace)</h2>
             <p className="subtitle">Tüm çalışma alanındaki görevlerinizin anlık derlenmiş hali.</p>
           </div>
-          <button 
-            type="button"
-            className="btn-filter-toggle visible-mobile"
-            onClick={() => setIsFiltersOpen(!isFiltersOpen)}
-            style={{
-              background: 'var(--accent-glow)',
-              color: 'var(--accent-color)',
-              border: '1px solid rgba(168, 85, 247, 0.3)',
-              borderRadius: '6px',
-              padding: '6px 12px',
-              fontSize: '11px',
-              fontWeight: '600',
-              cursor: 'pointer',
-              display: 'none',
-              alignItems: 'center',
-              gap: '4px'
-            }}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => setIsNewTaskFormOpen(prev => !prev)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                background: 'var(--accent-color)', color: '#fff', border: 'none',
+                borderRadius: '8px', padding: '8px 14px', fontSize: '12.5px', fontWeight: '700', cursor: 'pointer'
+              }}
+            >
+              <Plus size={14} />
+              Yeni Görev
+            </button>
+            <button
+              type="button"
+              className="btn-filter-toggle visible-mobile"
+              onClick={() => setIsFiltersOpen(!isFiltersOpen)}
+              style={{
+                background: 'var(--accent-glow)',
+                color: 'var(--accent-color)',
+                border: '1px solid rgba(168, 85, 247, 0.3)',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontSize: '11px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                display: 'none',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              Filtreler
+            </button>
+          </div>
+        </div>
+
+        {isNewTaskFormOpen && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); handleAddNewTask(); }}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 20px 14px', flexWrap: 'wrap' }}
           >
-            Filtreler
-          </button>
+            <input
+              type="text"
+              value={newTaskText}
+              onChange={(e) => setNewTaskText(e.target.value)}
+              placeholder="Görev adı..."
+              autoFocus
+              style={{
+                flex: '1 1 220px', minWidth: '180px', padding: '8px 12px', fontSize: '13px',
+                background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px',
+                color: 'var(--text-primary)', outline: 'none'
+              }}
+            />
+            <select
+              value={newTaskFolder}
+              onChange={(e) => setNewTaskFolder(e.target.value)}
+              style={{
+                padding: '8px 10px', fontSize: '13px', background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer'
+              }}
+            >
+              <option value="">Kök Gelen Kutusu (inbox.md)</option>
+              {folders.filter(f => !f.split('/')[0].startsWith('.')).map(f => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={!newTaskText.trim()}
+              style={{
+                padding: '8px 16px', fontSize: '12.5px', fontWeight: '700', color: '#fff',
+                background: 'var(--accent-color)', border: 'none', borderRadius: '8px',
+                cursor: newTaskText.trim() ? 'pointer' : 'not-allowed', opacity: newTaskText.trim() ? 1 : 0.5
+              }}
+            >
+              Ekle
+            </button>
+          </form>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '0 20px 14px', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: '1 1 220px', minWidth: '180px' }}>
+            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Görevlerde ara..."
+              style={{
+                width: '100%', padding: '8px 30px 8px 32px', fontSize: '13px',
+                background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px',
+                color: 'var(--text-primary)', outline: 'none'
+              }}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                title="Aramayı temizle"
+                style={{
+                  position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                  background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)',
+                  display: 'flex', alignItems: 'center', padding: '2px'
+                }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <ArrowUpDown size={14} style={{ color: 'var(--text-muted)' }} />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              style={{
+                padding: '8px 10px', fontSize: '13px', background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer'
+              }}
+            >
+              <option value="score">Puana göre</option>
+              <option value="dueDate">Bitiş tarihine göre</option>
+              <option value="priority">Önceliğe göre</option>
+              <option value="alpha">Alfabetik (A-Z)</option>
+            </select>
+          </div>
         </div>
 
         <div className="panel-body">
@@ -1268,7 +1441,7 @@ export default function TasksView({
               <h3>Çalışma Alanı Taranıyor...</h3>
               <p>Tüm notlardaki görevleriniz okunuyor ve anlık hesaplanıyor.</p>
             </div>
-          ) : filteredTasks.length === 0 ? (
+          ) : sortedTasks.length === 0 ? (
             <div className="tasks-empty-state">
               <AlertCircle size={48} className="text-muted" />
               <h3>Görev Bulunamadı</h3>
@@ -1276,7 +1449,7 @@ export default function TasksView({
             </div>
           ) : (
             <div className="tasks-list-scroll">
-              {filteredTasks.map(task => {
+              {sortedTasks.map(task => {
                 const isExpanded = expandedTaskId === task.id;
                 
                 return (

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
-import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User } from 'lucide-react';
+import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus } from 'lucide-react';
 
 interface NoteItem {
   name: string;
@@ -21,6 +21,11 @@ interface ProjectsViewProps {
   // olduğundan (bkz. #müşteri etiketi) veriyi doğrudan o notun içinde tutmak, mevcut
   // not-senkron mekanizmasını (satır-bazlı, kanıtlanmış) bedavaya kullanır.
   onSaveNote?: (path: string, content: string) => Promise<void>;
+  // İSTEK: Yeni müşteri/proje oluşturma iskelet klasör yapısı Ayarlar > Clients'ta
+  // belirlenen kök klasörün altına kurulur: {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md
+  // (#müşteri etiketli) ve {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md (#proje +
+  // müşteri-slug etiketli). Ayarlar'daki varsayılan "Musteriler" ile eşleşir.
+  clientsFolder?: string;
 }
 
 // Bir müşteri/proje notunun içeriğinden [renk:hex] ve [icon:emoji] etiketlerini okur.
@@ -71,7 +76,7 @@ const upsertClientTag = (content: string, tagRegex: RegExp, newTag: string): str
   return `${stripped}\n${newTag}`;
 };
 
-export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote }: ProjectsViewProps) {
+export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Musteriler' }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
@@ -159,6 +164,47 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     if (!onSaveNote) return;
     const updated = upsertClientTag(currentContent, CLIENT_ICON_REGEX, `[icon:${icon}]`);
     await onSaveNote(clientPath, updated);
+  };
+
+  // BUG DÜZELTMESİ: Electron'da window.prompt() DESTEKLENMİYOR — alert()/confirm()'ün aksine
+  // Electron'un varsayılan BrowserWindow'unda hiçbir yerel karşılığı yok, çağrıldığında
+  // sessizce hiçbir şey yapmıyor ("tıklayınca bir şey olmadı"). Native prompt() yerine
+  // uygulama içi küçük bir modal (aşağıda, createModal state'i) kullanıyoruz.
+  const [createModal, setCreateModal] = useState<
+    { type: 'client' } | { type: 'project'; clientName: string } | null
+  >(null);
+  const [createModalInput, setCreateModalInput] = useState('');
+
+  // İSTEK: "Yeni Müşteri" — klasör iskeleti: {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md,
+  // içine #müşteri etiketi yazılır. Alt "Projeler" klasörü, ilk proje eklendiğinde kendiliğinden
+  // oluşur (writeNote ara klasörleri otomatik oluşturuyor — bkz. electron/main.cjs mkdirSync
+  // recursive) — baştan boş bir klasör yaratmaya gerek yok.
+  const handleCreateClient = async (name: string) => {
+    if (!onSaveNote) return;
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    const path = `${clientsFolder}/${cleanName}/${cleanName}.md`;
+    if (notes.some(n => n.path.toLowerCase() === path.toLowerCase())) {
+      alert(`"${cleanName}" adında bir müşteri zaten var.`);
+      return;
+    }
+    await onSaveNote(path, `# ${cleanName}\n\n#müşteri\n`);
+  };
+
+  // İSTEK: "Yeni Proje" (bir müşteri kartından) — {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md,
+  // içine hem #proje HEM müşterinin slug'ı (#{musteri-adi}) etiketi yazılır — mevcut proje→müşteri
+  // bağlama kuralıyla (CLIENT_COLOR_REGEX'in üstündeki getClientProjects mantığı) AYNI kural.
+  const handleCreateProject = async (clientName: string, name: string) => {
+    if (!onSaveNote) return;
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    const clientSlug = clientName.toLowerCase().replace(/\s+/g, '-');
+    const path = `${clientsFolder}/${clientName}/Projeler/${cleanName}.md`;
+    if (notes.some(n => n.path.toLowerCase() === path.toLowerCase())) {
+      alert(`"${cleanName}" adında bir proje zaten var.`);
+      return;
+    }
+    await onSaveNote(path, `# ${cleanName}\n\n#proje #${clientSlug}\n`);
   };
 
   return (
@@ -310,7 +356,22 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
 
           {activeTab === 'clients' && (
             <div style={{ padding: '24px', overflowY: 'auto', height: '100%' }}>
-              <h2>Müşteri Listesi</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0 }}>Müşteri Listesi</h2>
+                {onSaveNote && (
+                  <button
+                    type="button"
+                    onClick={() => { setCreateModalInput(''); setCreateModal({ type: 'client' }); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      background: 'var(--accent-color)', color: '#fff', border: 'none',
+                      borderRadius: '8px', padding: '8px 14px', fontSize: '12.5px', fontWeight: 700, cursor: 'pointer'
+                    }}
+                  >
+                    <Plus size={14} /> Yeni Müşteri
+                  </button>
+                )}
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px', marginTop: '24px' }}>
                 {clientNotes.map(client => {
                   const cleanClientName = client.name.replace('.md', '');
@@ -348,9 +409,26 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           </button>
                           {cleanClientName}
                         </h3>
-                        <span style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px' }}>
-                          {linkedProjects.length} Proje
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '12px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px' }}>
+                            {linkedProjects.length} Proje
+                          </span>
+                          {onSaveNote && (
+                            <button
+                              type="button"
+                              onClick={() => { setCreateModalInput(''); setCreateModal({ type: 'project', clientName: cleanClientName }); }}
+                              title="Bu müşteriye yeni proje ekle"
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '4px',
+                                background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
+                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer',
+                                fontSize: '11px', fontWeight: 700, padding: '3px 8px'
+                              }}
+                            >
+                              <Plus size={11} /> Proje
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {isPickerOpen && onSaveNote && (
@@ -448,6 +526,78 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           )}
         </div>
       </div>
+
+      {createModal && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', zIndex: 2000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}
+          onClick={() => setCreateModal(null)}
+        >
+          <div
+            style={{
+              width: '340px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
+              borderRadius: '12px', padding: '20px', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: '#fff'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 14px 0', fontSize: '15px', fontWeight: 700 }}>
+              {createModal.type === 'client' ? 'Yeni Müşteri' : `"${createModal.clientName}" için Yeni Proje`}
+            </h3>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!createModalInput.trim()) return;
+                if (createModal.type === 'client') {
+                  await handleCreateClient(createModalInput);
+                } else {
+                  await handleCreateProject(createModal.clientName, createModalInput);
+                }
+                setCreateModal(null);
+                setCreateModalInput('');
+              }}
+            >
+              <input
+                type="text"
+                autoFocus
+                value={createModalInput}
+                onChange={(e) => setCreateModalInput(e.target.value)}
+                placeholder={createModal.type === 'client' ? 'Müşteri adı...' : 'Proje adı...'}
+                style={{
+                  width: '100%', padding: '8px 12px', fontSize: '13px', marginBottom: '16px',
+                  background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px',
+                  color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setCreateModal(null)}
+                  style={{
+                    flex: 1, background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '8px',
+                    color: 'var(--text-secondary)', padding: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer'
+                  }}
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={!createModalInput.trim()}
+                  style={{
+                    flex: 1, background: 'var(--accent-color)', border: 'none', borderRadius: '8px',
+                    color: '#fff', padding: '10px', fontSize: '13px', fontWeight: 600,
+                    cursor: createModalInput.trim() ? 'pointer' : 'not-allowed', opacity: createModalInput.trim() ? 1 : 0.5
+                  }}
+                >
+                  Oluştur
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
