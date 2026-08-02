@@ -12,8 +12,8 @@ import {
 import Hourglass from './Hourglass';
 import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { handleLocalSave as syncMediaToSupabase, flushPendingUploads } from '../services/supabaseSync';
-import { summarizeNoteAndSuggestTags, isGeminiConfigured, askAITeacher, generateQuiz, gradeQuiz, generateFlashcards, generateMiniProject, findYouTubeVideoForTopic, validateYouTubeVideo } from '../services/geminiMentor';
-import { getMasteryStreak, isMastered, setMasteryStreak, formatAITeacherQuestionBlock, formatAITeacherAnswerBody, formatAITeacherQuizResult, formatAITeacherFlashcards, dedupeNewFlashcards, buildAITeacherScheduleTaskLine, formatMiniProjectBlock, AI_TEACHER_MASTERY_TARGET } from '../aiTeacher';
+import { summarizeNoteAndSuggestTags, isGeminiConfigured, askAITeacher, generateQuiz, gradeQuiz, generateFlashcards, generateMiniProject, findYouTubeVideoForTopic, validateYouTubeVideo, transcribeVoiceQuestion, synthesizeSpeech } from '../services/geminiMentor';
+import { getMasteryStreak, isMastered, setMasteryStreak, formatAITeacherQuestionBlock, formatAITeacherAnswerBody, formatAITeacherQuizResult, formatAITeacherFlashcards, dedupeNewFlashcards, buildAITeacherScheduleTaskLine, formatMiniProjectBlock, stripMarkdownForSpeech, pcmBase64ToWavUrl, buildAITeacherRevealText, AI_TEACHER_MASTERY_TARGET } from '../aiTeacher';
 import { Preferences } from '@capacitor/preferences';
 import { App as CapacitorApp } from '@capacitor/app';
 import { applyCompletionToLine, applyQuestStartToLine, type LineCompletionResult } from '../punctuality';
@@ -2356,19 +2356,104 @@ export default function NotesView({
   const liveEditorContainerRef = useRef<HTMLDivElement>(null);
   const aiTeacherTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sesli soru (push-to-talk): mikrofon butonuna basılı tutunca kayıt başlar, bırakınca
+  // biter. Tarayıcının yerleşik SpeechRecognition'ı KULLANILMIYOR çünkü masaüstü
+  // Electron'da güvenilir çalışmıyor (bkz. voice-recorder-widget'taki isDesktopElectron
+  // koruması). Bunun yerine ham ses kaydı Gemini'ye multimodal olarak gönderilip
+  // deşifre ettiriliyor — mikrofon erişimi (getUserMedia/MediaRecorder) Electron'da
+  // sorunsuz çalıştığı için bu yol masaüstünde de güvenilir.
+  const [isAITeacherRecording, setIsAITeacherRecording] = useState(false);
+  const [isAITeacherTranscribing, setIsAITeacherTranscribing] = useState(false);
+  const aiTeacherVoiceMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const aiTeacherVoiceChunksRef = useRef<Blob[]>([]);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sesli cevap okuma (Gemini TTS) durumu: gerçek bir <audio> elemanı kullanılır (tarayıcının
+  // SpeechSynthesis'i "itici" bulunduğu için terk edildi) — bu sayede durdur/devam ettir/
+  // baştan dinle native olarak gelir (audio.pause/play/currentTime). Yazma animasyonu artık
+  // sabit bir zamanlayıcı DEĞİL, audio.currentTime/duration oranına göre ilerler ki
+  // "yazı bitti ama ses ortadaydı" sorunu yaşanmasın.
+  const [isAITeacherSpeaking, setIsAITeacherSpeaking] = useState(false);
+  const [isAITeacherAudioPaused, setIsAITeacherAudioPaused] = useState(false);
+  const [isAITeacherSynthesizing, setIsAITeacherSynthesizing] = useState(false);
+  const aiTeacherAudioRef = useRef<HTMLAudioElement | null>(null);
+  const aiTeacherAudioUrlRef = useRef<string | null>(null);
+  // Devam eden bir yazma/ses animasyonu varsa, onu ANINDA tam metne tamamlayan fonksiyonu
+  // tutar (bkz. typewriteIntoEditor/typewriteSyncedToAudio). Not değişiminde veya bileşen
+  // kapanırken (ör. başka bir sekmeye geçince) çağrılır — aksi halde animasyon askıda kalıp
+  // not YARIM METİNLE kayıtlı kalıyordu (kullanıcı geri bildirimi: "yazıda yarıda kaldı").
+  const aiTeacherPendingFinalizeRef = useRef<(() => void) | null>(null);
+
+  // Otomatik kaydırmayı kullanıcı serbestçe açıp kapatabilsin diye (kod dışına kaçan
+  // olay dinleyicileri güncel state'i kaçırmasın diye ref üzerinden okunur).
+  const [isAITeacherAutoScroll, setIsAITeacherAutoScroll] = useState(true);
+  const isAITeacherAutoScrollRef = useRef(true);
+  useEffect(() => { isAITeacherAutoScrollRef.current = isAITeacherAutoScroll; }, [isAITeacherAutoScroll]);
+
+  // Sesli soru sorma (mikrofonla girdi) ile sesli cevap ÜRETME (TTS çıktısı) birbirinden
+  // BAĞIMSIZ iki şey — kullanıcı isteğiyle ayrıldı. Bu onay kutusu, soru yazıyla mı sesle
+  // mi sorulduğuna bakmaksızın cevabın sesli okunup okunmayacağını tek başına belirler.
+  const [isAITeacherVoiceReplyEnabled, setIsAITeacherVoiceReplyEnabled] = useState(true);
+
+  const stopAITeacherAudio = () => {
+    if (aiTeacherAudioRef.current) {
+      aiTeacherAudioRef.current.pause();
+      aiTeacherAudioRef.current.src = '';
+      aiTeacherAudioRef.current = null;
+    }
+    if (aiTeacherAudioUrlRef.current) {
+      URL.revokeObjectURL(aiTeacherAudioUrlRef.current);
+      aiTeacherAudioUrlRef.current = null;
+    }
+    setIsAITeacherSpeaking(false);
+    setIsAITeacherAudioPaused(false);
+  };
+
   // Not değiştirildiğinde bir önceki notun açık kalan AI Öğretmen çekmecesi/testi taşınmasın.
   useEffect(() => {
+    // Not değişmeden ÖNCE, o notta devam eden bir yazma/ses animasyonu varsa anında
+    // tam metne tamamla — aksi halde bu not, cevabın yarısıyla kayıtlı kalırdı.
+    if (aiTeacherPendingFinalizeRef.current) {
+      aiTeacherPendingFinalizeRef.current();
+    }
     setIsAITeacherOpen(false);
     setAITeacherQuestion('');
     setAITeacherError(null);
     setAITeacherQuiz(null);
     setIsAITeacherScheduleOpen(false);
     setAITeacherScheduleDone(false);
+    setIsAITeacherRecording(false);
+    setIsAITeacherTranscribing(false);
+    setIsAITeacherSynthesizing(false);
     if (aiTeacherTypingTimerRef.current) {
       clearTimeout(aiTeacherTypingTimerRef.current);
       aiTeacherTypingTimerRef.current = null;
     }
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    stopAITeacherAudio();
   }, [activeNotePath]);
+
+  // BUG DÜZELTMESİ: Yukarıdaki efekt yalnızca activeNotePath DEĞİŞTİĞİNDE (aynı NotesView
+  // örneği içinde not değiştirilince) çalışır — ama kullanıcı Notlar sekmesinden TAMAMEN
+  // ayrılırsa (ör. müzik açmak için başka sekmeye geçince) App.tsx bu bileşeni doğrudan
+  // UNMOUNT eder, activeNotePath hiç "değişmeden" bileşen yok olur ve yukarıdaki temizlik
+  // hiç tetiklenmez. Bu ayrı, boş bağımlılıklı efekt SADECE gerçek unmount'ta çalışan bir
+  // cleanup sağlar — devam eden cevabı orada da tamamlar.
+  useEffect(() => {
+    return () => {
+      if (aiTeacherPendingFinalizeRef.current) {
+        aiTeacherPendingFinalizeRef.current();
+      }
+      if (aiTeacherTypingTimerRef.current) {
+        clearTimeout(aiTeacherTypingTimerRef.current);
+        aiTeacherTypingTimerRef.current = null;
+      }
+      stopAITeacherAudio();
+    };
+  }, []);
   const [selectedSummaryTags, setSelectedSummaryTags] = useState<Set<string>>(new Set());
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -2418,7 +2503,10 @@ export default function NotesView({
 
   // Not içeriği kaydırma alanını (varsa) en alta kaydırır — daktilo efekti sırasında
   // "yazdıkça aşağı kaysın" davranışı için her karakter eklemesinden sonra çağrılır.
+  // Kullanıcı "iki dakika yukarı bakabilmem lazım" dediği için isAITeacherAutoScroll
+  // toggle'ı kapalıyken HİÇBİR otomatik kaydırma yapılmaz.
   const scrollAITeacherToBottom = () => {
+    if (!isAITeacherAutoScrollRef.current) return;
     const el = liveEditorContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   };
@@ -2432,21 +2520,102 @@ export default function NotesView({
   // notun içine yazıyoruz. Kullanıcının şikayeti "cevap birden belirdi, ne olduğunu
   // anlamadım" idi; bu da hem daha okunabilir hem de her adımda otomatik aşağı kaydırma
   // ile "cevap nereye yazılıyor" sorusunu çözüyor.
-  const typewriteIntoEditor = (baseContent: string, textToType: string): Promise<void> => {
+  const typewriteIntoEditor = (baseContent: string, textToType: string, notePathForSave: string): Promise<void> => {
     return new Promise((resolve) => {
+      // BUG DÜZELTMESİ (performans): editorContent her değiştiğinde çalışan "geri al
+      // geçmişi" efekti, bu animasyonun HER adımında tüm not içeriğini kopyalayıp
+      // yığına itiyordu — saniyede onlarca kez. Bu, ana thread'i meşgul edip özellikle
+      // sese senkron yazımın (typewriteSyncedToAudio) sesin gerisinde kalmasına yol
+      // açıyordu ("ses önden gidiyor"). isUndoRedoRef, tam bu senaryo için var olan
+      // mevcut bir bayrak — programatik içerik değişikliklerinde geçmiş kaydını atlar.
+      isUndoRedoRef.current = true;
+      let finished = false;
+      // BUG DÜZELTMESİ: Kullanıcı yazma tamamlanmadan başka sekmeye/nota geçerse (ör.
+      // müzik açmak için) bu Promise hiç sonuçlanmadan askıda kalıyordu — çünkü
+      // setTimeout zinciri devam etse de setEditorContent artık unmount olmuş bileşende
+      // hiçbir şey yapmıyordu, not YARIM METİNLE kayıtlı kalıyordu. finalizeNow, dışarıdan
+      // (unmount/not değişimi temizlemesinden) çağrılıp yazımı ANINDA tam metne tamamlar.
+      const finalizeNow = () => {
+        if (finished) return;
+        finished = true;
+        if (aiTeacherTypingTimerRef.current) {
+          clearTimeout(aiTeacherTypingTimerRef.current);
+          aiTeacherTypingTimerRef.current = null;
+        }
+        const fullContent = baseContent + textToType;
+        setEditorContent(fullContent);
+        // BUG DÜZELTMESİ: unmount sırasında React state güncellemesi bir yeniden render
+        // GARANTİ ETMEZ (bileşen zaten kapanıyor) — bu yüzden tam metnin diske gerçekten
+        // yazıldığından emin olmak için onSaveNote'u DOĞRUDAN da çağırıyoruz.
+        onSaveNote(notePathForSave, fullContent).catch(err => {
+          console.error('[AI Öğretmen] Tamamlanan cevap kaydedilemedi:', err);
+        });
+        isUndoRedoRef.current = false;
+        aiTeacherPendingFinalizeRef.current = null;
+        resolve();
+      };
+      aiTeacherPendingFinalizeRef.current = finalizeNow;
+
       let i = 0;
       const step = () => {
+        if (finished) return;
         i = Math.min(textToType.length, i + AI_TEACHER_TYPE_CHUNK_CHARS);
-        setEditorContent(baseContent + textToType.slice(0, i));
+        setEditorContent(baseContent + buildAITeacherRevealText(textToType, i / textToType.length));
         scrollAITeacherToBottom();
         if (i < textToType.length) {
           aiTeacherTypingTimerRef.current = setTimeout(step, AI_TEACHER_TYPE_INTERVAL_MS);
         } else {
-          aiTeacherTypingTimerRef.current = null;
-          resolve();
+          finalizeNow();
         }
       };
       step();
+    });
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sesli cevaplarda yazma hızı artık sabit bir zamanlayıcı DEĞİL, gerçek ses dosyasının
+  // oynatma ilerlemesine (audio.currentTime/duration) bağlı — kullanıcının "yazı bitti ama
+  // konuşma daha ortalardaydı" şikayetine karşılık. audio.pause() edilirse 'timeupdate'
+  // olayı da durur, yani yazma da otomatik olarak duraklar — ayrı bir pause mantığı gerekmez.
+  // Kolonlu içerik varsa buildAITeacherRevealText her iki kolonu da HEMEN görünür kılıp
+  // içeriği round-robin dolduruyor ("ikiye bölünmüşken yazsın" isteğine karşılık).
+  const typewriteSyncedToAudio = (baseContent: string, textToType: string, audio: HTMLAudioElement, notePathForSave: string): Promise<void> => {
+    return new Promise((resolve) => {
+      isUndoRedoRef.current = true;
+      let finished = false;
+      const onTimeUpdate = () => {
+        if (finished || !audio.duration || isNaN(audio.duration)) return;
+        const ratio = Math.min(1, audio.currentTime / audio.duration);
+        setEditorContent(baseContent + buildAITeacherRevealText(textToType, ratio));
+        scrollAITeacherToBottom();
+      };
+      const cleanup = () => {
+        finished = true;
+        isUndoRedoRef.current = false;
+        aiTeacherPendingFinalizeRef.current = null;
+        audio.removeEventListener('timeupdate', onTimeUpdate);
+        audio.removeEventListener('ended', onEnded);
+        audio.removeEventListener('error', onEnded);
+      };
+      const onEnded = () => {
+        if (finished) return;
+        const fullContent = baseContent + textToType;
+        setEditorContent(fullContent);
+        scrollAITeacherToBottom();
+        // BUG DÜZELTMESİ: bkz. typewriteIntoEditor'daki aynı yorum — unmount sırasında
+        // state güncellemesi yeniden render garanti etmez, tam metni diske de doğrudan yazıyoruz.
+        onSaveNote(notePathForSave, fullContent).catch(err => {
+          console.error('[AI Öğretmen] Tamamlanan cevap kaydedilemedi:', err);
+        });
+        cleanup();
+        resolve();
+      };
+      // BUG DÜZELTMESİ: bkz. typewriteIntoEditor'daki aynı isimli yorum — unmount/not
+      // değişimi sırasında bu Promise'in askıda kalıp notu yarım metinle bırakmaması için.
+      aiTeacherPendingFinalizeRef.current = onEnded;
+      audio.addEventListener('timeupdate', onTimeUpdate);
+      audio.addEventListener('ended', onEnded);
+      audio.addEventListener('error', onEnded);
     });
   };
 
@@ -2480,13 +2649,21 @@ export default function NotesView({
     return resolved;
   };
 
-  const handleAskAITeacher = async () => {
-    const question = aiTeacherQuestion.trim();
-    if (!question || isAITeacherBusy) return;
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Sesle veya yazıyla sorulan sorunun ORTAK çekirdeği — handleAskAITeacher (yazı kutusu)
+  // ve sesli soru akışı (aşağıda) aynı mantığı kullanır, tek fark viaVoice=true olduğunda
+  // cevabın ayrıca sesli okunmasıdır (bkz. speakAnswerAloud).
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // BUG DÜZELTMESİ / İSTEK: "Mikrofonla soru sorma ile ses dosyası üretme iki farklı şey" —
+  // önceden sesli cevap SADECE mikrofonla soru sorulunca otomatik tetikleniyordu (viaVoice).
+  // Artık soru nasıl sorulursa sorulsun (yazarak veya sesle), sesli cevap TAMAMEN AYRI bir
+  // "🔊 Sesli cevap üret" onay kutusuna bağlı — isAITeacherVoiceReplyEnabled state'i.
+  const runAITeacherQuestion = async (question: string) => {
+    if (!question || isAITeacherBusy || !activeNotePath) return;
+    const notePathForSave = activeNotePath;
     setIsAITeacherBusy(true);
     setAITeacherError(null);
     const contextContent = editorContent;
-    setAITeacherQuestion('');
     try {
       // Soru bloğu hemen eklenir ve oraya kaydırılır — "soruyu bastığı yere gitsin scroll"
       // isteğine karşılık, cevap gelmeden önce kullanıcı sorunun nereye yazıldığını görür.
@@ -2496,12 +2673,160 @@ export default function NotesView({
 
       const result = await askAITeacher(getAITeacherNoteTitle(), contextContent, question);
       const resolvedAnswer = await resolveYouTubeTagsInAnswer(result.answer);
-      await typewriteIntoEditor(baseContent, formatAITeacherAnswerBody(resolvedAnswer));
+      const answerBody = formatAITeacherAnswerBody(resolvedAnswer);
+
+      if (isAITeacherVoiceReplyEnabled) {
+        const audio = await prepareAndPlayTTS(resolvedAnswer);
+        if (audio) {
+          // Yazma, sesin gerçek ilerlemesine senkronize olur (bkz. typewriteSyncedToAudio).
+          await typewriteSyncedToAudio(baseContent, answerBody, audio, notePathForSave);
+        } else {
+          // Gemini TTS başarısız olduysa (kota/ağ hatası) sessizce eski sabit-hızlı yazıma düş.
+          await typewriteIntoEditor(baseContent, answerBody, notePathForSave);
+        }
+      } else {
+        await typewriteIntoEditor(baseContent, answerBody, notePathForSave);
+      }
     } catch (err: any) {
       setAITeacherError(err?.message || 'Cevap alınamadı.');
     } finally {
       setIsAITeacherBusy(false);
     }
+  };
+
+  const handleAskAITeacher = async () => {
+    const question = aiTeacherQuestion.trim();
+    if (!question) return;
+    setAITeacherQuestion('');
+    await runAITeacherQuestion(question);
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Markdown işaretleri (##, **, [renk] etiketleri, kod blokları vb.) sesli okumada
+  // "kare kare", "yıldız yıldız" gibi garip çıktılara yol açar — konuşmadan önce sadeleştirilir.
+  //
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Tarayıcının robotik SpeechSynthesis'i TERK EDİLDİ (kullanıcı geri bildirimi: "bu okuma
+  // şekli çok itici") — bunun yerine Gemini'nin kendi TTS modelinden gerçek bir ses dosyası
+  // üretilip GERÇEK bir <audio> elemanıyla çalınıyor. Bu, durdur/devam ettir/baştan dinle
+  // kontrollerini native olarak (audio.pause/play/currentTime) beleşe getiriyor. Başarısız
+  // olursa (kota/ağ hatası) null döner, çağıran taraf sessizce eski sabit-hızlı yazıma düşer.
+  const prepareAndPlayTTS = async (text: string): Promise<HTMLAudioElement | null> => {
+    const clean = stripMarkdownForSpeech(text);
+    if (!clean) return null;
+    stopAITeacherAudio();
+    setIsAITeacherSynthesizing(true);
+    try {
+      const { audioBase64, mimeType } = await synthesizeSpeech(clean);
+      const url = pcmBase64ToWavUrl(audioBase64, mimeType);
+      const audio = new Audio(url);
+      aiTeacherAudioRef.current = audio;
+      aiTeacherAudioUrlRef.current = url;
+
+      audio.addEventListener('pause', () => { if (!audio.ended) setIsAITeacherAudioPaused(true); });
+      audio.addEventListener('play', () => setIsAITeacherAudioPaused(false));
+      audio.addEventListener('ended', () => { setIsAITeacherSpeaking(false); setIsAITeacherAudioPaused(false); });
+
+      await new Promise<void>((resolve) => {
+        const onReady = () => { audio.removeEventListener('loadedmetadata', onReady); resolve(); };
+        audio.addEventListener('loadedmetadata', onReady);
+        audio.addEventListener('error', onReady);
+      });
+
+      setIsAITeacherSynthesizing(false);
+      setIsAITeacherSpeaking(true);
+      try {
+        await audio.play();
+      } catch (playErr) {
+        console.warn('[AI Öğretmen] Ses otomatik başlatılamadı (tarayıcı otomatik oynatma kısıtı olabilir):', playErr);
+      }
+      return audio;
+    } catch (err) {
+      console.warn('[AI Öğretmen] Gemini TTS başarısız, sesli okuma atlanıyor:', err);
+      setIsAITeacherSynthesizing(false);
+      setIsAITeacherSpeaking(false);
+      return null;
+    }
+  };
+
+  const handleToggleAITeacherAudioPause = () => {
+    const audio = aiTeacherAudioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      audio.play();
+    } else {
+      audio.pause();
+    }
+  };
+
+  const handleRestartAITeacherAudio = () => {
+    const audio = aiTeacherAudioRef.current;
+    if (!audio) return;
+    audio.currentTime = 0;
+    if (audio.paused) audio.play();
+  };
+
+  const handleVoiceRecordStart = async () => {
+    if (isAITeacherBusy || isAITeacherRecording) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      aiTeacherVoiceChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) aiTeacherVoiceChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+      };
+      aiTeacherVoiceMediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsAITeacherRecording(true);
+      setAITeacherError(null);
+    } catch (err: any) {
+      setAITeacherError('Mikrofona erişilemedi: ' + (err?.message || 'izin verilmedi.'));
+    }
+  };
+
+  const handleVoiceRecordStop = () => {
+    const recorder = aiTeacherVoiceMediaRecorderRef.current;
+    if (!recorder || !isAITeacherRecording) return;
+    setIsAITeacherRecording(false);
+
+    recorder.onstop = async () => {
+      recorder.stream.getTracks().forEach(track => track.stop());
+      const blob = new Blob(aiTeacherVoiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+      aiTeacherVoiceChunksRef.current = [];
+      if (blob.size === 0) return;
+
+      setIsAITeacherTranscribing(true);
+      setAITeacherError(null);
+      try {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1] || '');
+          };
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+        const { transcript } = await transcribeVoiceQuestion(base64, blob.type || 'audio/webm');
+        setIsAITeacherTranscribing(false);
+        const question = transcript.trim();
+        if (!question) {
+          setAITeacherError('Sesten bir soru anlaşılamadı, tekrar dener misin?');
+          return;
+        }
+        await runAITeacherQuestion(question);
+      } catch (err: any) {
+        setIsAITeacherTranscribing(false);
+        setAITeacherError(err?.message || 'Ses deşifre edilemedi.');
+      }
+    };
+    recorder.stop();
   };
 
   const handleStartAITeacherQuiz = async () => {
@@ -2519,7 +2844,8 @@ export default function NotesView({
   };
 
   const handleSubmitAITeacherQuiz = async () => {
-    if (!aiTeacherQuiz || isAITeacherBusy) return;
+    if (!aiTeacherQuiz || isAITeacherBusy || !activeNotePath) return;
+    const notePathForSave = activeNotePath;
     setIsAITeacherBusy(true);
     setAITeacherError(null);
     try {
@@ -2532,7 +2858,7 @@ export default function NotesView({
       setAITeacherQuiz(null);
       requestAnimationFrame(scrollAITeacherToBottom);
 
-      await typewriteIntoEditor(baseContent, formatAITeacherQuizResult(result.passed, result.feedback, nextStreak));
+      await typewriteIntoEditor(baseContent, formatAITeacherQuizResult(result.passed, result.feedback, nextStreak), notePathForSave);
       let finalContent = baseContent + formatAITeacherQuizResult(result.passed, result.feedback, nextStreak);
 
       // Ardışık başarı hedefine ulaşılamadıysa, kullanıcıya sormadan otomatik olarak
@@ -2547,7 +2873,7 @@ export default function NotesView({
         const reTeach = await askAITeacher(noteTitle, finalContent, reTeachQuestion);
         const resolvedReTeachAnswer = await resolveYouTubeTagsInAnswer(reTeach.answer);
         const answerBody = formatAITeacherAnswerBody(resolvedReTeachAnswer);
-        await typewriteIntoEditor(baseContent2, answerBody);
+        await typewriteIntoEditor(baseContent2, answerBody, notePathForSave);
         finalContent = baseContent2 + answerBody;
       }
 
@@ -2605,7 +2931,8 @@ export default function NotesView({
   };
 
   const handleGenerateMiniProject = async () => {
-    if (isAITeacherBusy) return;
+    if (isAITeacherBusy || !activeNotePath) return;
+    const notePathForSave = activeNotePath;
     setIsAITeacherBusy(true);
     setAITeacherError(null);
     const baseContent = editorContent;
@@ -2614,7 +2941,7 @@ export default function NotesView({
       const project = await generateMiniProject(noteTitle, baseContent);
       const resolvedInstructions = await resolveYouTubeTagsInAnswer(project.instructions);
       requestAnimationFrame(scrollAITeacherToBottom);
-      await typewriteIntoEditor(baseContent, formatMiniProjectBlock(project.title, resolvedInstructions));
+      await typewriteIntoEditor(baseContent, formatMiniProjectBlock(project.title, resolvedInstructions), notePathForSave);
     } catch (err: any) {
       setAITeacherError(err?.message || 'Mini proje oluşturulamadı.');
     } finally {
@@ -9623,13 +9950,15 @@ export default function NotesView({
         const rowChildren: { colLines: number[][] } = { colLines: [] };
         let currentCol: number[] = [];
         let j = i + 1;
-        
+        let foundRowEnd = false;
+
         while (j < lines.length) {
           const subText = lines[j].trim();
           if (subText.startsWith('<<<row-end>>>')) {
             if (currentCol.length > 0) {
               rowChildren.colLines.push(currentCol);
             }
+            foundRowEnd = true;
             break;
           } else if (subText.startsWith('<<<col>>>')) {
             if (currentCol.length > 0) {
@@ -9643,7 +9972,16 @@ export default function NotesView({
           }
           j++;
         }
-        
+
+        // BUG DÜZELTMESİ: <<<row-end>>> hiç bulunamadıysa (bozuk/kapanmamış biçim — ör.
+        // AI'nin unutması), bunu kolon bloğu olarak render ETMEK notun kalan TÜM
+        // içeriğini bu bloğun içine yutup görünmez hale getiriyordu. Böyle bir durumda
+        // bu satırı sıradan bir satır gibi geçip devam eden içeriği ASLA yutmuyoruz.
+        if (!foundRowEnd) {
+          i++;
+          continue;
+        }
+
         {
           // `i` döngüde mutasyona uğrayan paylaşılan değişken — closure için sabite kopyala.
           const rowStart = i;
@@ -10695,8 +11033,45 @@ export default function NotesView({
                     </span>
                     {isMastered(editorContent) && <span style={{ fontSize: '12px' }}>🎓</span>}
                   </h3>
-                  <button onClick={() => setIsAITeacherOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <button
+                      onClick={() => setIsAITeacherAutoScroll(v => !v)}
+                      title={isAITeacherAutoScroll ? 'Otomatik kaydırma açık — kapatmak için tıkla' : 'Otomatik kaydırma kapalı — açmak için tıkla'}
+                      style={{ background: isAITeacherAutoScroll ? 'rgba(99,102,241,0.15)' : 'transparent', border: `1px solid ${isAITeacherAutoScroll ? 'rgba(99,102,241,0.4)' : 'rgba(255,255,255,0.15)'}`, borderRadius: '6px', color: isAITeacherAutoScroll ? '#a5b4fc' : 'var(--text-muted)', cursor: 'pointer', fontSize: '11px', padding: '3px 7px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      {isAITeacherAutoScroll ? '🔽 Oto-kaydır' : '⏸️ Sabit'}
+                    </button>
+                    <button onClick={() => setIsAITeacherOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+                  </div>
                 </div>
+
+                {(isAITeacherSynthesizing || isAITeacherSpeaking) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', marginBottom: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '6px', fontSize: '12px', color: '#a5b4fc' }}>
+                    {isAITeacherSynthesizing ? (
+                      <span>🔊 Ses hazırlanıyor...</span>
+                    ) : (
+                      <>
+                        <span style={{ flex: 1 }}>{isAITeacherAudioPaused ? '⏸️ Duraklatıldı' : '🔊 Okunuyor...'}</span>
+                        <button
+                          type="button"
+                          onClick={handleToggleAITeacherAudioPause}
+                          title={isAITeacherAudioPaused ? 'Devam ettir' : 'Duraklat'}
+                          style={{ background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer', fontSize: '12px', padding: '3px 8px' }}
+                        >
+                          {isAITeacherAudioPaused ? '▶️' : '⏸️'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRestartAITeacherAudio}
+                          title="Baştan dinle"
+                          style={{ background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: '4px', color: '#fff', cursor: 'pointer', fontSize: '12px', padding: '3px 8px' }}
+                        >
+                          ⏮️
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 {aiTeacherError && (
                   <div style={{ padding: '8px 10px', marginBottom: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
@@ -10733,6 +11108,11 @@ export default function NotesView({
                   </div>
                 ) : (
                   <>
+                    {(isAITeacherRecording || isAITeacherTranscribing) && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 10px', marginBottom: '8px', background: isAITeacherRecording ? 'rgba(239,68,68,0.12)' : 'rgba(99,102,241,0.12)', border: `1px solid ${isAITeacherRecording ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}`, borderRadius: '6px', fontSize: '12px', color: isAITeacherRecording ? '#f87171' : '#a5b4fc' }}>
+                        {isAITeacherRecording ? '🔴 Dinliyor... (bırakınca gönderilir)' : '⏳ Ses deşifre ediliyor...'}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
                       <input
                         type="text"
@@ -10745,6 +11125,24 @@ export default function NotesView({
                       />
                       <button
                         type="button"
+                        className={`toolbar-btn ${isAITeacherRecording ? 'active' : ''}`}
+                        onMouseDown={handleVoiceRecordStart}
+                        onMouseUp={handleVoiceRecordStop}
+                        onMouseLeave={() => { if (isAITeacherRecording) handleVoiceRecordStop(); }}
+                        onTouchStart={(e) => { e.preventDefault(); handleVoiceRecordStart(); }}
+                        onTouchEnd={(e) => { e.preventDefault(); handleVoiceRecordStop(); }}
+                        disabled={isAITeacherBusy && !isAITeacherRecording}
+                        title="Basılı tut, soruyu söyle, bırak"
+                        style={{
+                          width: '38px', flexShrink: 0, borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: isAITeacherRecording ? 'rgba(239,68,68,0.2)' : undefined,
+                          borderColor: isAITeacherRecording ? '#ef4444' : undefined
+                        }}
+                      >
+                        🎤
+                      </button>
+                      <button
+                        type="button"
                         className="btn-modal-confirm"
                         onClick={handleAskAITeacher}
                         disabled={isAITeacherBusy || !aiTeacherQuestion.trim()}
@@ -10753,6 +11151,16 @@ export default function NotesView({
                         {isAITeacherBusy ? '...' : 'Sor'}
                       </button>
                     </div>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px', fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={isAITeacherVoiceReplyEnabled}
+                        onChange={(e) => setIsAITeacherVoiceReplyEnabled(e.target.checked)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      🔊 Sesli cevap üret
+                    </label>
 
                     {isAITeacherScheduleOpen ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', marginBottom: '8px' }}>

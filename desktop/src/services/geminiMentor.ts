@@ -217,6 +217,77 @@ async function callGeminiWithImage<T>(
   return JSON.parse(text) as T;
 }
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// AI Öğretmen'in sesli soru (push-to-talk) özelliği: masaüstünde tarayıcının yerleşik
+// SpeechRecognition'ı güvenilir çalışmadığı için (bkz. NotesView.tsx voice-recorder-widget
+// içindeki isDesktopElectron koruması), ses deşifresini de Gemini'ye yaptırıyoruz. Bu,
+// callGeminiWithImage ile AYNI mekanizma (mimeType'a duyarsız inlineData) — sadece resim
+// yerine ham ses gönderiyoruz.
+const TRANSCRIBE_SCHEMA = {
+  type: 'object',
+  properties: {
+    transcript: { type: 'string' }
+  },
+  required: ['transcript']
+};
+
+export const transcribeVoiceQuestion = async (
+  audioBase64: string,
+  audioMimeType: string
+): Promise<{ transcript: string }> => {
+  const prompt = `Bu ses kaydında bir kullanıcı Türkçe bir soru soruyor. Ses kaydını dinle ve söylenen soruyu BİREBİR, hiçbir ekleme/yorum/cevap yapmadan, sadece söylendiği gibi yazıya dök. Ses kaydında anlaşılır bir soru/konuşma yoksa transcript alanını boş bırak.
+
+Sadece JSON döndür.`;
+  return callGeminiWithImage(prompt, audioBase64, audioMimeType, TRANSCRIBE_SCHEMA);
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// Sesli cevabı okumak için tarayıcının robotik SpeechSynthesis'i yerine Gemini'nin kendi
+// doğal TTS modelini kullanıyoruz (kullanıcı geri bildirimi: "bu okuma şekli çok itici").
+// Bu, JSON şemalı normal callGemini'den TAMAMEN farklı bir istek şekli — responseModalities:
+// ['AUDIO'] ister, JSON değil ham PCM ses (base64) döner. Sabit TTS-özel bir model kullanır
+// (kullanıcının Ayarlar'dan seçtiği genel metin modeli DEĞİL — TTS için ayrı model gerekir).
+const TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+
+export const synthesizeSpeech = async (text: string): Promise<{ audioBase64: string; mimeType: string }> => {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
+  }
+
+  const res = await fetch(
+    `${GEMINI_API_BASE}/${TTS_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          }
+        }
+      })
+    }
+  );
+
+  if (!res.ok) {
+    let errText = '';
+    try { errText = await res.text(); } catch (e) { /* yoksay */ }
+    throw new Error(`Gemini TTS hatası (${res.status}): ${errText.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const part = data?.candidates?.[0]?.content?.parts?.[0];
+  const audioBase64 = part?.inlineData?.data;
+  const mimeType = part?.inlineData?.mimeType || 'audio/L16;rate=24000';
+  if (!audioBase64) {
+    throw new Error('Gemini ses üretemedi.');
+  }
+  return { audioBase64, mimeType };
+};
+
 export interface ClarifyingQA {
   question: string;
   answer: string;
@@ -463,6 +534,7 @@ Notun biçimlendirme araçlarını AKTİF OLARAK kullan (yalnızca gerektiğinde
 - Önemli/vurgulanması gereken bir alt başlığın sonuna bir renk etiketi ekleyebilirsin: "## Başlık [color:blue]" — renk seçenekleri: red, blue, green, purple, amber, pink, orange, cyan, indigo.
 - İki kavramı/yaklaşımı yan yana karşılaştırmak öğretici olacaksa şu grid söz dizimini kullan — <<<row>>>, <<<col>>> ve <<<row-end>>> etiketlerinin HER BİRİ KENDİ SATIRINDA, ayrı satırlarda olmalı (bir paragrafın içine gömme): "<<<row>>>\\n<<<col>>>\\nSol içerik...\\n<<<col>>>\\nSağ içerik...\\n<<<row-end>>>".
 - Konuyu video ile pekiştirmek gerçekten faydalı olacaksa (ZORUNLU DEĞİL), TEK bir satırda "[youtube-search: kısa ve öz arama terimi]" yaz. SAKIN gerçek bir YouTube video URL'si veya video ID'si UYDURMA — var olmayan/yanlış bir videoya link vermek olur, bu yüzden SADECE bu arama-etiketi formatını kullan, kod bunu güvenli bir arama linkine kendisi çevirecek.
+- Konu bir SÜREÇ, akış, mimari, sıralı adımlar, sistemler arası etkileşim veya karar ağacı içeriyorsa (ör. bir isteğin sistemde izlediği yol, bir algoritmanın akışı, bileşenler arası ilişki), bunu GÖRSEL bir diyagramla anlatmak yazıdan çok daha öğretici olur — bu durumda bir Mermaid diyagramı çiz: \`\`\`mermaid ile başlayan, \`\`\` ile biten bir kod bloğu içinde geçerli Mermaid söz dizimi kullan (flowchart için "graph TD" veya "flowchart TD", zaman akışı/etkileşim için "sequenceDiagram", durum geçişleri için "stateDiagram-v2"). Bu, not içinde otomatik olarak gerçek bir SVG diyagrama dönüşür. Zorlamadan, gerçekten görselleştirmeye değer bir şey varsa kullan.
 
 Sadece JSON döndür.`;
 
@@ -494,7 +566,7 @@ ${notesContent.slice(0, 8000)}
 
 Görev: Bu konuyu pekiştirecek, öğrencinin KENDİ BAŞINA elle yapabileceği küçük, somut bir mini proje/alıştırma tasarla (büyük bir uygulama değil — 15-45 dakikada bitirilebilecek boyutta). title (kısa, çekici bir başlık) ve instructions (adım adım ne yapması gerektiğini anlatan, madde işaretli, net bir talimat metni — beklenen çıktıyı da belirt) üret. Konu programlama/teknik değilse (ör. tarih, dil öğrenimi), o alana uygun pratik bir uygulama görevi tasarla (yazma, özetleme, senaryo kurma vb.). Türkçe yaz.
 
-instructions içinde gerekirse şu biçimlendirmeleri kullanabilirsin: önemli bir alt başlığın sonuna "[color:blue]" gibi bir renk etiketi (red, blue, green, purple, amber, pink, orange, cyan, indigo), iki seçeneği/yaklaşımı karşılaştırmak için "<<<row>>>\\n<<<col>>>\\n...\\n<<<col>>>\\n...\\n<<<row-end>>>" grid söz dizimi. Konuyla ilgili bir video örneği gerçekten faydalı olacaksa TEK satırda "[youtube-search: kısa arama terimi]" yaz — SAKIN gerçek bir video URL'si/ID'si UYDURMA.
+instructions içinde gerekirse şu biçimlendirmeleri kullanabilirsin: önemli bir alt başlığın sonuna "[color:blue]" gibi bir renk etiketi (red, blue, green, purple, amber, pink, orange, cyan, indigo), iki seçeneği/yaklaşımı karşılaştırmak için "<<<row>>>\\n<<<col>>>\\n...\\n<<<col>>>\\n...\\n<<<row-end>>>" grid söz dizimi, proje bir süreç/akış/mimari içeriyorsa \`\`\`mermaid kod bloğu ile bir diyagram (graph TD, sequenceDiagram, stateDiagram-v2 vb. geçerli Mermaid söz dizimi). Konuyla ilgili bir video örneği gerçekten faydalı olacaksa TEK satırda "[youtube-search: kısa arama terimi]" yaz — SAKIN gerçek bir video URL'si/ID'si UYDURMA.
 
 Sadece JSON döndür.`;
 

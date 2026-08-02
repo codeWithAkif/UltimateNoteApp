@@ -3156,9 +3156,12 @@ export default function App() {
       } catch (e) {
         console.error('Failed to parse Supabase creds', e);
       }
-    } else {
-      setIsSettingsModalOpen(true);
     }
+    // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+    // BUG DÜZELTMESİ / İSTEK: Kayıtlı Supabase bilgisi yoksa (ör. uygulamayı tamamen yerel
+    // kullanmak isteyen kullanıcı) ayarlar penceresi eskiden HER açılışta zorla açılıyordu —
+    // bu can sıkıcıydı. Senkron kurmak isteyen kullanıcı zaten Ayarlar butonundan istediği
+    // zaman ulaşabiliyor; burada otomatik açmaya gerek yok.
   }, []);
 
   // Auto-close sidebar on screen change on mobile
