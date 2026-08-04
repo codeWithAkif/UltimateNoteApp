@@ -3356,12 +3356,26 @@ export default function CalendarView({
                                 const actualStartMs = new Date(task.questStartedAt).getTime();
                                 if (isNaN(actualStartMs)) return null;
                                 const dayStartMs = new Date(dayStr + 'T00:00:00').getTime();
-                                const actualStartMin = Math.max(0, (actualStartMs - dayStartMs) / 60000);
+                                const dayEndMs = dayStartMs + 24 * 60 * 60000;
+
+                                // BUG DÜZELTMESİ: Göreve başka bir günde başlanıp/tamamlanmış olabilir,
+                                // [due:]/[time:] etiketi ise SONRADAN farklı bir güne atanmış olabilir
+                                // (ör. 30 Temmuz'da oluşturulan görev 3 Ağustos'ta yapıldı, takvime
+                                // 4 Ağustos'ta eklendi). Eskiden "0'a kırp" mantığı bu durumda günün
+                                // BAŞINDAN o anki saate kadar devasa, anlamsız bir gölge çiziyordu
+                                // ("çok geriye doğru gecikme çizgisi"). Gerçek başlangıç bu günün
+                                // aralığında değilse, bu gün için hiç gölge çizilmez — karşılaştırılacak
+                                // anlamlı bir şey yok.
+                                if (actualStartMs < dayStartMs || actualStartMs >= dayEndMs) return null;
+
+                                const actualStartMin = (actualStartMs - dayStartMs) / 60000;
 
                                 const actualEndMs = task.questCompletedAt
                                   ? new Date(task.questCompletedAt).getTime()
                                   : Date.now();
-                                const actualEndMin = Math.max(actualStartMin + 1, (actualEndMs - dayStartMs) / 60000);
+                                // Bitiş de aynı güne ait olmayabilir (ör. hâlâ devam eden bir görev
+                                // ertesi güne sarkmışsa) — gün sonunu (1440 dk) aşmasını engelle.
+                                const actualEndMin = Math.min(1440, Math.max(actualStartMin + 1, (actualEndMs - dayStartMs) / 60000));
 
                                 const plannedEndMin = startMinutes + (endMinutes - startMinutes);
                                 const isOver = actualEndMin > plannedEndMin;
