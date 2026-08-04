@@ -3855,7 +3855,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
         setTimelineItems(finalTimeline);
         setRecentInputs(metadataObj.recent || []);
-        setTags(metadataObj.tags || []);
+        // BUG DÜZELTMESİ: Kenar çubuğundaki "Etiketler" listesi eskiden metadata.json'da
+        // ÖNCEDEN KAYDEDİLMİŞ (ve güncel olmayan) bir listeyi okuyordu — oysa fileTimelineItems
+        // zaten HER notu tarayıp #etiket'leri çıkarmıştı (yukarıda). Doğrudan bir nota #etiket
+        // yazmak (Hızlı Yakalama akışı dışında) bu yüzden hiçbir zaman kenar çubuğuna
+        // yansımıyordu — sadece "Tümü" görünüyordu. Artık taze taramadan türetiliyor.
+        setTags(Array.from(new Set(fileTimelineItems.flatMap(item => item.tags || []))));
         scheduleNotificationsForTasks(finalTimeline, scannedAlarms);
       } catch (err) {
         console.error('Electron data load error:', err);
@@ -3989,7 +3994,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
       setTimelineItems(finalTimeline);
       setRecentInputs(parsedMeta.recent || []);
-      setTags(parsedMeta.tags || []);
+      // BUG DÜZELTMESİ: bkz. yukarıdaki Electron dalındaki aynı yorum.
+      setTags(Array.from(new Set(fileTimelineItems.flatMap((item: any) => item.tags || []))));
       scheduleNotificationsForTasks(finalTimeline, scannedAlarms);
     }
 
