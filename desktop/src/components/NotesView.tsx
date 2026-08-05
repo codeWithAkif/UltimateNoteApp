@@ -7005,7 +7005,7 @@ export default function NotesView({
   const parseInlineStylesAndTags = (text: string, lineIdx?: number): React.ReactNode[] => {
     if (!text) return [];
 
-    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[baslangic:[^\]]+\]|\[tamamlanma:[^\]]+\]|\[dakiklik:(?:fast|ontime|late|incomplete)\]|\[proje:[^\]]+\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
+    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]|\[(?:completed|tamamlanma):[^\]]+\]|\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]|\[(?:project|proje):[^\]]+\]|\[başlama:[^\]]+\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
     const parts = text.split(regex);
     const { map: footnoteMap } = getDetailedFootnotes();
 
@@ -7145,14 +7145,6 @@ export default function NotesView({
 
         return (
           <div key={i} className="preview-media-container" style={{ ...floatStyle, width: width === '100%' ? 'auto' : width, maxWidth: '100%' }} onClick={(e) => e.stopPropagation()}>
-            {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-                Önceden bu stil "maxHeight: 180px" olarak sabitti ve kaydedilmiş
-                w:/h: boyutlarını hiç okumuyordu. Kullanıcı resmi sürükleyip
-                büyüttükten sonra (handleResizeMouseUp ile satıra doğru şekilde
-                yazılan boyutlar), hizalama butonuna tıklamak React'i yeniden
-                render ettiriyor ve bu sabit 180px sınırı resmi tekrar küçültüp
-                "eski boyutuna dönmüş" gibi gösteriyordu. Artık kaydedilmiş
-                boyut varsa onu, yoksa varsayılan 180px sınırını kullanıyoruz. */}
             <ResolvedMedia
               tag="img"
               rawSrc={imgUrl}
@@ -7182,7 +7174,7 @@ export default function NotesView({
       if (part.startsWith('[') && part.includes('](') && part.endsWith(')')) {
         const linkText = part.substring(1, part.indexOf(']('));
         const linkUrl = part.substring(part.indexOf('](') + 2, part.length - 1);
-        if (!part.startsWith('[[') && !part.startsWith('[p:') && !part.startsWith('[due:') && !part.startsWith('[repeat:')) {
+        if (!part.startsWith('[[') && !part.startsWith('[priority:') && !part.startsWith('[p:') && !part.startsWith('[due:') && !part.startsWith('[plannedtime:') && !part.startsWith('[time:') && !part.startsWith('[window:') && !part.startsWith('[repeat:') && !part.startsWith('[started:') && !part.startsWith('[baslangic:') && !part.startsWith('[completed:') && !part.startsWith('[tamamlanma:') && !part.startsWith('[outcome:') && !part.startsWith('[dakiklik:')) {
           return (
             <a
               key={i}
@@ -7352,7 +7344,8 @@ export default function NotesView({
         );
       }
       if ((part.startsWith('[plannedtime:') || part.startsWith('[time:') || part.startsWith('[window:')) && part.endsWith(']')) {
-        const val = part.split(':')[1]?.slice(0, -1) || '';
+        const colonIdx = part.indexOf(':');
+        const val = colonIdx !== -1 ? part.slice(colonIdx + 1, -1) : '';
         return (
           <span key={i} className="preview-timestamp-badge" title="Planlanan Saat Aralığı">
             <Clock size={11} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle', opacity: 0.7 }} />
@@ -7375,7 +7368,8 @@ export default function NotesView({
       }
       if ((part.startsWith('[started:') || part.startsWith('[baslangic:') || part.startsWith('[başlangıç:') || part.startsWith('[başlama:') || part.startsWith('[completed:') || part.startsWith('[tamamlanma:')) && part.endsWith(']')) {
         const isStart = part.startsWith('[started:') || part.startsWith('[baslangic:') || part.startsWith('[başlangıç:') || part.startsWith('[başlama:');
-        const iso = part.split(':')[1]?.slice(0, -1) || '';
+        const colonIdx = part.indexOf(':');
+        const iso = colonIdx !== -1 ? part.slice(colonIdx + 1, -1) : '';
         const parsed = new Date(iso);
         const label = isNaN(parsed.getTime())
           ? iso
@@ -7388,7 +7382,8 @@ export default function NotesView({
         );
       }
       if ((part.startsWith('[outcome:') || part.startsWith('[dakiklik:')) && part.endsWith(']')) {
-        const val = (part.startsWith('[outcome:') ? part.slice(9, -1) : part.slice(10, -1)).toLowerCase();
+        const colonIdx = part.indexOf(':');
+        const val = (colonIdx !== -1 ? part.slice(colonIdx + 1, -1) : '').toLowerCase();
         let label = 'Dakiklik';
         if (val === 'fast') label = '⚡ Erken';
         else if (val === 'ontime') label = '✅ Zamanında';
