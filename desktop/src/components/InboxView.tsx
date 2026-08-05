@@ -149,10 +149,15 @@ export default function InboxView({
         
         // Clean display text
         let cleanText = rest
-          .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+          .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
           .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-          .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+          .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+          .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+          .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
+          .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+          .replace(/\[başlama:[^\]]+\]/gi, '')
           .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
           .replace(tagRegex, '')
           .replace(/\s+/g, ' ')

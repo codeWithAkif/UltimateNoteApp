@@ -295,7 +295,7 @@ export default function TasksView({
               parentStack.push({ indent, id: taskId });
 
               // Parse priority
-              const priorityMatch = rawText.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+              const priorityMatch = rawText.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
               let priority: 'critical' | 'high' | 'medium' | 'low' = 'low';
               if (priorityMatch) {
                 const p = priorityMatch[1].toLowerCase();
@@ -308,8 +308,8 @@ export default function TasksView({
               const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/);
               let dueDate = dueMatch ? dueMatch[1] : '';
 
-              // Parse time slot: [time:HH:mm-HH:mm]
-              const timeMatch = rawText.match(/\[time:(\d{2}:\d{2}-\d{2}:\d{2})\]/);
+              // Parse time slot: [plannedtime:HH:mm-HH:mm] or legacy [time:]/[window:]
+              const timeMatch = rawText.match(/\[(?:plannedtime|time|window):(\d{2}:\d{2}-\d{2}:\d{2})\]/);
               let timeSlot = timeMatch ? timeMatch[1] : '';
 
               // Fallback: parse capture timestamp [YYYY-MM-DD HH:mm]
@@ -345,7 +345,7 @@ export default function TasksView({
               }
               // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug"
               // yerine bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
-              const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+              const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
               let projTagMatch;
               while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
                 taskTags.push(projTagMatch[1].toLowerCase());
@@ -376,14 +376,15 @@ export default function TasksView({
 
               // Clean display content: strip all annotation tags and capture timestamps
               const displayContent = stripQuestTags(rawText)
-                .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+                .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
                 .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-                .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+                .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
                 .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-                .replace(/\[baslangic:[^\]]+\]/gi, '')
-                .replace(/\[tamamlanma:[^\]]+\]/gi, '')
-                .replace(/\[dakiklik:(?:fast|ontime|late)\]/gi, '')
-                .replace(/\[proje:[^\]]+\]/gi, '')
+                .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+                .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+                .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late)\]/gi, '')
+                .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+                .replace(/\[başlama:[^\]]+\]/gi, '')
                 .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
                 .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
                 .replace(/\s+/g, ' ')
@@ -506,21 +507,26 @@ export default function TasksView({
       if (!lineBodyMatch) return;
 
       let cleanText = lineBodyMatch[2]
-        .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+        .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
         .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-        .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+        .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
         .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+        .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+        .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+        .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
+        .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+        .replace(/\[başlama:[^\]]+\]/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
 
       // Priority
       let priorityStr = '';
-      if (isImportant && isUrgent) priorityStr = '[p:critical]';
-      else if (isUrgent) priorityStr = '[p:high]';
-      else if (isImportant) priorityStr = '[p:medium]';
+      if (isImportant && isUrgent) priorityStr = '[priority:critical]';
+      else if (isUrgent) priorityStr = '[priority:high]';
+      else if (isImportant) priorityStr = '[priority:medium]';
 
       const dueStr = dueDate ? `[due:${dueDate}]` : '';
-      const timeStr = (timeSlot && timeSlot.match(/^\d{2}:\d{2}-\d{2}:\d{2}$/)) ? `[time:${timeSlot}]` : '';
+      const timeStr = (timeSlot && timeSlot.match(/^\d{2}:\d{2}-\d{2}:\d{2}$/)) ? `[plannedtime:${timeSlot}]` : '';
       const repeatStr = (repeat && repeat !== 'none') ? `[repeat:${repeat}]` : '';
 
       const suffixParts = [];
@@ -692,10 +698,15 @@ export default function TasksView({
   const parseInlineStylesAndTags = (text: string) => {
     // Strip tags, metadata and capture timestamps from display
     let display = text
-      .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+      .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
       .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-      .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+      .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
       .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
+      .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+      .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+      .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
+      .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+      .replace(/\[başlama:[^\]]+\]/gi, '')
       .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
       .replace(/\s+/g, ' ')
       .trim();

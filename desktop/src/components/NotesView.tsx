@@ -7314,8 +7314,8 @@ export default function NotesView({
       if (part.startsWith('#')) {
         return null;
       }
-      if (part.startsWith('[p:') && part.endsWith(']')) {
-        const priority = part.slice(3, -1).toLowerCase();
+      if ((part.startsWith('[priority:') || part.startsWith('[p:')) && part.endsWith(']')) {
+        const priority = (part.startsWith('[priority:') ? part.slice(10, -1) : part.slice(3, -1)).toLowerCase();
         let label = 'Düşük';
         let className = 'priority-low';
 
@@ -7351,6 +7351,15 @@ export default function NotesView({
           </span>
         );
       }
+      if ((part.startsWith('[plannedtime:') || part.startsWith('[time:') || part.startsWith('[window:')) && part.endsWith(']')) {
+        const val = part.split(':')[1]?.slice(0, -1) || '';
+        return (
+          <span key={i} className="preview-timestamp-badge" title="Planlanan Saat Aralığı">
+            <Clock size={11} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle', opacity: 0.7 }} />
+            <span style={{ verticalAlign: 'middle' }}>Saat: {val}</span>
+          </span>
+        );
+      }
       if (part.startsWith('[repeat:') && part.endsWith(']')) {
         const val = part.slice(8, -1).toLowerCase();
         let label = 'Tekrarlar';
@@ -7364,14 +7373,9 @@ export default function NotesView({
           </span>
         );
       }
-      if ((part.startsWith('[baslangic:') || part.startsWith('[tamamlanma:')) && part.endsWith(']')) {
-        // BUG DÜZELTMESİ: [baslangic:]/[tamamlanma:] etiketleri UTC ISO damgası olarak
-        // saklanıyor (punctuality.ts hesaplamaları için doğru yaklaşım) ama önizlemede
-        // HİÇ biçimlendirilmeden ham UTC metni gösteriliyordu — kullanıcı Türkiye'de
-        // (UTC+3) olduğu için saatler hep "3 saat önce" gibi görünüyordu. Burada ISO
-        // damgasını YEREL saate çevirip okunabilir biçimde gösteriyoruz.
-        const isStart = part.startsWith('[baslangic:');
-        const iso = part.slice(isStart ? 11 : 12, -1);
+      if ((part.startsWith('[started:') || part.startsWith('[baslangic:') || part.startsWith('[başlangıç:') || part.startsWith('[başlama:') || part.startsWith('[completed:') || part.startsWith('[tamamlanma:')) && part.endsWith(']')) {
+        const isStart = part.startsWith('[started:') || part.startsWith('[baslangic:') || part.startsWith('[başlangıç:') || part.startsWith('[başlama:');
+        const iso = part.split(':')[1]?.slice(0, -1) || '';
         const parsed = new Date(iso);
         const label = isNaN(parsed.getTime())
           ? iso
@@ -7383,8 +7387,8 @@ export default function NotesView({
           </span>
         );
       }
-      if (part.startsWith('[dakiklik:') && part.endsWith(']')) {
-        const val = part.slice(10, -1).toLowerCase();
+      if ((part.startsWith('[outcome:') || part.startsWith('[dakiklik:')) && part.endsWith(']')) {
+        const val = (part.startsWith('[outcome:') ? part.slice(9, -1) : part.slice(10, -1)).toLowerCase();
         let label = 'Dakiklik';
         if (val === 'fast') label = '⚡ Erken';
         else if (val === 'ontime') label = '✅ Zamanında';
@@ -7396,10 +7400,7 @@ export default function NotesView({
           </span>
         );
       }
-      if (part.startsWith('[proje:') && part.endsWith(']')) {
-        // BUG DÜZELTMESİ (kullanıcı isteği): proje bağlantısı artık TAMAMEN görünmez —
-        // ne rozet ne ham metin olarak gösterilir; notun ham halini açsan bile görünmez.
-        // Takvim/Kanban/Efor bu etiketi görev metninden bağımsız olarak ownTags üzerinden okur.
+      if ((part.startsWith('[project:') || part.startsWith('[proje:')) && part.endsWith(']')) {
         return null;
       }
       if (part.startsWith('[') && part.endsWith(']') && /\d{4}-\d{2}-\d{2}/.test(part)) {
@@ -7756,17 +7757,17 @@ export default function NotesView({
     const currentLine = newLines[focusedLineIdx];
 
     if (type === 'priority') {
-      // Remove existing [p:xxx] tag and add new one
-      const cleaned = currentLine.replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '').trimEnd();
-      newLines[focusedLineIdx] = `${cleaned} [p:${value}]`;
+      // Remove existing [priority:xxx] or [p:xxx] tag and add new one
+      const cleaned = currentLine.replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '').trimEnd();
+      newLines[focusedLineIdx] = `${cleaned} [priority:${value}]`;
     } else if (type === 'due') {
       // Remove existing [due:xxx] tag and add new one
       const cleaned = currentLine.replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/g, '').trimEnd();
       newLines[focusedLineIdx] = `${cleaned} [due:${value}]`;
     } else if (type === 'time') {
-      // Remove existing [time:xxx] or [ts:xxx] annotations and add new
-      const cleaned = currentLine.replace(/\[time:[^\]]+\]/g, '').trimEnd();
-      newLines[focusedLineIdx] = `${cleaned} [time:${value}]`;
+      // Remove existing [plannedtime:xxx] or legacy [time:xxx]/[window:xxx] annotations and add new
+      const cleaned = currentLine.replace(/\[(?:plannedtime|time|window):[^\]]+\]/g, '').trimEnd();
+      newLines[focusedLineIdx] = `${cleaned} [plannedtime:${value}]`;
     }
 
     setEditorContent(newLines.join('\n'));

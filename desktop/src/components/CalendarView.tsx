@@ -1226,7 +1226,7 @@ export default function CalendarView({
             parentStack.push({ indent, id: taskId });
 
             // Parse priority
-            const priorityMatch = rawText.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+            const priorityMatch = rawText.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
             let priority: 'critical' | 'high' | 'medium' | 'low' = 'low';
             if (priorityMatch) {
               const p = priorityMatch[1].toLowerCase();
@@ -1239,8 +1239,8 @@ export default function CalendarView({
             const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/);
             let dueDate = dueMatch ? dueMatch[1] : '';
 
-            // Parse time slot: [time:HH:mm-HH:mm]
-            const timeMatch = rawText.match(/\[time:(\d{2}:\d{2}-\d{2}:\d{2})\]/);
+            // Parse time slot: [plannedtime:HH:mm-HH:mm] or legacy [time:]/[window:]
+            const timeMatch = rawText.match(/\[(?:plannedtime|time|window):(\d{2}:\d{2}-\d{2}:\d{2})\]/);
             let timeSlot = timeMatch ? timeMatch[1] : '';
 
             // Standardize fallback: parse from capture timestamp [YYYY-MM-DD HH:mm]
@@ -1291,10 +1291,10 @@ export default function CalendarView({
             }
             // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
             // İSTEK: kullanıcı proje etiketinin ("#borusan" gibi) görev metninde görünmesini
-            // istemiyor. Yeni oluşturulan görevler artık görünmez [proje:slug] köşeli parantez
+            // istemiyor. Yeni oluşturulan görevler artık görünmez [project:slug] köşeli parantez
             // etiketiyle işaretleniyor (bkz. CalendarView.tsx handleCreateQuickTask/handleEditTask).
             // Eski #slug etiketli notlarla geriye dönük uyumluluk için HER İKİSİ de taranır.
-            const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
             let projTagMatch;
             while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
               taskTags.push(projTagMatch[1].toLowerCase());
@@ -1325,12 +1325,19 @@ export default function CalendarView({
 
             // Remove annotations from content to display neatly
             let cleanContent = stripQuestTags(rawText)
-              .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+              .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-              .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+              .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-              .replace(/\[proje:[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
+              .replace(/\[(?:project|proje):[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // Strip capture timestamp
+              // BUG DÜZELTMESİ: Bazı eski notlarda stripQuestTags'in tanıdığı ASCII
+              // "[baslangic:]"/"[tamamlanma:]" dışında, muhtemelen eski bir kod sürümünden
+              // kalma "[başlama:...]" gibi TANINMAYAN, Türkçe yazımlı zaman etiketleri
+              // yetim olarak kalıp ham köşeli-parantez metni olarak görev başlığında
+              // görünüyordu ("can sıkıcı"). Etiket adı ne olursa olsun, ISO zaman damgası
+              // BİÇİMİNDEKİ herhangi bir köşeli parantez etiketini genel olarak temizler.
+              .replace(/\[[^\]:]+:\d{4}-\d{2}-\d{2}T[\d:.]+Z?\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 
@@ -1463,7 +1470,7 @@ export default function CalendarView({
             if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
               lines[t.lineIdx] = lines[t.lineIdx]
                 .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-                .replace(/\s*\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+                .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
                 .replace(/\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '');
             }
           });
@@ -1527,7 +1534,7 @@ export default function CalendarView({
         prefix = lineBodyMatch[1];
         cleanText = lineBodyMatch[2]
           .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-          .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\s+/g, ' ')
           .trim();
       } else {
@@ -1535,14 +1542,14 @@ export default function CalendarView({
         prefix = match ? match[1] : '';
         cleanText = rawLine
           .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-          .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\s+/g, ' ')
           .trim();
       }
 
       let appendStr = ` [due:${dateStr}]`;
       if (timeSlot) {
-        appendStr += ` [time:${timeSlot}]`;
+        appendStr += ` [plannedtime:${timeSlot}]`;
       }
 
       lines[task.lineIdx] = `${prefix}${cleanText}${appendStr}`;
@@ -1558,9 +1565,8 @@ export default function CalendarView({
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Takvimdeki bir göreve çift tıklayınca açılan gerçek DÜZENLEME (bkz. activeSchedulingModal.
   // isEditMode) — handleScheduleTask'ten farkı: sadece tarih/saat değil, görev METNİNİ ve
-  // PROJE etiketini de değiştirebilir. Satırdaki DİĞER etiketleri ([p:], [repeat:], dakiklik
-  // geçmişi vb. — kullanıcının hiç GÖRMEDİĞİ, düzenleme alanına hiç girmeyen metadata)
-  // olduğu gibi korur; yalnızca [due:]/[time:] her zaman yeniden yazılır (tarih/saat alanlarından)
+  // PROJE etiketini de değiştirebilir. Satırdaki DİĞER etiketleri ([priority:], [repeat:], dakiklik
+  // geçmişi vb.) olduğu gibi korur; yalnızca [due:]/[plannedtime:] her zaman yeniden yazılır
   // ve proje etiketi (varsa eskisini kaldırıp yenisini ekleyerek) güncellenir.
   const handleEditTask = async (
     taskId: string,
@@ -1590,17 +1596,12 @@ export default function CalendarView({
         body = rawLine.slice(prefix.length);
       }
 
-      // due/time HER ZAMAN tarih/saat alanlarından yeniden yazılır — diğer tüm köşeli
-      // parantezli etiketler ([p:], [repeat:], [baslangic:], [tamamlanma:], [dakiklik:] vb.)
-      // ham satırdan olduğu gibi korunur (düzenleme alanı bunları hiç göstermiyor).
+      // due/plannedtime HER ZAMAN tarih/saat alanlarından yeniden yazılır — diğer tüm köşeli
+      // parantezli etiketler ([priority:], [repeat:], [started:], [completed:], [outcome:] vb.)
+      // ham satırdan olduğu gibi korunur.
       let preservedBracketTags = (body.match(/\[[^\]]+\]/g) || [])
-        .filter(tag => !/^\[due:/i.test(tag) && !/^\[time:/i.test(tag));
+        .filter(tag => !/^\[due:/i.test(tag) && !/^\[(?:plannedtime|time|window):/i.test(tag));
 
-      // BUG DÜZELTMESİ (kullanıcı isteği): proje bağlantısı artık görünür "#borusan" hashtag'i
-      // olarak METNE eklenmiyor — görünmez [proje:slug] köşeli parantez etiketi olarak (diğer
-      // metadata etiketleri gibi) saklanıyor, GÖREV ADI hiçbir zaman kirlenmiyor. Eski #slug
-      // etiketli notlarla geriye dönük uyumluluk için hem hashtag hem köşeli parantez biçimi
-      // temizlenip yeniden yazılıyor.
       const oldProjectSlug = projectNames
         .map(n => n.toLowerCase().replace(/\s+/g, '-'))
         .find(slug => task.ownTags.includes(slug));
@@ -1608,14 +1609,14 @@ export default function CalendarView({
       let editedText = newText.trim();
       if (oldProjectSlug && oldProjectSlug !== newProjectSlug) {
         editedText = editedText.replace(new RegExp(`#${oldProjectSlug}\\b`, 'i'), '').replace(/\s+/g, ' ').trim();
-        preservedBracketTags = preservedBracketTags.filter(tag => !new RegExp(`^\\[proje:${oldProjectSlug}\\]$`, 'i').test(tag));
+        preservedBracketTags = preservedBracketTags.filter(tag => !new RegExp(`^\\[(?:project|proje):${oldProjectSlug}\\]$`, 'i').test(tag));
       }
-      if (newProjectSlug && !preservedBracketTags.some(tag => new RegExp(`^\\[proje:${newProjectSlug}\\]$`, 'i').test(tag))) {
-        preservedBracketTags.push(`[proje:${newProjectSlug}]`);
+      if (newProjectSlug && !preservedBracketTags.some(tag => new RegExp(`^\\[(?:project|proje):${newProjectSlug}\\]$`, 'i').test(tag))) {
+        preservedBracketTags.push(`[project:${newProjectSlug}]`);
       }
 
       let newBody = `${editedText} [due:${dateStr}]`;
-      if (timeSlot) newBody += ` [time:${timeSlot}]`;
+      if (timeSlot) newBody += ` [plannedtime:${timeSlot}]`;
       if (preservedBracketTags.length) newBody += ` ${preservedBracketTags.join(' ')}`;
 
       lines[task.lineIdx] = `${prefix}${newBody}`;
@@ -1709,7 +1710,7 @@ export default function CalendarView({
           prefix = lineBodyMatch[1];
           cleanText = lineBodyMatch[2]
             .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-            .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+            .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
             .replace(/\s+/g, ' ')
             .trim();
         } else {
@@ -1717,7 +1718,7 @@ export default function CalendarView({
           prefix = match ? match[1] : '';
           cleanText = rawLine
             .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-            .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+            .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
             .replace(/\s+/g, ' ')
             .trim();
         }
@@ -1725,7 +1726,7 @@ export default function CalendarView({
         const subTimeSlot = `${formatTimeStr(currentStartMins)}-${formatTimeStr(currentStartMins + 30)}`;
         currentStartMins += 30;
 
-        let appendStr = ` [due:${dateStr}] [time:${subTimeSlot}]`;
+        let appendStr = ` [due:${dateStr}] [plannedtime:${subTimeSlot}]`;
         lines[sub.lineIdx] = `${prefix}${cleanText}${appendStr}`;
       });
 
@@ -1737,7 +1738,7 @@ export default function CalendarView({
     }
   };
 
-  // Unschedule: remove [due:...] and [time:...] tags from a task and its subtasks
+  // Unschedule: remove [due:...] and [plannedtime:...] tags from a task and its subtasks
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // İSTEK: takvimdeki gün başlığına (ör. "31 Temmuz") tıklayınca o günün günlük notu
   // açılsın. Not zaten varsa doğrudan açılır (onSelectDateNotes — App.tsx bunu isme göre
@@ -1775,7 +1776,7 @@ export default function CalendarView({
       if (task.lineIdx >= 0 && task.lineIdx < lines.length) {
         lines[task.lineIdx] = lines[task.lineIdx]
           .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-          .replace(/\s*\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '');
       }
 
@@ -3859,6 +3860,32 @@ export default function CalendarView({
                                             whiteSpace: 'nowrap'
                                           }}>
                                             📋 {completedSub}/{totalSub}
+                                          </span>
+                                        )}
+
+                                        {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                            İSTEK: Başlangıç/tamamlanma ham köşeli-parantez metni
+                                            olarak DEĞİL, küçük okunabilir rozetler olarak
+                                            gösterilsin — başlık üstte, altında (varsa) başlangıç
+                                            rozeti, onun da altında (varsa) tamamlanma rozeti. */}
+                                        {task.questStartedAt && !isNaN(new Date(task.questStartedAt).getTime()) && (
+                                          <span style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '9px',
+                                            color: '#93c5fd', background: 'rgba(59,130,246,0.12)',
+                                            border: '1px solid rgba(59,130,246,0.25)', padding: '1px 4px',
+                                            borderRadius: '4px', whiteSpace: 'nowrap'
+                                          }}>
+                                            🕐 Başlangıç: {new Date(task.questStartedAt).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                          </span>
+                                        )}
+                                        {task.questCompletedAt && !isNaN(new Date(task.questCompletedAt).getTime()) && (
+                                          <span style={{
+                                            display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '9px',
+                                            color: '#86efac', background: 'rgba(34,197,94,0.12)',
+                                            border: '1px solid rgba(34,197,94,0.25)', padding: '1px 4px',
+                                            borderRadius: '4px', whiteSpace: 'nowrap'
+                                          }}>
+                                            ✅ Tamamlanma: {new Date(task.questCompletedAt).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                                           </span>
                                         )}
                                       </div>

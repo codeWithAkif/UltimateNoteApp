@@ -33,10 +33,10 @@ export default function AdventureView({ punctuality, fileContents }: AdventureVi
       if (!content) return;
       const lines = content.split('\n');
       lines.forEach(line => {
-        const outcomeMatch = line.match(/\[dakiklik:(fast|ontime|late)\]/i);
+        const outcomeMatch = line.match(/\[(?:outcome|dakiklik):(fast|ontime|late)\]/i);
         if (!outcomeMatch) return;
         const outcome = outcomeMatch[1].toLowerCase() as HistoryEntry['outcome'];
-        const completedMatch = line.match(/\[tamamlanma:([^\]]+)\]/i);
+        const completedMatch = line.match(/\[(?:completed|tamamlanma):([^\]]+)\]/i);
         const titleMatch = line.match(/^\s*[*\-]\s+\[[xX]\]\s+(.*)$/);
         const title = titleMatch
           ? titleMatch[1].replace(/\[[^\]]+\]/g, '').trim()
@@ -44,12 +44,12 @@ export default function AdventureView({ punctuality, fileContents }: AdventureVi
 
         // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
         // Kazanılan süre ayrı bir yerde SAKLANMAZ (uygulamanın felsefesi: her şey etiketlerden
-        // türetilir) — burada [due:]+[time:] (plan) ile [tamamlanma:] (gerçek) karşılaştırılarak
+        // türetilir) — burada [due:]+[plannedtime:] (plan) ile [completed:] (gerçek) karşılaştırılarak
         // anlık hesaplanır. Yalnızca 'fast' sonuçlarda ve plan bilgisi (saatli) varsa anlamlı.
         let savedMinutes = 0;
         if (outcome === 'fast' && completedMatch) {
           const deadline = getDeadlineFromLine(line);
-          if (deadline && line.includes('[time:')) {
+          if (deadline && /\[(?:plannedtime|time|window):/i.test(line)) {
             const completedMs = new Date(completedMatch[1]).getTime();
             if (!isNaN(completedMs)) {
               const diff = (deadline.getTime() - completedMs) / 60000;

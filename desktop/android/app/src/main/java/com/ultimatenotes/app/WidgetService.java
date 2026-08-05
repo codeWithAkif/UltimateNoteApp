@@ -259,7 +259,7 @@ public class WidgetService extends RemoteViewsService {
                 temp = dueMatcher.replaceAll("");
             }
 
-            java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[time:(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(temp);
+            java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[(?:plannedtime|time|window):(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(temp);
             if (timeMatcher.find()) {
                 this.dueTime = timeMatcher.group(1);
                 temp = timeMatcher.replaceAll("");

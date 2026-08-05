@@ -16,7 +16,7 @@ const calculateTaskScore = (text: string): number => {
   if (!text || typeof text !== 'string') return 0;
   let score = 0;
 
-  const priorityMatch = text.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+  const priorityMatch = text.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
   if (priorityMatch) {
     const p = priorityMatch[1].toLowerCase();
     if (p === 'critical' || p === 'acil') score += 10;
@@ -54,7 +54,7 @@ const calculateTaskScore = (text: string): number => {
 const getScoreBreakdown = (text: string, totalScore: number): string => {
   if (!text || typeof text !== 'string') return '📊 Puan Kırılımı:\n  Öncelik: yok\n  Bitiş tarihi: yok\n  Toplam: 0';
   const lines: string[] = ['📊 Puan Kırılımı:'];
-  const pm = text.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+  const pm = text.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
   if (pm) {
     const p = pm[1].toLowerCase();
     const lm: Record<string,string> = { critical:'Kritik',acil:'Kritik',high:'Yüksek','yüksek':'Yüksek',medium:'Orta',orta:'Orta',low:'Düşük','düşük':'Düşük' };
@@ -78,7 +78,7 @@ const getScoreBreakdown = (text: string, totalScore: number): string => {
 const parseCardContent = (text: string, showScoreBadge: boolean = false): React.ReactNode[] => {
   if (!text) return [];
 
-  const regex = /(\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\])/gi;
+  const regex = /(\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\])/gi;
   const parts = text.split(regex);
   const score = showScoreBadge ? calculateTaskScore(text) : 0;
 
@@ -105,7 +105,7 @@ const parseCardContent = (text: string, showScoreBadge: boolean = false): React.
     if (part.startsWith('#')) {
       return <span key={i} className="preview-tag-chip" style={{ margin: '0 2px' }}>{part}</span>;
     }
-    if (part.startsWith('[p:') && part.endsWith(']')) {
+    if ((part.startsWith('[priority:') || part.startsWith('[p:')) && part.endsWith(']')) {
       const priority = part.slice(3, -1).toLowerCase();
       let label = 'Düşük';
       let className = 'priority-low';
@@ -389,9 +389,9 @@ export default function DatabaseView({
   // --- Öncelik Matrisi (Priority Matrix) Çeyrek Hesaplamaları ---
   const getPriorityQuadrant = (item: DbItem): 'critical' | 'high' | 'medium' | 'low' => {
     const text = item.content.toLowerCase();
-    if (text.includes('[p:critical]') || text.includes('[p:acil]')) return 'critical';
-    if (text.includes('[p:high]') || text.includes('[p:yüksek]')) return 'high';
-    if (text.includes('[p:medium]') || text.includes('[p:orta]')) return 'medium';
+    if (/\[(?:priority|p):(critical|acil)\]/i.test(text)) return 'critical';
+    if (/\[(?:priority|p):(high|yüksek)\]/i.test(text)) return 'high';
+    if (/\[(?:priority|p):(medium|orta)\]/i.test(text)) return 'medium';
     return 'low';
   };
 

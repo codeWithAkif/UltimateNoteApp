@@ -140,7 +140,7 @@ export default function NoteFactoryView({
     
     // BUG DÜZELTMESİ: bkz. parseShortcutSyntax — emoji içeren klasör/not adları eski
     // Latin+Türkçe izin listesiyle vurgulanamıyordu, negatif karakter sınıfına geçildi.
-    const regex = /(@(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|!(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|#(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}\]|\[time:\d{2}:\d{2}-\d{2}:\d{2}\])/g;
+    const regex = /(@(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|!(?:\[[^\]\r\n]+\]|[^\s\[\]@!#]+)|#(?:[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\])/g;
     const textToRender = text.endsWith('\n') ? text + ' ' : text;
     const parts = textToRender.split(regex);
     
@@ -163,8 +163,8 @@ export default function NoteFactoryView({
             {part}
           </span>
         );
-      } else if (part.startsWith('[p:')) {
-        const pValue = part.slice(3, -1);
+      } else if (part.startsWith('[priority:') || part.startsWith('[p:')) {
+        const pValue = part.startsWith('[priority:') ? part.slice(10, -1) : part.slice(3, -1);
         const pColor = pValue === 'critical' ? '#f87171' : pValue === 'high' ? '#fb923c' : pValue === 'medium' ? '#fbbf24' : '#a1a1aa';
         const pBg = pValue === 'critical' ? 'rgba(239, 68, 68, 0.15)' : pValue === 'high' ? 'rgba(249, 115, 22, 0.15)' : pValue === 'medium' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(161, 161, 170, 0.15)';
         const pBorder = pValue === 'critical' ? 'rgba(239, 68, 68, 0.3)' : pValue === 'high' ? 'rgba(249, 115, 22, 0.3)' : pValue === 'medium' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(161, 161, 170, 0.3)';
@@ -179,7 +179,7 @@ export default function NoteFactoryView({
             {part}
           </span>
         );
-      } else if (part.startsWith('[time:')) {
+      } else if (part.startsWith('[plannedtime:') || part.startsWith('[time:') || part.startsWith('[window:')) {
         return (
           <span key={idx} className="rich-badge time-rich-badge" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
             {part}
@@ -235,7 +235,7 @@ export default function NoteFactoryView({
       if (result.found && result.date) {
         let tagsToAdd = `[due:${result.date}]`;
         if (result.time && /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(result.time)) {
-          tagsToAdd += ` [time:${result.time}]`;
+          tagsToAdd += ` [plannedtime:${result.time}]`;
         }
         insertTextAtCursor(tagsToAdd);
       }
@@ -458,7 +458,7 @@ export default function NoteFactoryView({
           <div
             key={p.key}
             onClick={() => {
-              insertTextAtCursor(`[p:${p.key}]`);
+              insertTextAtCursor(`[priority:${p.key}]`);
               setActivePopover(null);
             }}
             className="autocomplete-item"
@@ -586,7 +586,7 @@ export default function NoteFactoryView({
             <div
               key={slot}
               onClick={() => {
-                insertTextAtCursor(`[time:${slot}]`);
+                insertTextAtCursor(`[plannedtime:${slot}]`);
                 setActivePopover(null);
               }}
               className="autocomplete-item"
@@ -624,7 +624,7 @@ export default function NoteFactoryView({
                 if (el) {
                   const val = el.value.trim();
                   if (/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(val)) {
-                    insertTextAtCursor(`[time:${val}]`);
+                    insertTextAtCursor(`[plannedtime:${val}]`);
                     setActivePopover(null);
                   } else {
                     alert('Lütfen geçerli formatta yazın! Örn: 09:00-10:00');

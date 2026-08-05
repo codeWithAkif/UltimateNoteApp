@@ -46,12 +46,12 @@ interface EforDay {
 
 const CHECKLIST_REGEX = /^(\s*)([*\-]\s+\[([ xX\/])\])\s+(.*)$/;
 const DUE_REGEX = /\[due:(\d{4}-\d{2}-\d{2})\]/i;
-const TIME_REGEX = /\[time:(\d{2}):(\d{2})-(\d{2}):(\d{2})\]/i;
+const TIME_REGEX = /\[(?:plannedtime|time|window):(\d{2}):(\d{2})-(\d{2}):(\d{2})\]/i;
 const TAG_REGEX = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
 // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug" yerine bununla
 // işaretliyor (kullanıcı isteği: görev adında etiket görünmesin). Eski #slug notlarla geriye
 // dönük uyumluluk için TAG_REGEX ile birlikte ayrıca taranır.
-const PROJECT_BRACKET_REGEX = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+const PROJECT_BRACKET_REGEX = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
 
 // Şirket uygulamasının "hh:mm" giriş formatı — 2 saat 30 dk -> "2:30" (saat kısmı sıfır
 // dolgulu DEĞİL, dakika kısmı 2 haneli — çoğu zaman takip aracının beklediği yaygın format).
@@ -70,15 +70,16 @@ const formatDurationReadable = (mins: number): string => {
 };
 
 const cleanTaskText = (rawText: string): string => rawText
-  .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+  .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
   .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-  .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+  .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
   .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-  .replace(/\[baslangic:[^\]]+\]/gi, '')
-  .replace(/\[tamamlanma:[^\]]+\]/gi, '')
-  .replace(/\[dakiklik:(?:fast|ontime|late|incomplete)\]/gi, '')
+  .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+  .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+  .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
+  .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+  .replace(/\[başlama:[^\]]+\]/gi, '')
   .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
-  .replace(/\[proje:[^\]]+\]/gi, '')
   .replace(/\s+/g, ' ')
   .trim();
 

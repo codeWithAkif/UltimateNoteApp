@@ -44,7 +44,8 @@ const calculateTaskScore = (text: string): number => {
   let score = 0;
 
   // Extract Priority: [p:critical/acil] = 10, [p:high/yüksek] = 6, [p:medium/orta] = 3, [p:low/düşük] = 1
-  const priorityMatch = text.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+  // Extract Priority: [priority:critical/acil] or [p:...] = 10, etc.
+  const priorityMatch = text.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
   if (priorityMatch) {
     const p = priorityMatch[1].toLowerCase();
     if (p === 'critical' || p === 'acil') score += 10;
@@ -82,7 +83,7 @@ const calculateTaskScore = (text: string): number => {
 const getScoreBreakdown = (text: string, totalScore: number): string => {
   if (!text || typeof text !== 'string') return '📊 Puan Kırılımı:\n  Öncelik: yok\n  Bitiş tarihi: yok\n  Toplam: 0';
   const lines: string[] = ['📊 Puan Kırılımı:'];
-  const pm = text.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
+  const pm = text.match(/\[(?:priority|p):(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
   if (pm) {
     const p = pm[1].toLowerCase();
     const lm: Record<string,string> = { critical:'Kritik',acil:'Kritik',high:'Yüksek','yüksek':'Yüksek',medium:'Orta',orta:'Orta',low:'Düşük','düşük':'Düşük' };
@@ -106,7 +107,7 @@ const parseCardContent = (text: string, showScoreBadge: boolean = false): React.
   if (!text) return [];
 
   // Highlight tags, bold, italic, code, timestamps, priorities, due dates, repeats
-  const regex = /(\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\])/gi;
+  const regex = /(\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\])/gi;
   const parts = text.split(regex);
   const score = showScoreBadge ? calculateTaskScore(text) : 0;
 
@@ -133,8 +134,8 @@ const parseCardContent = (text: string, showScoreBadge: boolean = false): React.
     if (part.startsWith('#')) {
       return <span key={i} className="preview-tag-chip" style={{ margin: '0 2px' }}>{part}</span>;
     }
-    if (part.startsWith('[p:') && part.endsWith(']')) {
-      const priority = part.slice(3, -1).toLowerCase();
+    if ((part.startsWith('[priority:') || part.startsWith('[p:')) && part.endsWith(']')) {
+      const priority = (part.startsWith('[priority:') ? part.slice(10, -1) : part.slice(3, -1)).toLowerCase();
       let label = 'Düşük';
       let className = 'priority-low';
 

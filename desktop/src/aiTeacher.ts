@@ -167,7 +167,7 @@ export const buildAITeacherScheduleTaskLine = (
   startTime: string,
   endTime: string
 ): string => {
-  return `\n- [ ] 📚 **${noteTitle}** konusunu çalış [due:${dateStr}] [time:${startTime}-${endTime}]\n`;
+  return `\n- [ ] 📚 **${noteTitle}** konusunu çalış [due:${dateStr}] [plannedtime:${startTime}-${endTime}]\n`;
 };
 
 export const formatMiniProjectBlock = (title: string, instructions: string): string => {
@@ -187,7 +187,7 @@ export const stripMarkdownForSpeech = (text: string): string => {
     .replace(/```[\s\S]*?```/g, '')
     .replace(/<<<row-end>>>|<<<row>>>|<<<col>>>/g, '. ')
     .replace(/\[color:[a-z]+\]/gi, '')
-    .replace(/\[due:[^\]]*\]|\[time:[^\]]*\]|\[p:[^\]]*\]/gi, '')
+    .replace(/\[due:[^\]]*\]|\[(?:plannedtime|time|window):[^\]]*\]|\[(?:priority|p):[^\]]*\]/gi, '')
     .replace(/^#{1,6}\s*/gm, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')

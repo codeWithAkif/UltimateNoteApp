@@ -311,7 +311,7 @@ public class QuickAddActivity extends AppCompatActivity {
                     if (dueMatcher.find()) {
                         selectedDate = dueMatcher.group(1);
                     }
-                    java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[time:(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(line);
+                    java.util.regex.Matcher timeMatcher = java.util.regex.Pattern.compile("\\[(?:plannedtime|time|window):(\\d{2}:\\d{2})-\\d{2}:\\d{2}\\]").matcher(line);
                     if (timeMatcher.find()) {
                         selectedTime = timeMatcher.group(1);
                     }
@@ -860,7 +860,7 @@ public class QuickAddActivity extends AppCompatActivity {
                     int eh = (h + 1) % 24;
                     endTime = String.format(Locale.US, "%02d:%02d", eh, m);
                 } catch (Exception e) {}
-                newTags += " [time:" + selectedTime + "-" + endTime + "]";
+                newTags += " [plannedtime:" + selectedTime + "-" + endTime + "]";
             }
             if (!selectedRepeat.isEmpty() && !"none".equals(selectedRepeat)) {
                 newTags += " [repeat:" + selectedRepeat + "]";
@@ -915,7 +915,7 @@ public class QuickAddActivity extends AppCompatActivity {
                 int eh = (h + 1) % 24;
                 endTime = String.format(Locale.US, "%02d:%02d", eh, m);
             } catch (Exception e) {}
-            newTags += " [time:" + selectedTime + "-" + endTime + "]";
+            newTags += " [plannedtime:" + selectedTime + "-" + endTime + "]";
         }
         if (!selectedRepeat.isEmpty() && !"none".equals(selectedRepeat)) {
             newTags += " [repeat:" + selectedRepeat + "]";

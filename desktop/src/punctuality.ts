@@ -32,13 +32,13 @@ export const nudgeScore = (oldScore: number, outcomeScore: number): number => {
 };
 
 // ============================================================================
-// SATIR-İÇİ ETİKET AYRIŞTIRMA — [p:]/[due:]/[time:]/[repeat:] ile AYNI desen
-// (bkz. TasksView.tsx:227-266).
+// SATIR-İÇİ ETİKET AYRIŞTIRMA — [priority:]/[due:]/[plannedtime:]/[repeat:] ile AYNI desen
+// (bkz. TasksView.tsx). Hem yeni EN etiketlerini hem eski TR etiketlerini destekler.
 // ============================================================================
 
-export const STARTED_TAG_REGEX = /\[baslangic:([^\]]+)\]/i;
-export const COMPLETED_TAG_REGEX = /\[tamamlanma:([^\]]+)\]/i;
-export const PUNCTUALITY_OUTCOME_TAG_REGEX = /\[dakiklik:(fast|ontime|late|incomplete)\]/i;
+export const STARTED_TAG_REGEX = /\[(?:started|baslangic|başlangıç|başlama):([^\]]+)\]/i;
+export const COMPLETED_TAG_REGEX = /\[(?:completed|tamamlanma):([^\]]+)\]/i;
+export const PUNCTUALITY_OUTCOME_TAG_REGEX = /\[(?:outcome|dakiklik):(fast|ontime|late|incomplete)\]/i;
 
 export const parseQuestTags = (rawText: string) => {
   const startedMatch = rawText.match(STARTED_TAG_REGEX);
@@ -53,20 +53,21 @@ export const parseQuestTags = (rawText: string) => {
 };
 
 export const stripQuestTags = (text: string): string => text
-  .replace(/\[baslangic:[^\]]+\]/gi, '')
-  .replace(/\[tamamlanma:[^\]]+\]/gi, '')
-  .replace(/\[dakiklik:(?:fast|ontime|late)\]/gi, '');
+  .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+  .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+  .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
+  .replace(/\[başlama:[^\]]+\]/gi, '');
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Bir satırın Takvim'de planlanmış bitiş anını (varsa) hesaplar — [due:YYYY-MM-DD]
-// [time:HH:mm-HH:mm] deseninden bitiş saatini, yoksa yalnızca [due:] varsa o günün sonunu
+// [plannedtime:HH:mm-HH:mm] (veya eski [time:]/[window:]) deseninden bitiş saatini, yoksa yalnızca [due:] varsa o günün sonunu
 // (23:59) kullanır. Hiç [due:] yoksa null döner (deadline'a göre hesaplanacak bir şey yok).
 export const getDeadlineFromLine = (line: string): Date | null => {
   const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})(?:\s\d{2}:\d{2})?\]/i);
   if (!dueMatch) return null;
   const [y, m, d] = dueMatch[1].split('-').map(Number);
 
-  const timeMatch = line.match(/\[time:\d{2}:\d{2}-(\d{2}):(\d{2})\]/i);
+  const timeMatch = line.match(/\[(?:plannedtime|time|window):\d{2}:\d{2}-(\d{2}):(\d{2})\]/i);
   if (timeMatch) {
     return new Date(y, m - 1, d, parseInt(timeMatch[1], 10), parseInt(timeMatch[2], 10), 0);
   }
@@ -79,7 +80,7 @@ export interface QuestOutcomeResult {
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-// [baslangic:] varsa gerçek geçen süre / planlanan süre oranına göre (kullanıcının açıkça
+// [started:] veya [baslangic:] varsa gerçek geçen süre / planlanan süre oranına göre (kullanıcının açıkça
 // istediği "gerçekten geçen süre" ölçütü); hiç başlatılmamışsa sadece due anına göre bir
 // ikili (erken/geç) karşılaştırma yapılır. Dönen outcomeScore, EMA'ya (nudgeScore) girdi olarak
 // kullanılan 0-100 aralığında bir puandır — ratio=0.5 (yarı sürede bitirmiş) → 100,
@@ -129,7 +130,7 @@ export interface LineCompletionResult {
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Checkbox işaretlenme anında (3 farklı yerden çağrılır: NotesView.tsx'in yerel editorContent
 // state'i içinde VE App.tsx/CalendarView.tsx/TasksView.tsx'in dosya-yazma akışlarında) satırın
-// kendisini mutasyona uğratan SAF fonksiyon. Satır zaten [dakiklik:] etiketi taşıyorsa
+// kendisini mutasyona uğratan SAF fonksiyon. Satır zaten [outcome:] veya [dakiklik:] etiketi taşıyorsa
 // (idempotency guard) ya da bir checklist öğesi DEĞİLSE ya da işaretlenmemiş durumdaysa null
 // döner (ödül uygulanmaz).
 export const applyCompletionToLine = (line: string): LineCompletionResult | null => {
@@ -147,14 +148,14 @@ export const applyCompletionToLine = (line: string): LineCompletionResult | null
 
   let newLine = line;
   if (!tags.completedAt) {
-    newLine = `${newLine} [tamamlanma:${completedAt}]`;
+    newLine = `${newLine} [completed:${completedAt}]`;
   }
-  newLine = `${newLine} [dakiklik:${outcome}]`;
+  newLine = `${newLine} [outcome:${outcome}]`;
 
   let gapMinutes = 0;
   let dueDate: string | null = null;
   let plannedEndAbsMin: number | null = null;
-  const timeMatch = line.match(/\[time:\d{2}:\d{2}-(\d{2}):(\d{2})\]/i);
+  const timeMatch = line.match(/\[(?:plannedtime|time|window):\d{2}:\d{2}-(\d{2}):(\d{2})\]/i);
   if (outcome === 'fast' && deadline && timeMatch) {
     const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
     dueDate = dueMatch ? dueMatch[1] : null;
@@ -167,18 +168,18 @@ export const applyCompletionToLine = (line: string): LineCompletionResult | null
 };
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
-// "▶️ Başla" butonuna basıldığında çağrılır — satıra [baslangic:ISO] etiketini bir kere ekler
+// "▶️ Başla" butonuna basıldığında çağrılır — satıra [started:ISO] etiketini bir kere ekler
 // (zaten varsa dokunmaz, tekrar basmak süreyi sıfırlamaz).
 export const applyQuestStartToLine = (line: string): string | null => {
   const checklistMatch = line.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
   if (!checklistMatch) return null;
   if (STARTED_TAG_REGEX.test(line)) return null;
-  return `${line} [baslangic:${new Date().toISOString()}]`;
+  return `${line} [started:${new Date().toISOString()}]`;
 };
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Uygulama her açıldığında/veriler yüklendiğinde taranır: son tarihi geçmiş, hâlâ
-// işaretlenmemiş ve henüz [dakiklik:] etiketi olmayan görevleri "late" olarak damgalar —
+// işaretlenmemiş ve henüz [outcome:] veya [dakiklik:] etiketi olmayan görevleri "late" olarak damgalar —
 // "hiç bitirilmeden gün geçmesi" kuralını uygular. Tarama App.tsx'te yapılır, bu sadece tek
 // bir satır için karar veren saf fonksiyondur.
 export const applyAutoFailToLine = (line: string, todayStr: string): LineCompletionResult | null => {
@@ -191,7 +192,7 @@ export const applyAutoFailToLine = (line: string, todayStr: string): LineComplet
   if (!dueMatch || dueMatch[1] >= todayStr) return null;
 
   return {
-    newLine: `${line} [dakiklik:late]`,
+    newLine: `${line} [outcome:late]`,
     outcome: 'late',
     outcomeScore: 5,
     completedAt: new Date().toISOString(),
@@ -206,7 +207,7 @@ export const applyAutoFailToLine = (line: string, todayStr: string): LineComplet
 // geçtiği hâlde hâlâ tamamlanmamışsa, süresiz "devam ediyor" görünmesindense otomatik
 // DURDURULUP "bitirilmedi" olarak damgalanır — applyAutoFailToLine'ın (hiç başlanmamış,
 // önceki günden kalma görevler için) tamamlayıcısı: bu fonksiyon SADECE başlanmış ama
-// bırakılmış görevler içindir. [tamamlanma:] eklenir (böylece canlı sayaç durur) ve yeni
+// bırakılmış görevler içindir. [completed:] eklenir (böylece canlı sayaç durur) ve yeni
 // 'incomplete' sonucuyla damgalanır — kullanıcı arayüzünde "❌ Bitirilmedi" rozeti olarak
 // gösterilir (bkz. NotesView.tsx dakiklik rozet render'ı).
 export const applyAutoStopUnfinishedToLine = (line: string, now: Date = new Date()): LineCompletionResult | null => {
@@ -226,7 +227,7 @@ export const applyAutoStopUnfinishedToLine = (line: string, now: Date = new Date
 
   const completedAt = now.toISOString();
   return {
-    newLine: `${line} [tamamlanma:${completedAt}] [dakiklik:incomplete]`,
+    newLine: `${line} [completed:${completedAt}] [outcome:incomplete]`,
     outcome: 'incomplete',
     outcomeScore: 5,
     completedAt,
@@ -242,9 +243,7 @@ export const applyAutoStopUnfinishedToLine = (line: string, now: Date = new Date
 // TIKLANAN ana göre yazılıyordu, işin GERÇEKTE ne zaman yapıldığına değil. Bu fonksiyon,
 // kullanıcının başlangıç/tamamlanma zamanlarını ELLE düzeltmesine izin verir — etiketleri
 // yeniden yazar ve dakiklik sonucunu (varsa) computeQuestOutcome ile DOĞRU zamanlara göre
-// yeniden hesaplar. newStartedAt=null → başlangıç etiketi tamamen kaldırılır ("başlangıcı
-// geri al" senaryosu da bunun özel bir hâlidir: newCompletedAt mevcut değerinde bırakılıp
-// sadece newStartedAt null verilir). newCompletedAt=null → görev henüz tamamlanmamış sayılır,
+// yeniden hesaplar. newStartedAt=null → başlangıç etiketi tamamen kaldırılır. newCompletedAt=null → görev henüz tamamlanmamış sayılır,
 // dakiklik hiç hesaplanmaz (outcome/outcomeScore null döner, EMA'ya dokunulmaz).
 export interface ManualTimeEditResult {
   newLine: string;
@@ -258,19 +257,19 @@ export const applyManualTimeEditToLine = (
   newCompletedAt: string | null
 ): ManualTimeEditResult => {
   let newLine = line
-    .replace(/\s*\[baslangic:[^\]]+\]/gi, '')
-    .replace(/\s*\[tamamlanma:[^\]]+\]/gi, '')
-    .replace(/\s*\[dakiklik:(?:fast|ontime|late|incomplete)\]/gi, '')
+    .replace(/\s*\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+    .replace(/\s*\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+    .replace(/\s*\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
+    .replace(/\s*\[başlama:[^\]]+\]/gi, '')
     .trimEnd();
 
-  if (newStartedAt) newLine = `${newLine} [baslangic:${newStartedAt}]`;
-  if (newCompletedAt) newLine = `${newLine} [tamamlanma:${newCompletedAt}]`;
+  if (newStartedAt) newLine = `${newLine} [started:${newStartedAt}]`;
+  if (newCompletedAt) newLine = `${newLine} [completed:${newCompletedAt}]`;
 
   if (!newCompletedAt) {
     return { newLine, outcome: null, outcomeScore: null };
   }
 
-  // Deadline, orijinal satırdaki [due:]/[time:] etiketlerinden hesaplanır — bunlar bu
   // düzenlemeyle değişmiyor, yalnızca başlangıç/tamamlanma damgaları değişiyor.
   const deadline = getDeadlineFromLine(line);
   const { outcome, outcomeScore } = computeQuestOutcome(newStartedAt, newCompletedAt, deadline);
@@ -345,10 +344,10 @@ export const computeSavedTimeStats = (fileContents: Record<string, string>): Sav
   Object.values(fileContents).forEach(content => {
     if (!content) return;
     content.split('\n').forEach(line => {
-      if (!PUNCTUALITY_OUTCOME_TAG_REGEX.test(line) || !/\[dakiklik:fast\]/i.test(line)) return;
+      if (!PUNCTUALITY_OUTCOME_TAG_REGEX.test(line) || !/\[(?:outcome|dakiklik):fast\]/i.test(line)) return;
       const completedMatch = line.match(COMPLETED_TAG_REGEX);
       if (!completedMatch) return;
-      if (!line.includes('[time:')) return;
+      if (!/\[(?:plannedtime|time|window):/i.test(line)) return;
       const deadline = getDeadlineFromLine(line);
       if (!deadline) return;
       const completedMs = new Date(completedMatch[1]).getTime();

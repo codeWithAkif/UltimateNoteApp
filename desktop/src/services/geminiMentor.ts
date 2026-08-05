@@ -776,7 +776,7 @@ const DATE_EXTRACT_SCHEMA = {
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Hızlı Not Fabrikası'na yazılan serbest metinden ("yarın öğlen doktor randevusu" gibi)
-// [due:YYYY-MM-DD] / [time:HH:MM-HH:MM] etiketlerini otomatik çıkarır. `todayISO` referans
+// [due:YYYY-MM-DD] / [plannedtime:HH:MM-HH:MM] etiketlerini otomatik çıkarır. `todayISO` referans
 // olarak verilir ki "yarın"/"gelecek hafta" gibi göreli ifadeler doğru tarihe çevrilsin.
 // `time` alanı yalnızca metinde açık bir saat/saat aralığı geçiyorsa doldurulur; sadece
 // tarih varsa boş bırakılır.

@@ -14,9 +14,14 @@ interface AnalyticsViewProps {
 function cleanTaskText(raw: string): string {
   return raw
     .replace(/\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]/g, '')
-    .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/g, '')
-    .replace(/\[p:[a-zçığşü]+\]/gi, '')
+    .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/g, '')
+    .replace(/\[(?:priority|p):[a-zçığşü]+\]/gi, '')
     .replace(/\[repeat:[a-zçığşü]+\]/gi, '')
+    .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+    .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+    .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
+    .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+    .replace(/\[başlama:[^\]]+\]/gi, '')
     .replace(/#[a-zA-Z0-9_çığşüöÇİĞŞÜÖ]+/g, '')
     .trim();
 }

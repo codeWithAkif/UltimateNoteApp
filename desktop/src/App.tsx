@@ -918,7 +918,7 @@ export default function App() {
             if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
             const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
             if (!dueMatch || dueMatch[1] !== dueDate) return;
-            const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
+            const timeMatch = line.match(/\[(?:plannedtime|time|window):(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
             if (!timeMatch) return;
             const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
             if (startAbsMin >= plannedEndAbsMin) affectedCount++;
@@ -943,7 +943,7 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // cascadeSuggestion onaylandığında çağrılır: dueDate gününde, plannedEndAbsMin'den SONRA
-  // başlayan, henüz tamamlanmamış tüm görevlerin [time:] etiketini gapMinutes kadar öne
+  // başlayan, henüz tamamlanmamış tüm görevlerin [plannedtime:] etiketini gapMinutes kadar öne
   // kaydırır. Dosya başına TEK okuma/yazma için önce dosya yoluna göre gruplar (fileContents
   // taze olmayabileceğinden yazmadan hemen önce her dosyayı ANINDA yeniden okur).
   const handleCascadeShift = async () => {
@@ -959,7 +959,7 @@ export default function App() {
           if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return;
           const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
           if (!dueMatch || dueMatch[1] !== dueDate) return;
-          const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
+          const timeMatch = line.match(/\[(?:plannedtime|time|window):(\d{2}):(\d{2})-\d{2}:\d{2}\]/i);
           if (!timeMatch) return;
           const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
           if (startAbsMin >= plannedEndAbsMin) affectedPaths.add(path);
@@ -981,7 +981,7 @@ export default function App() {
           if (!checklistMatch || checklistMatch[2].toLowerCase() === 'x') return line;
           const dueMatch = line.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
           if (!dueMatch || dueMatch[1] !== dueDate) return line;
-          const timeMatch = line.match(/\[time:(\d{2}):(\d{2})-(\d{2}):(\d{2})\]/i);
+          const timeMatch = line.match(/\[(?:plannedtime|time|window):(\d{2}):(\d{2})-(\d{2}):(\d{2})\]/i);
           if (!timeMatch) return line;
           const startAbsMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
           if (startAbsMin < plannedEndAbsMin) return line;
@@ -989,7 +989,7 @@ export default function App() {
             parseInt(timeMatch[1], 10), parseInt(timeMatch[2], 10),
             parseInt(timeMatch[3], 10), parseInt(timeMatch[4], 10)
           );
-          return line.replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/i, `[time:${newSlot}]`);
+          return line.replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/i, `[plannedtime:${newSlot}]`);
         });
         await handleSaveNote(path, newLines.join('\n'));
       }
@@ -998,6 +998,37 @@ export default function App() {
     } finally {
       setIsCascading(false);
       setCascadeSuggestion(null);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Notlardaki eski Türkçe/kısa etiketleri ([time:], [window:], [baslangic:], [başlangıç:],
+  // [tamamlanma:], [dakiklik:], [proje:], [p:], [başlama:]) yeni standart İngilizce
+  // formatına ([plannedtime:], [started:], [completed:], [outcome:], [project:], [priority:])
+  // dönüştürür ve çöp etiketleri temizler.
+  const migrateAllNotesToNewTags = async (): Promise<number> => {
+    try {
+      let updatedCount = 0;
+      for (const [path, content] of Object.entries(fileContents)) {
+        if (!content) continue;
+        const newContent = content
+          .replace(/\[(?:time|window):(\d{2}:\d{2}-\d{2}:\d{2})\]/gi, '[plannedtime:$1]')
+          .replace(/\[(?:baslangic|başlangıç):([^\]]+)\]/gi, '[started:$1]')
+          .replace(/\[tamamlanma:([^\]]+)\]/gi, '[completed:$1]')
+          .replace(/\[dakiklik:([^\]]+)\]/gi, '[outcome:$1]')
+          .replace(/\[proje:([^\]]+)\]/gi, '[project:$1]')
+          .replace(/\[p:([a-zçığşü]+)\]/gi, '[priority:$1]')
+          .replace(/\[başlama:[^\]]*\]/gi, '');
+
+        if (newContent !== content) {
+          await handleSaveNote(path, newContent);
+          updatedCount++;
+        }
+      }
+      return updatedCount;
+    } catch (err) {
+      console.error('Error migrating note tags:', err);
+      return 0;
     }
   };
 
@@ -3413,7 +3444,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             }
             // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug" yerine
             // bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
-            const projectBracketRegex = /\[proje:([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
             let projTagMatch;
             while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
               taskTags.push(projTagMatch[1].toLowerCase());
@@ -3421,7 +3452,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
             const timestampMatch = rawText.match(/\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/);
             const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/);
-            const timeSlotMatch = rawText.match(/\[time:(\d{2}:\d{2})-\d{2}:\d{2}\]/);
+            const timeSlotMatch = rawText.match(/\[(?:plannedtime|time|window):(\d{2}:\d{2})-\d{2}:\d{2}\]/);
             // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
             // Bazı görev satırları tarihi [due:...] etiketiyle değil, doğrudan okunabilir metin
             // olarak yazılmış (örn. "30-06-2026 - Salı Saat: 12:30-13:30"). Bu etiketsiz format
@@ -3453,18 +3484,18 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
             // Clean display content
             // BUG DÜZELTMESİ: Kanban/Timeline gibi görünümler bu "content" alanını doğrudan
-            // kart başlığı olarak gösteriyordu — [baslangic:]/[tamamlanma:]/[dakiklik:] gibi
-            // iç metadata etiketleri ve #proje hashtag'i hiç temizlenmediği için kart başlığında
-            // ham olarak görünüyordu (kullanıcı isteği: bunlar hiçbir yerde görünmesin).
+            // kart başlığı olarak gösteriyordu — internal etiketler ve #proje hashtag'i
+            // temizlenerek temiz başlık görünmesi sağlandı.
             const cleanContent = rawText
-              .replace(/\[p:(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
+              .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
-              .replace(/\[time:\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+              .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-              .replace(/\[baslangic:[^\]]+\]/gi, '')
-              .replace(/\[tamamlanma:[^\]]+\]/gi, '')
-              .replace(/\[dakiklik:(?:fast|ontime|late)\]/gi, '')
-              .replace(/\[proje:[^\]]+\]/gi, '')
+              .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
+              .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+              .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
+              .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+              .replace(/\[başlama:[^\]]+\]/gi, '')
               .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
               .replace(/\s+/g, ' ')
