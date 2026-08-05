@@ -22,7 +22,7 @@ import { tr } from 'date-fns/locale';
 import { isElectron, isBrowser, isCapacitor } from '../services/platform';
 import { registerPlugin } from '@capacitor/core';
 import {
-  applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
+  applyCompletionToLine, applyQuestStartToLine, applyManualTimeEditToLine, parseQuestTags, stripQuestTags,
   type LineCompletionResult
 } from '../punctuality';
 import { 
@@ -659,6 +659,16 @@ export default function CalendarView({
   // "Başla" planlanan saatten 5dk+ sonra basıldığında kısa süreliğine gösterilen, cezalandırıcı
   // olmayan bilgi notu (bkz. handleStartTaskFromCalendar) — skoru etkilemez.
   const [lateStartNotice, setLateStartNotice] = useState<{ taskContent: string; lateByMin: number } | null>(null);
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // İSTEK: "İşi zamanında yaptım ama uygulamaya sonradan ekledim, sanki geç kalmışım gibi
+  // puan kırıldı." Başlangıç/tamamlanma damgaları yalnızca UYGULAMADA TIKLANAN ana göre
+  // yazıldığı için, işi gerçekte NE ZAMAN yaptığını burada elle düzeltebilmesi gerekiyordu.
+  // datetime-local input'ları saniye/milisaniye taşımadığı için form state basit string
+  // (YYYY-MM-DDTHH:mm) tutar, kaydederken ISO'ya çevrilir.
+  const [editingTimesTask, setEditingTimesTask] = useState<WorkspaceTask | null>(null);
+  const [editStartLocal, setEditStartLocal] = useState('');
+  const [editCompletedLocal, setEditCompletedLocal] = useState('');
 
   // External Calendar Sync States
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
@@ -1864,6 +1874,68 @@ export default function CalendarView({
       setRefreshTrigger(prev => prev + 1);
     } catch (err) {
       console.error('Error starting task from calendar:', err);
+    }
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // datetime-local input'u YYYY-MM-DDTHH:mm biçiminde, YEREL saatte bir string bekler/döner
+  // (saniye/milisaniye taşımaz) — ISO damgalarla (UTC) arasında iki yönlü çeviri gerekir.
+  const isoToLocalInputValue = (iso: string | null): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const localInputValueToIso = (val: string): string | null => {
+    if (!val) return null;
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString();
+  };
+
+  const handleOpenEditTimes = (task: WorkspaceTask) => {
+    setEditingTimesTask(task);
+    setEditStartLocal(isoToLocalInputValue(task.questStartedAt));
+    setEditCompletedLocal(isoToLocalInputValue(task.questCompletedAt));
+  };
+
+  // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+  // Skor bir EMA (hareketli ortalama) olduğu için, yanlış bir zamanla verilen ESKİ puanı
+  // matematiksel olarak tam geri almak mümkün değil — bunun yerine düzeltilmiş zamanlarla
+  // YENİ bir puan uygulanır, EMA'nın doğası gereği eski (yanlış) etkisi zamanla söner. Bu,
+  // kusursuz bir defter tutmaktan daha basit ve "esnek/basit olsun" isteğine daha uygun.
+  const handleSaveEditedTimes = async () => {
+    if (!editingTimesTask) return;
+    const task = editingTimesTask;
+    try {
+      const content = await readNoteContent(task.filePath);
+      const lines = content.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) { setEditingTimesTask(null); return; }
+
+      const newStartedAt = localInputValueToIso(editStartLocal);
+      const newCompletedAt = localInputValueToIso(editCompletedLocal);
+      const result = applyManualTimeEditToLine(lines[task.lineIdx], newStartedAt, newCompletedAt);
+      lines[task.lineIdx] = result.newLine;
+
+      if (result.outcome && result.outcomeScore !== null) {
+        onQuestReward?.({
+          newLine: result.newLine,
+          outcome: result.outcome,
+          outcomeScore: result.outcomeScore,
+          completedAt: newCompletedAt || new Date().toISOString(),
+          gapMinutes: 0,
+          dueDate: null,
+          plannedEndAbsMin: null
+        });
+      }
+
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+      setEditingTimesTask(null);
+    } catch (err) {
+      console.error('Zamanlar güncellenemedi:', err);
     }
   };
 
@@ -3668,6 +3740,42 @@ export default function CalendarView({
                                     </button>
                                   )}
 
+                                  {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+                                      İSTEK: "İşi zamanında yaptım ama uygulamaya sonradan
+                                      ekledim, sanki geç kalmışım gibi puan kırıldı." Başlangıç/
+                                      tamamlanma damgaları TIKLANAN ana göre yazıldığı için,
+                                      gerçek zamanı elle düzeltebilme + yanlışlıkla basılan
+                                      "▶️ Başla"yı geri alabilme ihtiyacı — ikisi de aynı küçük
+                                      saat butonuyla açılan tek bir modalda birleştirilir.
+                                      isSmallCard'da ▶️ butonuyla çakışmaması için ayrı bir
+                                      satıra (biraz aşağıya) konumlanır. */}
+                                  {!task.isExternal && !task.isChecked && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditTimes(task);
+                                      }}
+                                      title="Başlangıç/tamamlanma zamanlarını elle düzenle"
+                                      style={{
+                                        position: 'absolute',
+                                        top: task.questOutcome || task.questStartedAt ? '4px' : '22px',
+                                        right: '4px',
+                                        zIndex: 12,
+                                        fontSize: '10px',
+                                        color: 'var(--text-muted, #94a3b8)',
+                                        background: 'rgba(255,255,255,0.08)',
+                                        border: '1px solid rgba(255,255,255,0.15)',
+                                        borderRadius: '5px',
+                                        padding: '2px 5px',
+                                        cursor: 'pointer',
+                                        lineHeight: 1
+                                      }}
+                                    >
+                                      🕐
+                                    </button>
+                                  )}
+
                                   <div className="event-card-content" style={{
                                     paddingBottom: isSmallCard ? '0px' : (totalSub > 0 ? '12px' : '4px'),
                                     justifyContent: isSmallCard ? 'center' : 'space-between',
@@ -4866,8 +4974,87 @@ export default function CalendarView({
         </div>
       )}
 
+      {editingTimesTask && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.6)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 2000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          onClick={() => setEditingTimesTask(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '380px',
+              maxWidth: '92%',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                🕐 Zamanları Düzenle
+              </h3>
+              <button onClick={() => setEditingTimesTask(null)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+              {editingTimesTask.content}
+            </div>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.4 }}>
+              İşi gerçekte ne zaman yaptıysan onu gir — dakiklik puanı buna göre yeniden hesaplanır. Bir alanı boşaltmak o damgayı tamamen kaldırır (ör. yanlışlıkla basılan "Başla"yı geri almak için başlangıcı boşalt).
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Başlangıç</label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="datetime-local"
+                  value={editStartLocal}
+                  onChange={(e) => setEditStartLocal(e.target.value)}
+                  style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '12px' }}
+                />
+                {editStartLocal && (
+                  <button type="button" onClick={() => setEditStartLocal('')} title="Başlangıcı kaldır" className="btn-modal-cancel" style={{ padding: '0 10px' }}>✕</button>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Tamamlanma</label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="datetime-local"
+                  value={editCompletedLocal}
+                  onChange={(e) => setEditCompletedLocal(e.target.value)}
+                  style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '12px' }}
+                />
+                {editCompletedLocal && (
+                  <button type="button" onClick={() => setEditCompletedLocal('')} title="Tamamlanmayı kaldır" className="btn-modal-cancel" style={{ padding: '0 10px' }}>✕</button>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+              <button type="button" className="btn-modal-cancel" onClick={() => setEditingTimesTask(null)}>Vazgeç</button>
+              <button type="button" className="btn-modal-confirm" onClick={handleSaveEditedTimes}>Kaydet</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isSyncModalOpen && (
-        <div 
+        <div
           style={{
             position: 'fixed',
             top: 0,

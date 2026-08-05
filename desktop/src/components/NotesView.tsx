@@ -4932,14 +4932,21 @@ export default function NotesView({
       if (KeyboardEvent.ctrlKey && KeyboardEvent.key.toLowerCase() === 'c') {
         KeyboardEvent.preventDefault();
         const selectedText = lines.slice(range.start, range.end + 1).join('\n');
-        navigator.clipboard.writeText(selectedText);
+        // BUG DÜZELTMESİ: İzin (Electron pano izni vb.) her nedense reddedilirse bu
+        // Promise sessizce "Uncaught (in promise)" hatası fırlatıyordu, kullanıcı
+        // kopyalamanın neden başarısız olduğunu asla göremiyordu.
+        navigator.clipboard.writeText(selectedText).catch(err => {
+          console.error('Çoklu satır kopyalama başarısız:', err);
+        });
         return;
       }
-      
+
       if (KeyboardEvent.ctrlKey && KeyboardEvent.key.toLowerCase() === 'x') {
         KeyboardEvent.preventDefault();
         const selectedText = lines.slice(range.start, range.end + 1).join('\n');
-        navigator.clipboard.writeText(selectedText);
+        navigator.clipboard.writeText(selectedText).catch(err => {
+          console.error('Çoklu satır kesme başarısız:', err);
+        });
         deleteSelectedLines(range);
         return;
       }
@@ -7409,21 +7416,30 @@ export default function NotesView({
   };
 
   const handleLineClick = (idx: number, e?: React.MouseEvent) => {
+    // BUG DÜZELTMESİ: "Çok satır seçip Ctrl+C ile kopyalayamıyorum" — bu fonksiyon
+    // eskiden GERÇEK bir sürükleme olup olmadığını kontrol etmeden ÖNCE dragSelect
+    // aralığını koşulsuz sıfırlıyor ve satırı bir textarea'ya odaklıyordu. Sürükleme
+    // mesafe eşiği aşılmışsa (gerçek çoklu satır seçimi), fonksiyon buradan HİÇBİR
+    // ŞEYE dokunmadan hemen çıkmalı — aksi halde sürükleme bırakıldığında ateşlenen
+    // 'click' olayı, az önce oluşturulan seçimi anında siliyor ve document.activeElement'i
+    // bir textarea'ya çevirip Ctrl+C'nin çoklu satır kopyalama yolunu (bkz.
+    // handleGlobalKeyDown) devre dışı bırakıyordu (o yol, odak bir textarea/input
+    // olduğunda bilerek atlanıyor).
+    if (e && mouseDownCoordsRef.current) {
+      const dx = Math.abs(e.clientX - mouseDownCoordsRef.current.x);
+      const dy = Math.abs(e.clientY - mouseDownCoordsRef.current.y);
+      mouseDownCoordsRef.current = null;
+      if (dx > 5 || dy > 5) {
+        return;
+      }
+    } else {
+      mouseDownCoordsRef.current = null;
+    }
+
     // Clear selection on single line click
     setDragSelectStartIdx(null);
     setDragSelectEndIdx(null);
     setShowWikiSuggestions(false);
-
-    // If user is drag-selecting text (mouse moved between mousedown and click), preserve selection
-    if (e && mouseDownCoordsRef.current) {
-      const dx = Math.abs(e.clientX - mouseDownCoordsRef.current.x);
-      const dy = Math.abs(e.clientY - mouseDownCoordsRef.current.y);
-      if (dx > 5 || dy > 5) {
-        mouseDownCoordsRef.current = null;
-        return;
-      }
-    }
-    mouseDownCoordsRef.current = null;
 
     // If user has actively selected text, do not focus the line (preserve selection)
     if (window.getSelection()?.toString().trim()) {
@@ -7560,6 +7576,28 @@ export default function NotesView({
   ) => {
     const oldLine = lines[idx];
     const newLine = prefix ? `${prefix}${newValue}` : newValue;
+
+    // BUG DÜZELTMESİ: Çok satırlı bir metin yapıştırıldığında textarea'nın değeri
+    // satır sonlarını (\n) İÇİNDE barındıran TEK bir string olur — bu, bir sonraki
+    // render'da editorContent.split('\n') ile doğru şekilde ayrı satırlara bölünür,
+    // AMA aşağıdaki imleç konumlandırma mantığı hâlâ ESKİ (bölünmemiş) tek-satır
+    // varsayımıyla çalıştığı için imleç, yapıştırılan metnin SONU yerine artık
+    // kısalmış olan İLK satırın sonuna kırpılıp kalıyordu. Burada satırları BİZZAT
+    // bölüp diziye yerleştiriyor, imleci son yapıştırılan satırın gerçek sonuna
+    // koyuyoruz.
+    if (newLine.includes('\n')) {
+      const pastedParts = newLine.split('\n');
+      const newLines = [...lines];
+      newLines.splice(idx, 1, ...pastedParts);
+      setEditorContent(newLines.join('\n'));
+
+      const lastIdx = idx + pastedParts.length - 1;
+      const lastPart = pastedParts[pastedParts.length - 1];
+      const lastInfo = getLineTypeAndOffset(lastPart);
+      setFocusedLineIdx(lastIdx);
+      setCaretPos({ lineIdx: lastIdx, charIdx: Math.max(0, lastPart.length - lastInfo.prefixLen) });
+      return;
+    }
 
     const oldInfo = getLineTypeAndOffset(oldLine);
     const newInfo = getLineTypeAndOffset(newLine);

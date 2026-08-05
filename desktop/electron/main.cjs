@@ -309,10 +309,14 @@ app.whenReady().then(() => {
   // Fix for YouTube Embed "Error 153" and "Error 152" on file:// protocol
   const { session } = require('electron');
   
-  // Güvenlik (Kural): Yalnızca gerçekten ihtiyaç duyulan medya/mikrofon izinleri
+  // Güvenlik (Kural): Yalnızca gerçekten ihtiyaç duyulan medya/mikrofon/pano izinleri
   // verilir. Gömülü webview/iframe içindeki siteler kamera, konum, bildirim vb.
   // hassas izinleri otomatik alamaz; diğer tüm istekler reddedilir.
-  const ALLOWED_PERMISSIONS = new Set(['media', 'microphone', 'audioCapture']);
+  // BUG DÜZELTMESİ: Çoklu satır seçip Ctrl+C ile kopyalama, navigator.clipboard.writeText()
+  // JS API'sini kullanıyor (tek satırlık native textarea kopyalamanın aksine) — bu API,
+  // pano izinleri buraya eklenmeden Electron tarafından sessizce reddediliyordu
+  // ("Write permission denied"), kullanıcı hiçbir hata görmeden kopyalama başarısız oluyordu.
+  const ALLOWED_PERMISSIONS = new Set(['media', 'microphone', 'audioCapture', 'clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     callback(ALLOWED_PERMISSIONS.has(permission));
   });

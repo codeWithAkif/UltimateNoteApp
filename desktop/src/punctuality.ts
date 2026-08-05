@@ -237,6 +237,48 @@ export const applyAutoStopUnfinishedToLine = (line: string, now: Date = new Date
 };
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// İSTEK: "İşi zamanında yaptım ama uygulamaya sonradan ekledim/işaretledim, sanki geç
+// kalmışım gibi puan kırıldı." Kök sebep: başlangıç/tamamlanma damgaları yalnızca UYGULAMADA
+// TIKLANAN ana göre yazılıyordu, işin GERÇEKTE ne zaman yapıldığına değil. Bu fonksiyon,
+// kullanıcının başlangıç/tamamlanma zamanlarını ELLE düzeltmesine izin verir — etiketleri
+// yeniden yazar ve dakiklik sonucunu (varsa) computeQuestOutcome ile DOĞRU zamanlara göre
+// yeniden hesaplar. newStartedAt=null → başlangıç etiketi tamamen kaldırılır ("başlangıcı
+// geri al" senaryosu da bunun özel bir hâlidir: newCompletedAt mevcut değerinde bırakılıp
+// sadece newStartedAt null verilir). newCompletedAt=null → görev henüz tamamlanmamış sayılır,
+// dakiklik hiç hesaplanmaz (outcome/outcomeScore null döner, EMA'ya dokunulmaz).
+export interface ManualTimeEditResult {
+  newLine: string;
+  outcome: PunctualityOutcome | null;
+  outcomeScore: number | null;
+}
+
+export const applyManualTimeEditToLine = (
+  line: string,
+  newStartedAt: string | null,
+  newCompletedAt: string | null
+): ManualTimeEditResult => {
+  let newLine = line
+    .replace(/\s*\[baslangic:[^\]]+\]/gi, '')
+    .replace(/\s*\[tamamlanma:[^\]]+\]/gi, '')
+    .replace(/\s*\[dakiklik:(?:fast|ontime|late|incomplete)\]/gi, '')
+    .trimEnd();
+
+  if (newStartedAt) newLine = `${newLine} [baslangic:${newStartedAt}]`;
+  if (newCompletedAt) newLine = `${newLine} [tamamlanma:${newCompletedAt}]`;
+
+  if (!newCompletedAt) {
+    return { newLine, outcome: null, outcomeScore: null };
+  }
+
+  // Deadline, orijinal satırdaki [due:]/[time:] etiketlerinden hesaplanır — bunlar bu
+  // düzenlemeyle değişmiyor, yalnızca başlangıç/tamamlanma damgaları değişiyor.
+  const deadline = getDeadlineFromLine(line);
+  const { outcome, outcomeScore } = computeQuestOutcome(newStartedAt, newCompletedAt, deadline);
+  newLine = `${newLine} [dakiklik:${outcome}]`;
+  return { newLine, outcome, outcomeScore };
+};
+
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Dakiklik rütbe merdiveni — devPaths.ts'teki RANK_LADDER (Er→General) ile AYNI desen: sadece
 // "tembel/deha" iki ucu değil, TIRMANILASI ara kademeler. 4 negatif + 1 nötr + 4 pozitif = 9
 // kademe. Kullanıcı bir üst rütbeye ne kadar kaldığını (bkz. getPunctualityRank'in
