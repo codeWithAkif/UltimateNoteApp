@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
 import NoteFactoryView from './NoteFactoryView';
 import type { Track } from './MusicPlayerView';
 import {
@@ -136,6 +136,8 @@ export default function DashboardView({
       .replace(/\[repeat:[a-zçığşü]+\]/gi, '')
       .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
       .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+      .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+      .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
       .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
       .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
       .replace(/\[başlama:[^\]]+\]/gi, '')

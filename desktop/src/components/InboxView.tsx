@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Inbox, Folder, FileText, CheckSquare, Clock, Trash2, 
@@ -155,6 +155,8 @@ export default function InboxView({
           .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
           .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
           .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+          .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+          .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
           .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
           .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
           .replace(/\[başlama:[^\]]+\]/gi, '')

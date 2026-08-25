@@ -174,6 +174,11 @@ export interface TimelineItem {
   isTodo: boolean;
   isCompleted: boolean;
   status?: 'todo' | 'in-progress' | 'done';
+  // DevOps-tarzı Kanban durumu — checkbox'ın 3 hâlinin (todo/in-progress/done) ötesinde
+  // "İncelemede"/"Bloklu" gibi ara aşamaları da tutar. Satırda [status:review]/[status:blocked]
+  // etiketi varsa oradan gelir, yoksa checkbox işaretinden türetilir (geriye dönük uyumlu —
+  // eski görevlerin hiçbiri bu etikete sahip değil, hepsi otomatik backlog/inprogress/done olur).
+  kanbanStatus?: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done';
   folder: string | null;
   note: string | null;
   tags: string[];
@@ -2766,7 +2771,11 @@ export default function App() {
   // handleCreateClient/handleCreateProject) kök klasörünü belirler:
   // {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md ve {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md.
   const [clientsFolder, setClientsFolder] = useState<string>(() => {
-    return localStorage.getItem('setting_clients_folder') || 'Musteriler';
+    // BUG DÜZELTMESİ: varsayılan değer ASCII "Musteriler" idi ama gerçek/kullanılan kök
+    // klasör Türkçe "Müşteriler" (bkz. Ben/Borusan/Prodigisol/Zorlu Enerji'nin hepsi orada) —
+    // "Yeni Müşteri" ile eklenen her müşteri bu yüzden AYRI, boş bir "Musteriler" kökünde
+    // beliriyordu (Proje Yönetimi'nde iki ayrı müşteri kökü görünmesine yol açtı).
+    return localStorage.getItem('setting_clients_folder') || 'Müşteriler';
   });
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -3422,6 +3431,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             const rawText = checklistMatch[4];
             const taskId = `task::${note.path}::${idx}`;
 
+            // DevOps Kanban durumu: [status:review]/[status:blocked] etiketi varsa öncelikli,
+            // yoksa checkbox işaretinden türetilir (bkz. TimelineItem.kanbanStatus yorumu).
+            const kanbanStatusTagMatch = rawText.match(/\[status:(review|blocked|backlog|inprogress)\]/i);
+            const kanbanStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done' = isChecked
+              ? 'done'
+              : kanbanStatusTagMatch
+                ? (kanbanStatusTagMatch[1].toLowerCase() as 'review' | 'blocked' | 'backlog' | 'inprogress')
+                : (isInProgress ? 'inprogress' : 'backlog');
+
             // Pop from stack until top of stack has strictly less indent
             while (parentStack.length > 0 && parentStack[parentStack.length - 1].indent >= indent) {
               parentStack.pop();
@@ -3495,6 +3513,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
               .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
               .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+              .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+              .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
               .replace(/\[başlama:[^\]]+\]/gi, '')
               .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
@@ -3522,6 +3542,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               isTodo: true,
               isCompleted: isChecked,
               status,
+              kanbanStatus,
               folder,
               note: noteName,
               tags: mergedTags,
@@ -4407,6 +4428,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const isInProgress = mark === '/';
         const newStatus = isChecked ? 'done' : (isInProgress ? 'in-progress' : 'todo');
         const rawText = checklistMatch[3];
+        const kanbanStatusTagMatch = rawText.match(/\[status:(review|blocked|backlog|inprogress)\]/i);
+        const newKanbanStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done' = isChecked
+          ? 'done'
+          : kanbanStatusTagMatch
+            ? (kanbanStatusTagMatch[1].toLowerCase() as 'review' | 'blocked' | 'backlog' | 'inprogress')
+            : (isInProgress ? 'inprogress' : 'backlog');
 
         // Match standard inbox timestamp format: [YYYY-MM-DD HH:mm]
         const timestampMatch = rawText.match(/\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\]/);
@@ -4433,9 +4460,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               item.timestamp === timestamp &&
               item.content.trim() === cleanContent
             ) {
-              if (item.isCompleted !== isChecked || item.status !== newStatus) {
+              if (item.isCompleted !== isChecked || item.status !== newStatus || item.kanbanStatus !== newKanbanStatus) {
                 changed = true;
-                return { ...item, isCompleted: isChecked, status: newStatus };
+                return { ...item, isCompleted: isChecked, status: newStatus, kanbanStatus: newKanbanStatus };
               }
             }
             return item;
@@ -5865,15 +5892,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     return `${yyyy}-${mm}-${dd}`;
   };
 
-  // 7. Toggle Todo Completion directly
-  const handleChangeTaskStatus = async (id: string, newStatus: 'todo' | 'in-progress' | 'done') => {
+  // 7. Toggle Todo Completion directly (Kanban tahtasından sürükle-bırak ile çağrılır)
+  // DevOps durumu: 'review'/'blocked' checkbox'ta karşılığı olmayan ara aşamalardır — bunlar
+  // için satıra [status:review]/[status:blocked] etiketi yazılır ve checkbox '/' (devam
+  // ediyor) olarak işaretlenir; 'backlog'/'inprogress'/'done' geldiğinde ise etiket temizlenip
+  // yalnızca checkbox işareti güncellenir (eski davranışla tam uyumlu).
+  const handleChangeTaskStatus = async (id: string, newStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done') => {
     let targetItem: TimelineItem | null = null;
+    const legacyStatus: 'todo' | 'in-progress' | 'done' = newStatus === 'done' ? 'done' : (newStatus === 'backlog' ? 'todo' : 'in-progress');
     let nextStateCompleted = newStatus === 'done';
 
     const updatedTimeline = timelineItems.map(item => {
       if (item.id === id) {
         targetItem = item;
-        return { ...item, isCompleted: nextStateCompleted, status: newStatus };
+        return { ...item, isCompleted: nextStateCompleted, status: legacyStatus, kanbanStatus: newStatus };
       }
       return item;
     });
@@ -5931,8 +5963,15 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             const line = lines[lineIdx];
             const match = line.match(/^(\s*[*\-]\s+\[)([ xX\/])(\]\s*.*)$/);
             if (match) {
-              const statusChar = newStatus === 'done' ? 'x' : (newStatus === 'in-progress' ? '/' : ' ');
-              lines[lineIdx] = `${match[1]}${statusChar}${match[3]}`;
+              // 'review'/'blocked' checkbox'ta yok — bunlarda kutu '/' (devam ediyor) kalır,
+              // gerçek durum [status:] etiketiyle taşınır. Diğer üç durumda etiket varsa
+              // (örn. daha önce bloklu işaretlenmiş bir görev şimdi bitiriliyorsa) temizlenir.
+              const statusChar = newStatus === 'done' ? 'x' : (newStatus === 'backlog' ? ' ' : '/');
+              let restOfLine = match[3].replace(/\s*\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '');
+              if (newStatus === 'review' || newStatus === 'blocked') {
+                restOfLine = `${restOfLine} [status:${newStatus}]`;
+              }
+              lines[lineIdx] = `${match[1]}${statusChar}${restOfLine}`;
 
               if (newStatus === 'done') {
                 const questReward = applyCompletionToLine(lines[lineIdx]);
@@ -9041,10 +9080,10 @@ grant execute on function get_db_size() to anon;`}
                       value={clientsFolder}
                       onChange={(e) => {
                         const val = e.target.value.trim().replace(/\/|\\/g, '');
-                        setClientsFolder(val || 'Musteriler');
-                        localStorage.setItem('setting_clients_folder', val || 'Musteriler');
+                        setClientsFolder(val || 'Müşteriler');
+                        localStorage.setItem('setting_clients_folder', val || 'Müşteriler');
                       }}
-                      placeholder="Musteriler"
+                      placeholder="Müşteriler"
                       style={{
                         width: '100%',
                         padding: '6px 10px',
@@ -9058,8 +9097,8 @@ grant execute on function get_db_size() to anon;`}
                       }}
                     />
                     <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                      Yeni bir müşteri oluşturduğunuzda kurulacak iskelet: <code>{clientsFolder || 'Musteriler'}/MüşteriAdı/MüşteriAdı.md</code> (#müşteri etiketli).
-                      Bir proje eklediğinizde: <code>{clientsFolder || 'Musteriler'}/MüşteriAdı/Projeler/ProjeAdı.md</code> (#proje + müşteri etiketli).
+                      Yeni bir müşteri oluşturduğunuzda kurulacak iskelet: <code>{clientsFolder || 'Müşteriler'}/MüşteriAdı/MüşteriAdı.md</code> (#müşteri etiketli).
+                      Bir proje eklediğinizde: <code>{clientsFolder || 'Müşteriler'}/MüşteriAdı/Projeler/ProjeAdı.md</code> (#proje + müşteri etiketli).
                     </span>
                   </div>
 

@@ -13,7 +13,7 @@ interface ProjectsViewProps {
   timelineItems: TimelineItem[];
   notes: NoteItem[];
   scannedContents: Record<string, string>;
-  onChangeTaskStatus: (id: string, newStatus: 'todo' | 'in-progress' | 'done') => void;
+  onChangeTaskStatus: (id: string, newStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done') => void;
   onOpenNote?: (item: TimelineItem) => void;
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Müşteriye renk/icon atarken müşteri notunun içeriğine [renk:]/[icon:] etiketi yazmak
@@ -24,7 +24,7 @@ interface ProjectsViewProps {
   // İSTEK: Yeni müşteri/proje oluşturma iskelet klasör yapısı Ayarlar > Clients'ta
   // belirlenen kök klasörün altına kurulur: {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md
   // (#müşteri etiketli) ve {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md (#proje +
-  // müşteri-slug etiketli). Ayarlar'daki varsayılan "Musteriler" ile eşleşir.
+  // müşteri-slug etiketli). Ayarlar'daki varsayılan "Müşteriler" ile eşleşir.
   clientsFolder?: string;
 }
 
@@ -76,7 +76,7 @@ const upsertClientTag = (content: string, tagRegex: RegExp, newTag: string): str
   return `${stripped}\n${newTag}`;
 };
 
-export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Musteriler' }: ProjectsViewProps) {
+export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler' }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
@@ -116,14 +116,32 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const getProjectProgress = (noteName: string) => {
     const cleanName = noteName.replace('.md', '');
     const projectTasks = timelineItems.filter(t => t.isTodo && isProjectTask(t, cleanName));
-    if (projectTasks.length === 0) return { total: 0, done: 0, percent: 0 };
+    if (projectTasks.length === 0) return { total: 0, done: 0, percent: 0, blocked: 0 };
 
     const doneTasks = projectTasks.filter(t => t.status === 'done' || (!t.status && t.isCompleted));
+    const blockedTasks = projectTasks.filter(t => t.kanbanStatus === 'blocked');
     return {
       total: projectTasks.length,
       done: doneTasks.length,
-      percent: Math.round((doneTasks.length / projectTasks.length) * 100)
+      percent: Math.round((doneTasks.length / projectTasks.length) * 100),
+      blocked: blockedTasks.length
     };
+  };
+
+  // İSTEK: proje kartında "Son Hareketler" — o projenin klasöründeki Changelog.md dosyasının
+  // en tepesindeki birkaç "### " başlıklı girişi küçük bir özet olarak gösterir. Dosya yoksa
+  // hiçbir şey render edilmez (eski/küçük projelerde Changelog.md henüz kurulmamış olabilir).
+  const getProjectChangelogPreview = (projectPath: string): string[] => {
+    const folderPath = projectPath.replace(/\.md$/i, '');
+    const changelogPath = `${folderPath}/Changelog.md`;
+    const changelogNote = notes.find(n => n.path.toLowerCase() === changelogPath.toLowerCase());
+    if (!changelogNote) return [];
+    const content = scannedContents[changelogNote.path] || '';
+    const entries = content.split(/\n---\n/).map(block => {
+      const headerMatch = block.match(/###\s*.*?([0-9]{1,2}\s+\S+\s+[0-9]{4}[^\n\[]*)/);
+      return headerMatch ? headerMatch[1].trim() : null;
+    }).filter((x): x is string => !!x);
+    return entries.slice(0, 3);
   };
 
   const getClientProjects = (clientName: string, clientPath: string) => {
@@ -324,21 +342,38 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px', marginTop: '24px' }}>
                 {(selectedProject ? projectNotes.filter(n => n.name.replace('.md', '').toLowerCase() === selectedProject.toLowerCase()) : projectNotes).map(note => {
                   const stats = getProjectProgress(note.name);
+                  const changelogPreview = getProjectChangelogPreview(note.path);
                   return (
                     <div key={note.path} style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-                      <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Briefcase size={18} />
-                        {note.name.replace('.md', '')}
-                      </h3>
-                      
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <Briefcase size={18} />
+                          {note.name.replace('.md', '')}
+                        </h3>
+                        {stats.blocked > 0 && (
+                          <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px' }}>
+                            🔴 Bloklu: {stats.blocked}
+                          </span>
+                        )}
+                      </div>
+
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
                         <span>İlerleme</span>
                         <span>{stats.percent}% ({stats.done}/{stats.total})</span>
                       </div>
-                      
-                      <div style={{ height: '8px', background: 'var(--bg-hover)', borderRadius: '4px', overflow: 'hidden', marginBottom: '16px' }}>
+
+                      <div style={{ height: '8px', background: 'var(--bg-hover)', borderRadius: '4px', overflow: 'hidden', marginBottom: changelogPreview.length > 0 ? '16px' : '0' }}>
                         <div style={{ height: '100%', background: stats.percent === 100 ? '#4caf50' : 'var(--accent-color)', width: `${stats.percent}%`, transition: 'width 0.3s ease' }} />
                       </div>
+
+                      {changelogPreview.length > 0 && (
+                        <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+                          <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', marginBottom: '6px' }}>Son Hareketler</div>
+                          <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {changelogPreview.map((entry, i) => <li key={i}>{entry}</li>)}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

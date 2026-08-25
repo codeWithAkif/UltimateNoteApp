@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+﻿import React, { useMemo } from 'react';
 import {
   Clock, CheckSquare, FileText, BarChart2, Calendar, TrendingUp, BookOpen, ChevronRight, AlertTriangle, Sun, Archive
 } from 'lucide-react';
@@ -19,6 +19,8 @@ function cleanTaskText(raw: string): string {
     .replace(/\[repeat:[a-zçığşü]+\]/gi, '')
     .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
     .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+    .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+    .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
     .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
     .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
     .replace(/\[başlama:[^\]]+\]/gi, '')

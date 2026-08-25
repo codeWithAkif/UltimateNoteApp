@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { CheckSquare, Calendar, Star, RefreshCw, EyeOff, Folder, FileText, Trash2, ChevronDown, ChevronUp, Clock, AlertCircle, Play, Compass, Search, ArrowUpDown, X, Plus } from 'lucide-react';
 import {
   applyCompletionToLine, applyQuestStartToLine, parseQuestTags, stripQuestTags,
@@ -382,6 +382,8 @@ export default function TasksView({
                 .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
                 .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
                 .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+                .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+                .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
                 .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late)\]/gi, '')
                 .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
                 .replace(/\[başlama:[^\]]+\]/gi, '')
@@ -513,6 +515,8 @@ export default function TasksView({
         .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
         .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
         .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+        .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+        .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
         .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
         .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
         .replace(/\[başlama:[^\]]+\]/gi, '')
@@ -704,6 +708,8 @@ export default function TasksView({
       .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
       .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
       .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+      .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+      .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
       .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
       .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
       .replace(/\[başlama:[^\]]+\]/gi, '')

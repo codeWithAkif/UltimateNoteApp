@@ -1,4 +1,4 @@
-// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+﻿// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // İSTEK: "Efor" ekranı — şirketin zaman takip uygulamasına (Proje x Görev x Gün ızgarası,
 // hh:mm giriş kutuları + Enter'da açılan açıklama modalı) veriyi PRATİK şekilde elle
 // girebilmek için süre ve açıklamayı AYRI AYRI kopyalayabilme. Kullanıcı bilerek o ızgara
@@ -76,6 +76,8 @@ const cleanTaskText = (rawText: string): string => rawText
   .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
   .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
   .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+  .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+  .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
   .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
   .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
   .replace(/\[başlama:[^\]]+\]/gi, '')
