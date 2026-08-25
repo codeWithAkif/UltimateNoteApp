@@ -1340,6 +1340,10 @@ export default function CalendarView({
               // görünüyordu ("can sıkıcı"). Etiket adı ne olursa olsun, ISO zaman damgası
               // BİÇİMİNDEKİ herhangi bir köşeli parantez etiketini genel olarak temizler.
               .replace(/\[[^\]:]+:\d{4}-\d{2}-\d{2}T[\d:.]+Z?\]/gi, '')
+              // Çok günlü işlerde bir işe ikinci gün "devam edildiğinde" (bkz.
+              // handleContinueTaskSession) eski gün/saat burada geçmiş kaydı olarak tutulur —
+              // görev başlığında ham etiket olarak görünmesin.
+              .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 
@@ -1943,7 +1947,64 @@ export default function CalendarView({
   };
 
   // Click to create scheduled task
+  // İSTEK (kullanıcı geri bildirimi: "bir taska çalışıyorum bitmiyor ertesi gün devam
+  // ediyorum, aynı isimle tekrar eklediğimde iki ayrı task oluyor"): Aynı isim + aynı proje
+  // ile HÂLÂ AÇIK (işaretlenmemiş) bir görev varsa, yeni bir satır açmak yerine
+  // handleContinueTaskSession çağrılır — eski gün/saat [session:] etiketi olarak satırın
+  // sonuna eklenir (geçmiş kaybolmaz), [due:]/[plannedtime:] YENİ güne taşınır. Böylece
+  // Kanban'da hep TEK kart kalır, dakiklik hesabı son (gerçek) tamamlanma anına göre yapılır.
+  const findContinuableTask = (content: string, projectSlug?: string): WorkspaceTask | undefined => {
+    const trimmed = content.trim().toLowerCase();
+    return tasks.find(t =>
+      !t.isChecked &&
+      !t.isExternal &&
+      !t.isSubtask &&
+      t.content.trim().toLowerCase() === trimmed &&
+      (projectSlug ? t.ownTags.includes(projectSlug.toLowerCase()) : true)
+    );
+  };
+
+  const handleContinueTaskSession = async (task: WorkspaceTask, dateStr: string, timeSlot: string | null) => {
+    // Aynı güne (aynı [due:]) tekrar planlanıyorsa bu zaten mevcut olan planlama akışı —
+    // yeni bir oturum değil, saatin güncellenmesi.
+    if (task.dueDate === dateStr) {
+      await handleScheduleTask(task.id, dateStr, timeSlot);
+      return;
+    }
+    try {
+      const fileContent = await readNoteContent(task.filePath);
+      const lines = fileContent.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+      let newLine = lines[task.lineIdx];
+      if (task.dueDate) {
+        const oldSession = task.timeSlot
+          ? `[session:${task.dueDate}T${task.timeSlot}]`
+          : `[session:${task.dueDate}]`;
+        newLine = `${newLine} ${oldSession}`;
+      }
+      newLine = newLine
+        .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+        .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      newLine += ` [due:${dateStr}]`;
+      if (timeSlot) newLine += ` [plannedtime:${timeSlot}]`;
+
+      lines[task.lineIdx] = newLine;
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error continuing task session in Calendar:', err);
+    }
+  };
+
   const handleCreateQuickTask = async (content: string, dateStr: string, timeSlot: string | null, projectSlug?: string) => {
+    const continuable = findContinuableTask(content, projectSlug);
+    if (continuable) {
+      await handleContinueTaskSession(continuable, dateStr, timeSlot);
+      return;
+    }
     const folder = 'Günlükler';
     const noteName = dateStr;
     const filename = `${noteName}.md`;

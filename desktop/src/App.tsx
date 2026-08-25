@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+﻿import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -3515,6 +3515,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
               .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
+              .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\[başlama:[^\]]+\]/gi, '')
               .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
