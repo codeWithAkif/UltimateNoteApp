@@ -245,6 +245,12 @@ export interface WorkspaceTask {
   subtasks?: WorkspaceSubTask[];
   isExternal?: boolean;
   externalSource?: 'google' | 'outlook';
+  // Bir işe birden fazla günde çalışılmışsa (bkz. handleContinueTaskSession/[session:]
+  // etiketi), ana satır YALNIZCA en güncel günü [due:]/[plannedtime:] olarak taşır — geçmiş
+  // günler kaybolmasın diye her biri BURADA salt-okunur, ayrı bir takvim bloğu olarak da
+  // render edilir (aynı satırdan türer, sürükleme/resize/çift-tık-düzenleme YOK — hepsi ana
+  // satırı değiştirir, geçmiş günün kaydını bozardı).
+  isSessionOccurrence?: boolean;
   questStartedAt: string | null;
   questCompletedAt: string | null;
   questOutcome: 'fast' | 'ontime' | 'late' | 'incomplete' | null;
@@ -1379,6 +1385,45 @@ export default function CalendarView({
               questCompletedAt: questTags.completedAt,
               questOutcome: questTags.outcome
             });
+
+            // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "buralara girdiğim tasklar vardı
+            // şimdi yok, efora bakarak giriyorum"): handleContinueTaskSession bir işe ikinci
+            // günde devam edildiğinde eski günü [session:] etiketi olarak SAKLIYOR ama bu
+            // etiket takvimde HİÇBİR YERDE render edilmiyordu — kullanıcı geçmiş güne bakınca
+            // orada hiç iz kalmıyordu (efor/mesai takibi için kritikti). Her [session:] etiketi
+            // için, kendi tarihinde salt-okunur ayrı bir blok üretilir (isSessionOccurrence).
+            const sessionTagRegex = /\[session:(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}-\d{2}:\d{2}))?\]/gi;
+            let sessionMatch;
+            let sessionIdx = 0;
+            while ((sessionMatch = sessionTagRegex.exec(rawText)) !== null) {
+              sessionIdx++;
+              noteTasks.push({
+                id: `${taskId}::session::${sessionIdx}`,
+                content: cleanContent,
+                isChecked,
+                lineIdx: idx,
+                filePath: note.path,
+                noteName: note.name,
+                folderName,
+                priority,
+                dueDate: sessionMatch[1],
+                timeSlot: sessionMatch[2] || '',
+                repeat: '',
+                score: 0,
+                tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
+                ownTags: taskTags,
+                isSubtask,
+                parentTaskId,
+                subtasks: [],
+                isSessionOccurrence: true,
+                // Bu günün GERÇEK başlangıç/bitişi ayrı tutulmuyor (yalnızca tek [started:]/
+                // [completed:] ana satırda var, en son güne ait) — yanlış güne "iz düşüm"
+                // gölgesi çizmemek için burada bilerek null bırakılır.
+                questStartedAt: null,
+                questCompletedAt: null,
+                questOutcome: null
+              });
+            }
           } else {
             if (line.trim().length > 0 && !line.match(/^\s*[*\-]\s+/)) {
               parentStack.length = 0;
@@ -3615,7 +3660,7 @@ export default function CalendarView({
                                   </div>
                                 )}
                                 <div
-                                  draggable={!task.isExternal && !resizingEvent}
+                                  draggable={!task.isExternal && !task.isSessionOccurrence && !resizingEvent}
                                   onDragStart={(e) => {
                                     e.stopPropagation();
                                     e.dataTransfer.setData('text/plain', JSON.stringify({ taskId: task.id }));
@@ -3640,7 +3685,7 @@ export default function CalendarView({
                                     // tıklayınca düzenlenebilir olsun. Aynı "Yeni Görev Ekle" modalı
                                     // gerçek DÜZENLEME moduyla (isEditMode) açılır: metin, tarih/saat
                                     // VE proje etiketi değiştirilebilir (bkz. handleEditTask).
-                                    if (task.isExternal) return;
+                                    if (task.isExternal || task.isSessionOccurrence) return;
                                     const [depStart, depEnd] = (task.timeSlot || '10:00-11:00').split('-');
                                     const currentProjectSlug = projectNames
                                       .map(n => n.toLowerCase().replace(/\s+/g, '-'))
@@ -3659,6 +3704,7 @@ export default function CalendarView({
                                     });
                                   }}
                                   onMouseDown={(e) => e.stopPropagation()}
+                                  title={task.isSessionOccurrence ? 'Bu işe bu gün de çalışıldı — güncel planı görmek için görevin taşındığı güne bak' : undefined}
                                   style={{
                                     position: 'absolute',
                                     top: `${top}px`,
@@ -3673,7 +3719,8 @@ export default function CalendarView({
                                     // yok ediyordu. Aktif sürükleme/resize sırasında geçişi kapatıyoruz
                                     // ki her 15dk'lık snap noktası anında, "tık" diye hissedilsin.
                                     transition: isResizingThis ? 'none' : undefined,
-                                    cursor: task.isExternal ? 'default' : 'grab',
+                                    cursor: (task.isExternal || task.isSessionOccurrence) ? 'default' : 'grab',
+                                    opacity: task.isSessionOccurrence ? 0.6 : 1,
                                     padding: isSmallCard ? '2px 6px' : '6px 8px',
                                     display: 'flex',
                                     alignItems: 'center',
@@ -3878,7 +3925,7 @@ export default function CalendarView({
                                             {parentTask.content}
                                           </span>
                                         )}
-                                        <span>{task.content}</span>
+                                        <span>{task.isSessionOccurrence && '↩ '}{task.content}</span>
                                       </p>
                                     ) : (
                                       <p className="event-title-lbl" style={{ 
@@ -3894,7 +3941,7 @@ export default function CalendarView({
                                             {parentTask.content} › 
                                           </span>
                                         )}
-                                        <span>{task.content}</span>
+                                        <span>{task.isSessionOccurrence && '↩ '}{task.content}</span>
                                       </p>
                                     )}
                                     
@@ -3976,7 +4023,7 @@ export default function CalendarView({
                                   )}
 
                                   {/* Event Resizing bottom handle */}
-                                  {!task.isChecked && (
+                                  {!task.isChecked && !task.isSessionOccurrence && (
                                     <div
                                       className="event-resize-handle"
                                       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
