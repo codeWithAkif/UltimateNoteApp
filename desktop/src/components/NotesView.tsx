@@ -5544,7 +5544,14 @@ export default function NotesView({
       onQuestReward?.(questRewardToApply);
     }
     if (changelogEntryToApply) {
-      await appendProgressNotesToProjectChangelog(changelogEntryToApply.projectSlug, changelogEntryToApply.taskContent, changelogEntryToApply.notes);
+      // BUG DÜZELTMESİ (CI derleme hatası: "Property 'notes' does not exist on type 'never'"):
+      // TypeScript, setEditorContent'in İÇİNDEKİ kapanışta atanan bu değişkeni dışarıdaki
+      // if kontrolü için "asla null olmayabilir" şeklinde akış-analiziyle daraltamıyor (atama
+      // iç içe bir closure'da olduğu için) — `if` bloğunun içinde tipi yanlışlıkla `never`e
+      // daralıyor. Yerel `tsc --noEmit` bunu (muhtemelen artımlı önbellek yüzünden) yakalamadı
+      // ama temiz CI derlemesi yakaladı. Açık tip belirterek (`as`) daraltmayı düzeltiyoruz.
+      const entry = changelogEntryToApply as { projectSlug: string; taskContent: string; notes: string[] };
+      await appendProgressNotesToProjectChangelog(entry.projectSlug, entry.taskContent, entry.notes);
     }
   };
 
