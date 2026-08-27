@@ -1093,7 +1093,7 @@ export default function CalendarView({
     }
     if (activeSchedulingModal.projectTag) {
       const owningClient = clientNames.find(c =>
-        (clientProjectSlugs[c] || []).includes(activeSchedulingModal.projectTag.toLowerCase().replace(/\s+/g, '-'))
+        (clientProjectSlugs[c] || []).includes(activeSchedulingModal.projectTag.toLocaleLowerCase('tr').replace(/\s+/g, '-'))
       );
       setModalClientFilter(owningClient || '');
     } else {
@@ -1774,7 +1774,7 @@ export default function CalendarView({
         .filter(tag => !/^\[due:/i.test(tag) && !/^\[(?:plannedtime|time|window):/i.test(tag));
 
       const oldProjectSlug = projectNames
-        .map(n => n.toLowerCase().replace(/\s+/g, '-'))
+        .map(n => n.toLocaleLowerCase('tr').replace(/\s+/g, '-'))
         .find(slug => task.ownTags.includes(slug));
 
       let editedText = newText.trim();
@@ -2634,8 +2634,8 @@ export default function CalendarView({
     const endMin = (roundedMinutes + 60) % 60;
     const formatTimeStr = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     setCalendarContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x: Math.min(e.clientX, window.innerWidth - 200),
+      y: Math.min(e.clientY, window.innerHeight - 220),
       dateStr: format(dayDate, 'yyyy-MM-dd'),
       startTime: formatTimeStr(startHour, startMin),
       endTime: formatTimeStr(endHour, endMin),
@@ -2651,7 +2651,7 @@ export default function CalendarView({
   // "hangi görev" sorusuna cevap veriliyor.
   const handlePickBookForReading = async (bookTitle: string) => {
     if (!calendarContextMenu) return;
-    const bookSlug = bookTitle.toLowerCase().replace(/\s+/g, '-');
+    const bookSlug = bookTitle.toLocaleLowerCase('tr').replace(/\s+/g, '-');
     const candidates = tasks
       .filter(t => !t.isChecked && !t.isSessionOccurrence && !t.isPlanOccurrence && t.ownTags.includes(bookSlug) && /mütalaa/i.test(t.content))
       .sort((a, b) => a.noteName.localeCompare(b.noteName, 'tr', { numeric: true }));
@@ -3959,10 +3959,10 @@ export default function CalendarView({
                                     if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence) return;
                                     const [depStart, depEnd] = (task.timeSlot || '10:00-11:00').split('-');
                                     const currentProjectSlug = projectNames
-                                      .map(n => n.toLowerCase().replace(/\s+/g, '-'))
+                                      .map(n => n.toLocaleLowerCase('tr').replace(/\s+/g, '-'))
                                       .find(slug => task.ownTags.includes(slug));
                                     const currentProjectName = projectNames.find(
-                                      n => n.toLowerCase().replace(/\s+/g, '-') === currentProjectSlug
+                                      n => n.toLocaleLowerCase('tr').replace(/\s+/g, '-') === currentProjectSlug
                                     );
                                     setActiveSchedulingModal({
                                       taskId: task.id,
@@ -5159,7 +5159,7 @@ export default function CalendarView({
         </div>
       )}
 
-      {calendarContextMenu && (
+      {calendarContextMenu && createPortal(
         <div
           onClick={() => setCalendarContextMenu(null)}
           style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2500 }}
@@ -5222,7 +5222,8 @@ export default function CalendarView({
               </>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {activeSchedulingModal && (
@@ -5312,7 +5313,7 @@ export default function CalendarView({
 
             {(!activeSchedulingModal.taskId || activeSchedulingModal.isEditMode) && projectNames.length > 0 && (() => {
               const visibleProjectNames = modalClientFilter
-                ? projectNames.filter(name => (clientProjectSlugs[modalClientFilter] || []).includes(name.toLowerCase().replace(/\s+/g, '-')))
+                ? projectNames.filter(name => (clientProjectSlugs[modalClientFilter] || []).includes(name.toLocaleLowerCase('tr').replace(/\s+/g, '-')))
                 : projectNames;
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -5432,7 +5433,7 @@ export default function CalendarView({
                 onClick={async () => {
                   const { taskId, taskName, dateStr, startTime, endTime, projectTag, isEditMode } = activeSchedulingModal;
                   const timeSlot = `${startTime}-${endTime}`;
-                  const projectSlug = projectTag ? projectTag.toLowerCase().replace(/\s+/g, '-') : undefined;
+                  const projectSlug = projectTag ? projectTag.toLocaleLowerCase('tr').replace(/\s+/g, '-') : undefined;
                   if (taskId) {
                     if (isEditMode) {
                       await handleEditTask(taskId, taskName, dateStr, timeSlot, projectSlug);

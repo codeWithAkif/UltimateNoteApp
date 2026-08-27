@@ -97,7 +97,7 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
 
   const getFihristNote = (bookTitle: string) => notes.find(n => n.path === `${libraryFolder}/${bookTitle}/Fihrist.md`);
 
-  const slugify = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-ğüşıöç]/gi, '');
+  const slugify = (s: string) => s.trim().toLocaleLowerCase('tr').replace(/\s+/g, '-').replace(/[^a-z0-9\-ğüşıöç]/gi, '');
 
   const handleCreateBook = async () => {
     if (!onSaveNote || !formTitle.trim()) return;

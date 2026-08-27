@@ -129,7 +129,7 @@ export default function EforView({ notes, fileContents, projectNames }: EforView
   const projectSlugToName = useMemo(() => {
     const map: Record<string, string> = {};
     projectNames.forEach(name => {
-      map[name.toLowerCase().replace(/\s+/g, '-')] = name;
+      map[name.toLocaleLowerCase('tr').replace(/\s+/g, '-')] = name;
     });
     return map;
   }, [projectNames]);

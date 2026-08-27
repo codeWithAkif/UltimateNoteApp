@@ -5563,7 +5563,7 @@ export default function NotesView({
   const appendProgressNotesToProjectChangelog = async (projectSlug: string, taskContent: string, progressNotes: string[]) => {
     try {
       const projectNote = notes.find(n => {
-        const nameSlug = n.name.replace(/\.md$/i, '').toLowerCase().replace(/\s+/g, '-');
+        const nameSlug = n.name.replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/\s+/g, '-');
         if (nameSlug !== projectSlug) return false;
         const c = fileContents[n.path] || '';
         return /#proje\b/i.test(c) || /#project\b/i.test(c);

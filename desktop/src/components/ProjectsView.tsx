@@ -106,7 +106,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // CalendarView.tsx'teki "Yeni Görev Ekle" modalındaki PROJE seçici). İkisi de aynı ilerleme
   // yüzdesine/Kanban listesine sayılır — TEK gerçek kopya (günlük nottaki satır), iki görünüm.
   const isProjectTask = (t: TimelineItem, cleanProjectName: string) => {
-    const slug = cleanProjectName.toLowerCase().replace(/\s+/g, '-');
+    const slug = cleanProjectName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
     // BUG DÜZELTMESİ: `tags` (not-geneli birleştirilmiş) yerine `ownTags` (SADECE bu
     // görevin kendi satırı) kullanılır — aksi halde aynı günlük nottaki BAŞKA bir görevin
     // proje etiketi, alakasız görevleri de o projeye sayarmış gibi gösterirdi.
@@ -216,7 +216,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     if (!onSaveNote) return;
     const cleanName = name.trim();
     if (!cleanName) return;
-    const clientSlug = clientName.toLowerCase().replace(/\s+/g, '-');
+    const clientSlug = clientName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
     const path = `${clientsFolder}/${clientName}/Projeler/${cleanName}.md`;
     if (notes.some(n => n.path.toLowerCase() === path.toLowerCase())) {
       alert(`"${cleanName}" adında bir proje zaten var.`);

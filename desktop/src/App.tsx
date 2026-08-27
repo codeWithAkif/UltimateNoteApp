@@ -733,7 +733,7 @@ export default function App() {
     clientNotes.forEach(client => {
       const clientContent = fileContents[client.path] || '';
       const clientCleanName = client.name.replace('.md', '');
-      const clientSlug = clientCleanName.toLowerCase().replace(/\s+/g, '-');
+      const clientSlug = clientCleanName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
       // BUG DÜZELTMESİ: [renk:] değeri "#" OLMADAN saklanır (bkz. ProjectsView.tsx
       // CLIENT_COLOR_REGEX yorumu) — aksi halde genel etiket tarayıcısı "#22c55e" gibi bir
       // değeri gerçek bir hashtag sanıyordu. "#" burada, kullanım anında geri eklenir.
@@ -748,7 +748,7 @@ export default function App() {
 
       projectNotesLocal.forEach(proj => {
         const projCleanName = proj.name.replace('.md', '');
-        const projSlug = projCleanName.toLowerCase().replace(/\s+/g, '-');
+        const projSlug = projCleanName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
         const projContent = (fileContents[proj.path] || '').toLowerCase();
         const linked = projContent.includes(`#${clientSlug}`) ||
           clientContent.toLowerCase().includes(`[[${projCleanName.toLowerCase()}]]`) ||
@@ -783,12 +783,12 @@ export default function App() {
     clientNotes.forEach(client => {
       const clientContent = fileContents[client.path] || '';
       const clientCleanName = client.name.replace('.md', '');
-      const clientSlug = clientCleanName.toLowerCase().replace(/\s+/g, '-');
+      const clientSlug = clientCleanName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
       const linkedSlugs: string[] = [];
 
       projectNotesLocal.forEach(proj => {
         const projCleanName = proj.name.replace('.md', '');
-        const projSlug = projCleanName.toLowerCase().replace(/\s+/g, '-');
+        const projSlug = projCleanName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
         const projContent = (fileContents[proj.path] || '').toLowerCase();
         const linked = projContent.includes(`#${clientSlug}`) ||
           clientContent.toLowerCase().includes(`[[${projCleanName.toLowerCase()}]]`) ||
