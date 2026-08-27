@@ -251,6 +251,19 @@ export interface WorkspaceTask {
   // render edilir (aynı satırdan türer, sürükleme/resize/çift-tık-düzenleme YOK — hepsi ana
   // satırı değiştirir, geçmiş günün kaydını bozardı).
   isSessionOccurrence?: boolean;
+  // Bu satırda en az bir [session:] geçmişi (bkz. isSessionOccurrence yorumu) varsa true —
+  // "hiç başlanmadan planlanan pencere geçmiş görevi otomatik geri çek" mekanizması (bkz.
+  // autoRevertedTaskIdsRef) bunu kullanıp session geçmişi olan görevleri MUAF tutar: bu
+  // görevler kullanıcının aktif takip ettiği çok günlü işlerdir, "unutulmuş" tek seferlik bir
+  // görev değildir — sessizce planından koparılıp kaybolmamalı.
+  hasSessionHistory?: boolean;
+  // İSTEK ("önümdeki 3-4 sessionu planlama"): [plan:TARİH THH:MM-HH:MM] etiketinden türer —
+  // isSessionOccurrence'ın (geçmiş, salt-okunur) TERSİ: henüz çalışılmamış, GELECEKTEKİ ek bir
+  // oturum planıdır. Normal bir kart gibi tam etkileşimlidir (sürüklenebilir/boyutlandırılabilir)
+  // ama satır metnini değiştirmek anlamsız olduğundan çift-tık düzenleme kapalıdır — bkz.
+  // handleScheduleTask/handleUnscheduleTask'taki isPlanOccurrence dallanması (kendi [plan:]
+  // etiketini bulup değiştirir/siler, ana [due:]/[plannedtime:]'a dokunmaz).
+  isPlanOccurrence?: boolean;
   questStartedAt: string | null;
   questCompletedAt: string | null;
   questOutcome: 'fast' | 'ontime' | 'late' | 'incomplete' | null;
@@ -1063,6 +1076,12 @@ export default function CalendarView({
   // state şeklini (7 farklı yerde oluşturuluyor) değiştirmeden, modal her açıldığında/mevcut
   // projeye göre senkronize edilen AYRI bir yerel state olarak tutulur.
   const [modalClientFilter, setModalClientFilter] = useState('');
+  // İSTEK ("önümdeki 3-4 sessionu planlama"): activeSchedulingModal'ın paylaşılan tipini
+  // (7 farklı yerde oluşturuluyor, bkz. yukarıdaki yorum) değiştirmemek için AYRI bir yerel
+  // state — modalClientFilter ile aynı desen. İşaretliyken, aynı isim+projeyle açık bir görev
+  // bulunursa mevcut plan TAŞINMAZ, ek bir [plan:] günü olarak eklenir (bkz.
+  // handleAddPlanOccurrence).
+  const [keepExistingPlan, setKeepExistingPlan] = useState(false);
   useEffect(() => {
     if (!activeSchedulingModal) {
       setModalClientFilter('');
@@ -1353,10 +1372,14 @@ export default function CalendarView({
               // handleContinueTaskSession) eski gün/saat burada geçmiş kaydı olarak tutulur —
               // görev başlığında ham etiket olarak görünmesin.
               .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
+              // Gelecekte planlanan ek oturumlar (bkz. handleAddPlanOccurrence) — kendi
+              // kartlarında ayrıca render edilir, başlıkta ham etiket görünmesin.
+              .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 
             const questTags = parseQuestTags(rawText);
+            const hasSessionHistory = /\[session:\d{4}-\d{2}-\d{2}/i.test(rawText);
 
             noteTasks.push({
               id: taskId,
@@ -1370,6 +1393,7 @@ export default function CalendarView({
               dueDate,
               timeSlot,
               repeat,
+              hasSessionHistory,
               score,
               tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
               // BUG DÜZELTMESİ (kullanıcı geri bildirimi: müşteri filtresi ilgisiz görevleri
@@ -1422,6 +1446,41 @@ export default function CalendarView({
                 // Bu günün GERÇEK başlangıç/bitişi ayrı tutulmuyor (yalnızca tek [started:]/
                 // [completed:] ana satırda var, en son güne ait) — yanlış güne "iz düşüm"
                 // gölgesi çizmemek için burada bilerek null bırakılır.
+                questStartedAt: null,
+                questCompletedAt: null,
+                questOutcome: null
+              });
+            }
+
+            // İSTEK ("önümdeki 3-4 sessionu planlama"): [plan:] etiketiyle işaretlenmiş,
+            // henüz çalışılmamış GELECEK oturumlar — isSessionOccurrence'ın tersine tam
+            // etkileşimli (sürüklenebilir/boyutlandırılabilir) ayrı kartlar olarak render
+            // edilir; bkz. handleScheduleTask/handleUnscheduleTask'taki isPlanOccurrence
+            // dallanması (kendi [plan:] etiketini bulup değiştirir/siler).
+            const planTagRegex = /\[plan:(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}-\d{2}:\d{2}))?\]/gi;
+            let planMatch;
+            let planIdx = 0;
+            while ((planMatch = planTagRegex.exec(rawText)) !== null) {
+              planIdx++;
+              noteTasks.push({
+                id: `${taskId}::plan::${planIdx}`,
+                content: cleanContent,
+                isChecked,
+                lineIdx: idx,
+                filePath: note.path,
+                noteName: note.name,
+                folderName,
+                priority,
+                dueDate: planMatch[1],
+                timeSlot: planMatch[2] || '',
+                repeat: '',
+                score: 0,
+                tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
+                ownTags: taskTags,
+                isSubtask,
+                parentTaskId,
+                subtasks: [],
+                isPlanOccurrence: true,
                 questStartedAt: null,
                 questCompletedAt: null,
                 questOutcome: null
@@ -1496,36 +1555,69 @@ export default function CalendarView({
   const autoRevertedTaskIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const now = Date.now();
-    const overdueUnstarted = tasks.filter(t => {
-      if (t.isExternal || t.isChecked || t.questStartedAt || !t.dueDate || !t.timeSlot) return false;
-      if (autoRevertedTaskIdsRef.current.has(t.id)) return false;
+    const isPlannedWindowPassed = (t: WorkspaceTask): boolean => {
+      if (!t.dueDate || !t.timeSlot) return false;
       const endPart = t.timeSlot.split('-')[1];
       if (!endPart) return false;
       const [eh, em] = endPart.split(':').map(Number);
       if (isNaN(eh) || isNaN(em)) return false;
       const plannedEndMs = new Date(`${t.dueDate}T00:00:00`).setHours(eh, em, 0, 0);
       return now > plannedEndMs;
-    });
-    if (overdueUnstarted.length === 0) return;
+    };
 
-    const byFile = new Map<string, WorkspaceTask[]>();
+    const overdueUnstarted = tasks.filter(t => {
+      if (t.isExternal || t.isChecked || t.questStartedAt || !t.dueDate || !t.timeSlot) return false;
+      // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "26'da soluk iz var ama 28'de görevin
+      // olmasını beklerdim yok"): [session:] geçmişi olan görev, kullanıcının aktif takip
+      // ettiği çok günlü bir iştir — "unutulmuş, tek seferlik" görev değildir. Bunu da
+      // sessizce plandan koparıp geri çekersek hem asıl kart hem de üstüne kurulu tüm
+      // [session:] geçmişi görünürlüğünü kaybeder (bkz. isSessionOccurrence render'ı).
+      if (t.hasSessionHistory) return false;
+      if (autoRevertedTaskIdsRef.current.has(t.id)) return false;
+      return isPlannedWindowPassed(t);
+    });
+
+    // İSTEK ("önümdeki 3-4 sessionu planlama"): geleceğe planlanmış ama hiç çalışılmadan
+    // penceresi geçmiş [plan:] günleri de aynı mantıkla sessizce silinir — session geçmişinin
+    // aksine bunlar zaten "gerçekleşmemiş", tutmanın bir anlamı yok (design kararı: ayrı bir
+    // "kaçırıldı" kaydı tutulmuyor, basitlik için).
+    const overduePlans = tasks.filter(t => {
+      if (!t.isPlanOccurrence || t.isChecked) return false;
+      if (autoRevertedTaskIdsRef.current.has(t.id)) return false;
+      return isPlannedWindowPassed(t);
+    });
+
+    if (overdueUnstarted.length === 0 && overduePlans.length === 0) return;
+
+    const byFile = new Map<string, { due: WorkspaceTask[]; plan: WorkspaceTask[] }>();
     overdueUnstarted.forEach(t => {
       autoRevertedTaskIdsRef.current.add(t.id);
-      if (!byFile.has(t.filePath)) byFile.set(t.filePath, []);
-      byFile.get(t.filePath)!.push(t);
+      if (!byFile.has(t.filePath)) byFile.set(t.filePath, { due: [], plan: [] });
+      byFile.get(t.filePath)!.due.push(t);
+    });
+    overduePlans.forEach(t => {
+      autoRevertedTaskIdsRef.current.add(t.id);
+      if (!byFile.has(t.filePath)) byFile.set(t.filePath, { due: [], plan: [] });
+      byFile.get(t.filePath)!.plan.push(t);
     });
 
     (async () => {
-      for (const [filePath, tasksInFile] of byFile) {
+      for (const [filePath, { due, plan }] of byFile) {
         try {
           const fileContent = await readNoteContent(filePath);
           const lines = fileContent.split('\n');
-          tasksInFile.forEach(t => {
+          due.forEach(t => {
             if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
               lines[t.lineIdx] = lines[t.lineIdx]
                 .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
                 .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
                 .replace(/\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '');
+            }
+          });
+          plan.forEach(t => {
+            if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
+              const planTag = t.timeSlot ? `[plan:${t.dueDate}T${t.timeSlot}]` : `[plan:${t.dueDate}]`;
+              lines[t.lineIdx] = lines[t.lineIdx].replace(` ${planTag}`, '').replace(planTag, '');
             }
           });
           await onSaveNote(filePath, lines.join('\n'));
@@ -1573,6 +1665,27 @@ export default function CalendarView({
       }
     }
     if (!task) return;
+
+    // İSTEK ("önümdeki 3-4 sessionu planlama"): bir [plan:] kartını sürükleyip/boyutlandırıp
+    // saatini değiştirmek, ana [due:]/[plannedtime:]'a DEĞİL, o kartın KENDİ [plan:ESKİ...]
+    // etiketine dokunmalı — diğer plan günlerini ve asıl görevi etkilememeli.
+    if (task.isPlanOccurrence) {
+      try {
+        const fileContent = await readNoteContent(task.filePath);
+        const lines = fileContent.split('\n');
+        if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+        const oldPlanTag = task.timeSlot ? `[plan:${task.dueDate}T${task.timeSlot}]` : `[plan:${task.dueDate}]`;
+        const newPlanTag = timeSlot ? `[plan:${dateStr}T${timeSlot}]` : `[plan:${dateStr}]`;
+        if (!lines[task.lineIdx].includes(oldPlanTag)) return;
+        lines[task.lineIdx] = lines[task.lineIdx].replace(oldPlanTag, newPlanTag);
+        await onSaveNote(task.filePath, lines.join('\n'));
+        setRefreshTrigger(prev => prev + 1);
+      } catch (err) {
+        console.error('Error rescheduling plan occurrence:', err);
+      }
+      return;
+    }
 
     try {
       const fileContent = await readNoteContent(task.filePath);
@@ -1818,20 +1931,72 @@ export default function CalendarView({
     }
   };
 
+  // İSTEK (kullanıcı geri bildirimi: "bir taska başladım, bir oturumda çalıştım ama iş
+  // bitmedi, bitti diye işaretlemem saçma ama ara verdiğimi de belirtmeliyim — planlanmamış
+  // görevlerin orada dursun, sonraki güne tekrar atayabileyim"): göreve GERÇEKTEN
+  // başlanmışsa (▶️'ye basılmış, questStartedAt var), takvimden "Planlanmamış Görevler"e
+  // sürükleyip planı kaldırmak artık o oturumu SESSİZCE SİLMİYOR — [due:]/[plannedtime:]
+  // bir [session:] geçmişi olarak satırda saklanıyor (checkbox'a dokunulmuyor, görev "Bitti"
+  // olmuyor). Kullanıcı istediği zaman aynı isimle "Yeni Görev Ekle" ile tekrar planlayıp
+  // devam edebilir (bkz. handleContinueTaskSession/findContinuableTask) — o zamana kadarki
+  // çalışma kaybolmaz. Hiç başlanmamış bir görev sürüklenirse (sadece yanlışlıkla planlanmış)
+  // eskisi gibi hiçbir iz bırakmadan temizlenir.
   const handleUnscheduleTask = async (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
+    // Bir [plan:] kartını "Planlanmamış"a sürüklemek, o TEK günün planından vazgeçmek demek —
+    // sadece kendi [plan:...] etiketi silinir, ana görev/checkbox/diğer plan günleri etkilenmez.
+    if (task.isPlanOccurrence) {
+      try {
+        const fileContent = await readNoteContent(task.filePath);
+        const lines = fileContent.split('\n');
+        if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+        const planTag = task.timeSlot ? `[plan:${task.dueDate}T${task.timeSlot}]` : `[plan:${task.dueDate}]`;
+        lines[task.lineIdx] = lines[task.lineIdx].replace(` ${planTag}`, '').replace(planTag, '');
+        await onSaveNote(task.filePath, lines.join('\n'));
+        setRefreshTrigger(prev => prev + 1);
+      } catch (err) {
+        console.error('Error removing plan occurrence:', err);
+      }
+      return;
+    }
+
     try {
       const fileContent = await readNoteContent(task.filePath);
       const lines = fileContent.split('\n');
-      
+
       // Clear parent task
       if (task.lineIdx >= 0 && task.lineIdx < lines.length) {
-        lines[task.lineIdx] = lines[task.lineIdx]
+        let newLine = lines[task.lineIdx];
+        if (task.questStartedAt && task.dueDate) {
+          // İSTEK (kullanıcı sorusu: "play'e bastım ama 5dk sonra vazgeçtim, başka taska
+          // geçmek istedim, ne olur?"): PLANLANAN pencereyi değil, GERÇEKTEN geçen süreyi
+          // ([started:] → şu an) [session:] olarak kaydeder — hem daha doğru bir efor kaydı
+          // olur hem de anlamsız kısa "yanlış başlangıçlar" (birkaç dakika) hiç iz bırakmaz,
+          // gerçek çalışmadan ayırt edilir.
+          const MIN_MEANINGFUL_MINUTES = 5;
+          const startedDate = new Date(task.questStartedAt);
+          const now = new Date();
+          const elapsedMinutes = (now.getTime() - startedDate.getTime()) / 60000;
+          if (!isNaN(startedDate.getTime()) && elapsedMinutes >= MIN_MEANINGFUL_MINUTES) {
+            const pad = (n: number) => String(n).padStart(2, '0');
+            const sessionDate = `${startedDate.getFullYear()}-${pad(startedDate.getMonth() + 1)}-${pad(startedDate.getDate())}`;
+            const startLabel = `${pad(startedDate.getHours())}:${pad(startedDate.getMinutes())}`;
+            const endLabel = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+            newLine = `${newLine} [session:${sessionDate}T${startLabel}-${endLabel}]`;
+          }
+          // 5 dakikadan az sürmüşse: "yanlışlıkla başlattım" sayılır, hiç [session:] eklenmez
+          // — sadece aşağıda [started:] temizlenir, geri kalan (due/plannedtime) da silinir.
+        }
+        newLine = newLine
           .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
           .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '');
+        if (task.questStartedAt) {
+          newLine = newLine.replace(/\s*\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '');
+        }
+        lines[task.lineIdx] = newLine;
       }
 
       // Clear all nested subtasks too
@@ -2068,9 +2233,31 @@ export default function CalendarView({
     }
   };
 
-  const handleCreateQuickTask = async (content: string, dateStr: string, timeSlot: string | null, projectSlug?: string) => {
+  // İSTEK ("önümdeki 3-4 sessionu planlama"): mevcut [due:]/[plannedtime:]'a DOKUNMADAN,
+  // aynı satıra ek bir [plan:TARİH THH:MM-HH:MM] etiketi ekler — "bu güne TAŞI" (devam et)
+  // ile "bu güne DE EKLE" (ek gelecek oturum) farklı şeylerdir, bkz. modal'daki
+  // "keepExistingPlan" seçeneği.
+  const handleAddPlanOccurrence = async (task: WorkspaceTask, dateStr: string, timeSlot: string | null) => {
+    try {
+      const fileContent = await readNoteContent(task.filePath);
+      const lines = fileContent.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+      const planTag = timeSlot ? `[plan:${dateStr}T${timeSlot}]` : `[plan:${dateStr}]`;
+      lines[task.lineIdx] = `${lines[task.lineIdx]} ${planTag}`;
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error adding future plan occurrence:', err);
+    }
+  };
+
+  const handleCreateQuickTask = async (content: string, dateStr: string, timeSlot: string | null, projectSlug?: string, keepExistingPlan?: boolean) => {
     const continuable = findContinuableTask(content, projectSlug);
     if (continuable) {
+      if (keepExistingPlan) {
+        await handleAddPlanOccurrence(continuable, dateStr, timeSlot);
+        return;
+      }
       await handleContinueTaskSession(continuable, dateStr, timeSlot);
       return;
     }
@@ -3709,7 +3896,10 @@ export default function CalendarView({
                                     // tıklayınca düzenlenebilir olsun. Aynı "Yeni Görev Ekle" modalı
                                     // gerçek DÜZENLEME moduyla (isEditMode) açılır: metin, tarih/saat
                                     // VE proje etiketi değiştirilebilir (bkz. handleEditTask).
-                                    if (task.isExternal || task.isSessionOccurrence) return;
+                                    // [plan:] kartlarında metin/proje düzenlemesi anlamsız (o bilgi
+                                    // ana görev satırına ait) — sadece sürükleyip saatini değiştirmek
+                                    // veya "Planlanmamış"a atıp iptal etmek mümkün.
+                                    if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence) return;
                                     const [depStart, depEnd] = (task.timeSlot || '10:00-11:00').split('-');
                                     const currentProjectSlug = projectNames
                                       .map(n => n.toLowerCase().replace(/\s+/g, '-'))
@@ -3728,7 +3918,13 @@ export default function CalendarView({
                                     });
                                   }}
                                   onMouseDown={(e) => e.stopPropagation()}
-                                  title={task.isSessionOccurrence ? 'Bu işe bu gün de çalışıldı — güncel planı görmek için görevin taşındığı güne bak' : undefined}
+                                  title={
+                                    task.isSessionOccurrence
+                                      ? 'Bu işe bu gün de çalışıldı — güncel planı görmek için görevin taşındığı güne bak'
+                                      : task.isPlanOccurrence
+                                        ? 'Bu işe bu gün de çalışılması planlanıyor (henüz başlanmadı) — sürükleyip saatini değiştirebilir veya Planlanmamış\'a atıp iptal edebilirsin'
+                                        : undefined
+                                  }
                                   style={{
                                     position: 'absolute',
                                     top: `${top}px`,
@@ -3949,7 +4145,7 @@ export default function CalendarView({
                                             {parentTask.content}
                                           </span>
                                         )}
-                                        <span>{task.isSessionOccurrence && '↩ '}{task.content}</span>
+                                        <span>{task.isSessionOccurrence && '↩ '}{task.isPlanOccurrence && '📅 '}{task.content}</span>
                                       </p>
                                     ) : (
                                       <p className="event-title-lbl" style={{ 
@@ -3965,7 +4161,7 @@ export default function CalendarView({
                                             {parentTask.content} › 
                                           </span>
                                         )}
-                                        <span>{task.isSessionOccurrence && '↩ '}{task.content}</span>
+                                        <span>{task.isSessionOccurrence && '↩ '}{task.isPlanOccurrence && '📅 '}{task.content}</span>
                                       </p>
                                     )}
                                     
@@ -5078,10 +5274,21 @@ export default function CalendarView({
               </div>
             </div>
 
+            {!activeSchedulingModal.taskId && !activeSchedulingModal.isEditMode && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer', marginTop: '4px' }}>
+                <input
+                  type="checkbox"
+                  checked={keepExistingPlan}
+                  onChange={(e) => setKeepExistingPlan(e.target.checked)}
+                />
+                Aynı isimde açık bir görev varsa TAŞIMA, bu güne EK bir oturum olarak ekle
+              </label>
+            )}
+
             <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
               <button
                 type="button"
-                onClick={() => setActiveSchedulingModal(null)}
+                onClick={() => { setActiveSchedulingModal(null); setKeepExistingPlan(false); }}
                 style={{
                   flex: 1,
                   background: 'var(--bg-hover)',
@@ -5111,9 +5318,10 @@ export default function CalendarView({
                       setIsUnplannedOpen(false);
                     }
                   } else {
-                    await handleCreateQuickTask(taskName, dateStr, timeSlot, projectSlug);
+                    await handleCreateQuickTask(taskName, dateStr, timeSlot, projectSlug, keepExistingPlan);
                   }
                   setActiveSchedulingModal(null);
+                  setKeepExistingPlan(false);
                 }}
                 style={{
                   flex: 1,
