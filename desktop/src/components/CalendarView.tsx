@@ -1322,7 +1322,7 @@ export default function CalendarView({
             // istemiyor. Yeni oluşturulan görevler artık görünmez [project:slug] köşeli parantez
             // etiketiyle işaretleniyor (bkz. CalendarView.tsx handleCreateQuickTask/handleEditTask).
             // Eski #slug etiketli notlarla geriye dönük uyumluluk için HER İKİSİ de taranır.
-            const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            const projectBracketRegex = /\[(?:project|proje|book|kitap):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
             let projTagMatch;
             while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
               taskTags.push(projTagMatch[1].toLowerCase());
@@ -1357,7 +1357,7 @@ export default function CalendarView({
               .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
               .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-              .replace(/\[(?:project|proje):[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
+              .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
               .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '') // DevOps Kanban durumu — sadece Kanban tahtasında görünür
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '') // DevOps iş tipi — sadece Kanban tahtasında görünür
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // Strip capture timestamp
@@ -1776,9 +1776,9 @@ export default function CalendarView({
       let editedText = newText.trim();
       if (oldProjectSlug && oldProjectSlug !== newProjectSlug) {
         editedText = editedText.replace(new RegExp(`#${oldProjectSlug}\\b`, 'i'), '').replace(/\s+/g, ' ').trim();
-        preservedBracketTags = preservedBracketTags.filter(tag => !new RegExp(`^\\[(?:project|proje):${oldProjectSlug}\\]$`, 'i').test(tag));
+        preservedBracketTags = preservedBracketTags.filter(tag => !new RegExp(`^\\[(?:project|proje|book|kitap):${oldProjectSlug}\\]$`, 'i').test(tag));
       }
-      if (newProjectSlug && !preservedBracketTags.some(tag => new RegExp(`^\\[(?:project|proje):${newProjectSlug}\\]$`, 'i').test(tag))) {
+      if (newProjectSlug && !preservedBracketTags.some(tag => new RegExp(`^\\[(?:project|proje|book|kitap):${newProjectSlug}\\]$`, 'i').test(tag))) {
         preservedBracketTags.push(`[project:${newProjectSlug}]`);
       }
 

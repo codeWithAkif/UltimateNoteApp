@@ -345,7 +345,7 @@ export default function TasksView({
               }
               // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug"
               // yerine bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
-              const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+              const projectBracketRegex = /\[(?:project|proje|book|kitap):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
               let projTagMatch;
               while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
                 taskTags.push(projTagMatch[1].toLowerCase());
@@ -387,7 +387,7 @@ export default function TasksView({
                 .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
                 .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
                 .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late)\]/gi, '')
-                .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+                .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
                 .replace(/\[başlama:[^\]]+\]/gi, '')
                 .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
                 .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
@@ -522,7 +522,7 @@ export default function TasksView({
         .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
         .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
         .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
-        .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+        .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
         .replace(/\[başlama:[^\]]+\]/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -717,7 +717,7 @@ export default function TasksView({
       .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
       .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
       .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
-      .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+      .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
       .replace(/\[başlama:[^\]]+\]/gi, '')
       .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
       .replace(/\s+/g, ' ')

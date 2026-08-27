@@ -27,6 +27,7 @@ import MusicPlayerView from './components/MusicPlayerView';
 import MiniWidgetView from './components/MiniWidgetView';
 import AnalyticsView from './components/AnalyticsView';
 import ProjectsView from './components/ProjectsView';
+import LibraryView from './components/LibraryView';
 import EforView from './components/EforView';
 import DashboardView from './components/DashboardView';
 import CityBuilderView from './components/CityBuilderView';
@@ -59,7 +60,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -2751,6 +2752,7 @@ export default function App() {
   ];
   const titlebarWorkItems = [
     { id: 'projects', label: 'Proje Yönetimi', icon: KanbanSquare },
+    { id: 'library', label: 'Kütüphane', icon: Library },
     { id: 'finance', label: 'Finans', icon: Wallet },
     { id: 'efor', label: 'Efor', icon: Timer },
   ];
@@ -3471,7 +3473,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             }
             // Görünmez proje bağlantısı — CalendarView.tsx artık projeyi görünür "#slug" yerine
             // bununla işaretliyor (kullanıcı isteği: görev adında etiket görünmesin).
-            const projectBracketRegex = /\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
+            const projectBracketRegex = /\[(?:project|proje|book|kitap):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/gi;
             let projTagMatch;
             while ((projTagMatch = projectBracketRegex.exec(rawText)) !== null) {
               taskTags.push(projTagMatch[1].toLowerCase());
@@ -3521,7 +3523,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
               .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
               .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
-              .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+              .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
               .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
               .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
@@ -7488,6 +7490,18 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   handleSetActiveNotePath(relativePath);
                   setActiveTab('notes');
                 }
+              }}
+            />
+          )}
+
+          {activeTab === 'library' && (
+            <LibraryView
+              notes={notes}
+              scannedContents={fileContents}
+              onSaveNote={handleSaveNote}
+              onOpenNote={(path) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
               }}
             />
           )}

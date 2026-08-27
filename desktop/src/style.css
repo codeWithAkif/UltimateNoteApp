@@ -9188,3 +9188,23 @@ input:focus, textarea:focus, select:focus {
 
 
 
+
+/* Kütüphane (LibraryView) — raf hover efekti + sayfa çevirme animasyonu */
+.library-book-spine {
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+.library-book-spine:hover {
+  transform: translateY(-14px) rotate(-2deg);
+  box-shadow: 4px 14px 22px rgba(0, 0, 0, 0.45) !important;
+}
+
+@keyframes libraryPageFlip {
+  0% { transform: rotateY(-85deg); opacity: 0; }
+  60% { opacity: 1; }
+  100% { transform: rotateY(0deg); opacity: 1; }
+}
+.library-page-flip {
+  animation: libraryPageFlip 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+}
