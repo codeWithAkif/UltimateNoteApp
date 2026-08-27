@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BookOpen, Plus, X, ChevronLeft, Feather, Pencil, ScrollText, RotateCcw } from 'lucide-react';
+import { BookOpen, Plus, X, ChevronLeft, Feather, Pencil, ScrollText, RotateCcw, CalendarPlus } from 'lucide-react';
 
 interface NoteItem {
   name: string;
@@ -154,6 +154,36 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
     await onSaveNote(bookNote.path, `${stripped}\n[renk:${color.replace('#', '')}]`);
   };
 
+  // İSTEK ("kütüphaneye de takvime ekle koy"): Calendar'daki sağ-tık "Kitap Oku" akışının
+  // Kütüphane tarafındaki karşılığı — bir bölümün "Mütalaa" (okuma) görevini doğrudan
+  // BUGÜNE, şu anki saatten sonraki ilk 15dk'lık çizgiye yuvarlayarak 1 saatlik planlar. Var
+  // olan [due:]/[plannedtime:] varsa (zaten planlıysa) üzerine yazılır — yeniden planlamak
+  // için de kullanılabilir.
+  const handleScheduleChapterToday = async (chapter: NoteItem, content: string) => {
+    if (!onSaveNote) return;
+    const lines = content.split('\n');
+    const lineIdx = lines.findIndex(l => /^\s*[*\-]\s+\[[ xX\/]\]\s*Mütalaa/i.test(l));
+    if (lineIdx === -1) {
+      alert('Bu bölümde bir "Mütalaa" görevi bulunamadı.');
+      return;
+    }
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    let startH = now.getHours();
+    let startM = Math.ceil(now.getMinutes() / 15) * 15;
+    if (startM === 60) { startM = 0; startH = (startH + 1) % 24; }
+    const endH = (startH + 1) % 24;
+    const timeSlot = `${pad(startH)}:${pad(startM)}-${pad(endH)}:${pad(startM)}`;
+
+    const newLine = lines[lineIdx]
+      .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+      .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+      + ` [due:${todayStr}] [plannedtime:${timeSlot}]`;
+    lines[lineIdx] = newLine;
+    await onSaveNote(chapter.path, lines.join('\n'));
+  };
+
   // ============ DETAY GÖRÜNÜMÜ ============
   if (selectedBookName) {
     const bookNote = bookNotes.find(n => n.name.replace(/\.md$/i, '') === selectedBookName);
@@ -264,10 +294,20 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
                       color: 'var(--text-primary)'
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name.replace(/\.md$/i, '')}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ch.name.replace(/\.md$/i, '')}</span>
+                      {onSaveNote && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleScheduleChapterToday(ch, chContent); }}
+                          title="Bugün için takvime ekle"
+                          style={{ display: 'flex', alignItems: 'center', flexShrink: 0, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                        >
+                          <CalendarPlus size={13} />
+                        </button>
+                      )}
                       {prog.total > 0 && (
-                        <span style={{ fontSize: '10px', color: prog.done === prog.total ? '#4caf50' : 'var(--text-muted)', flexShrink: 0, marginLeft: '6px' }}>
+                        <span style={{ fontSize: '10px', color: prog.done === prog.total ? '#4caf50' : 'var(--text-muted)', flexShrink: 0 }}>
                           {prog.done}/{prog.total}
                         </span>
                       )}

@@ -707,6 +707,15 @@ export default function App() {
     [notes, fileContents]
   );
 
+  // İSTEK ("kütüphane" — Calendar'daki sağ tık menüsünün "Kitap Oku" seçeneği): #kitap
+  // etiketli kitap notlarının adları (bkz. LibraryView.tsx bookNotes taramasıyla AYNI mantık).
+  const bookNames = useMemo(
+    () => notes
+      .filter(n => n.type === 'note' && n.path.startsWith('Kütüphane/') && !n.path.slice('Kütüphane/'.length).includes('/') && (fileContents[n.path] || '').toLowerCase().includes('#kitap'))
+      .map(n => n.name.replace('.md', '')),
+    [notes, fileContents]
+  );
+
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // İSTEK: "her müşteriye bir renk ve icon verilebilse ve takvimde o renk ile gösterilse
   // ayırt etmek kolaylaşır." Renk/icon müşteri notunun İÇİNE [renk:hex]/[icon:emoji]
@@ -7392,6 +7401,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                         projectColors={projectColors}
                         clientNames={clientNames}
                         clientProjectSlugs={clientProjectSlugs}
+                        bookNames={bookNames}
                       />
                     </div>
                   )}
@@ -7464,6 +7474,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               projectColors={projectColors}
               clientNames={clientNames}
               clientProjectSlugs={clientProjectSlugs}
+              bookNames={bookNames}
               onOpenNotePath={(path) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');

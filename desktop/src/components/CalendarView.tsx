@@ -210,6 +210,9 @@ interface CalendarViewProps {
   projectColors?: Record<string, { color: string; icon: string }>;
   clientNames?: string[];
   clientProjectSlugs?: Record<string, string[]>;
+  // İSTEK ("kütüphane" — sağ tık bağlam menüsündeki "Kitap Oku" seçeneği): Kütüphane'deki
+  // kitap başlıkları — bkz. LibraryView.tsx'teki bookNotes taramasıyla AYNI mantık.
+  bookNames?: string[];
   onOpenNotePath?: (path: string) => void;
 }
 
@@ -601,6 +604,7 @@ export default function CalendarView({
   projectColors = {},
   clientNames = [],
   clientProjectSlugs = {},
+  bookNames = [],
   onOpenNotePath
 }: CalendarViewProps) {
   const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
@@ -2609,6 +2613,58 @@ export default function CalendarView({
     setCurrentDate(dayDate);
   };
 
+  // İSTEK ("sağ tıklayarak açılan bir modalda Yeni Task / Kitap Oku seçenekleri"): sağ
+  // tıklanan saat/gün bilgisini handleSlotClick ile AYNI şekilde hesaplar, ama modalı hemen
+  // açmak yerine küçük bir bağlam menüsü gösterir — "Yeni Task" seçilirse zaten var olan
+  // akışa (activeSchedulingModal) devam eder, "Kitap Oku" seçilirse kitap seçim popup'ı açılır.
+  const [calendarContextMenu, setCalendarContextMenu] = useState<{
+    x: number; y: number; dateStr: string; startTime: string; endTime: string; dayDate: Date; showBookPicker: boolean;
+  } | null>(null);
+
+  const handleSlotContextMenu = (e: React.MouseEvent<HTMLDivElement>, dayDate: Date) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseY = e.clientY - rect.top;
+    const startMinutes = pxToMin(mouseY);
+    const roundedMinutes = Math.round(startMinutes / 15) * 15;
+    const startHour = Math.floor(roundedMinutes / 60);
+    const startMin = roundedMinutes % 60;
+    const endHour = Math.floor((roundedMinutes + 60) / 60);
+    const endMin = (roundedMinutes + 60) % 60;
+    const formatTimeStr = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    setCalendarContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      dateStr: format(dayDate, 'yyyy-MM-dd'),
+      startTime: formatTimeStr(startHour, startMin),
+      endTime: formatTimeStr(endHour, endMin),
+      dayDate,
+      showBookPicker: false
+    });
+  };
+
+  // "Kitap Oku" ile bir kitap seçilince, o kitabın HENÜZ İŞARETLENMEMİŞ ilk "Mütalaa"
+  // (okuma) görevini bulup (bölüm dosya adına göre sıralı — bkz. LibraryView.tsx
+  // getBookChapters ile AYNI sıralama) sağ tıklanan tarih/saate planlar. Var olan
+  // handleScheduleTask zaten [due:]/[plannedtime:] yazma işini doğru yapıyor — burada sadece
+  // "hangi görev" sorusuna cevap veriliyor.
+  const handlePickBookForReading = async (bookTitle: string) => {
+    if (!calendarContextMenu) return;
+    const bookSlug = bookTitle.toLowerCase().replace(/\s+/g, '-');
+    const candidates = tasks
+      .filter(t => !t.isChecked && !t.isSessionOccurrence && !t.isPlanOccurrence && t.ownTags.includes(bookSlug) && /mütalaa/i.test(t.content))
+      .sort((a, b) => a.noteName.localeCompare(b.noteName, 'tr', { numeric: true }));
+    const next = candidates[0];
+    if (!next) {
+      alert(`"${bookTitle}" kitabında bekleyen bir bölüm bulunamadı. Önce Kütüphane'den bir bölüm ekle.`);
+      setCalendarContextMenu(null);
+      return;
+    }
+    await handleScheduleTask(next.id, calendarContextMenu.dateStr, `${calendarContextMenu.startTime}-${calendarContextMenu.endTime}`);
+    setCalendarContextMenu(null);
+  };
+
   return (
     <div className={`calendar-workspace-layout animate-fade ${embedded ? 'embedded' : ''}`}>
       {isUnplannedOpen && (
@@ -3459,6 +3515,7 @@ export default function CalendarView({
                             }
                             handleSlotClick(e, day);
                           }}
+                          onContextMenu={(e) => handleSlotContextMenu(e, day)}
                           onDragOver={(e) => {
                             e.preventDefault();
                             const rect = e.currentTarget.getBoundingClientRect();
@@ -5102,8 +5159,74 @@ export default function CalendarView({
         </div>
       )}
 
+      {calendarContextMenu && (
+        <div
+          onClick={() => setCalendarContextMenu(null)}
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2500 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'fixed',
+              top: calendarContextMenu.y,
+              left: calendarContextMenu.x,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+              padding: '6px',
+              minWidth: '180px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px'
+            }}
+          >
+            {!calendarContextMenu.showBookPicker ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveSchedulingModal({
+                      taskName: '',
+                      dateStr: calendarContextMenu.dateStr,
+                      startTime: calendarContextMenu.startTime,
+                      endTime: calendarContextMenu.endTime,
+                      projectTag: '',
+                      isEditMode: false
+                    });
+                    setCurrentDate(calendarContextMenu.dayDate);
+                    setCalendarContextMenu(null);
+                  }}
+                  style={contextMenuBtnStyle}
+                >
+                  🆕 Yeni Task
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarContextMenu({ ...calendarContextMenu, showBookPicker: true })}
+                  disabled={bookNames.length === 0}
+                  style={{ ...contextMenuBtnStyle, opacity: bookNames.length === 0 ? 0.5 : 1, cursor: bookNames.length === 0 ? 'not-allowed' : 'pointer' }}
+                  title={bookNames.length === 0 ? 'Kütüphanede henüz kitap yok' : undefined}
+                >
+                  📚 Kitap Oku
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', padding: '4px 8px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Hangi kitap?</div>
+                {bookNames.map(name => (
+                  <button key={name} type="button" onClick={() => handlePickBookForReading(name)} style={contextMenuBtnStyle}>
+                    {name}
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeSchedulingModal && (
-        <div 
+        <div
           style={{
             position: 'fixed',
             top: 0,
@@ -5697,3 +5820,16 @@ export default function CalendarView({
     </div>
   );
 }
+
+const contextMenuBtnStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  textAlign: 'left',
+  background: 'transparent',
+  border: 'none',
+  borderRadius: '6px',
+  color: 'var(--text-primary)',
+  padding: '8px 10px',
+  fontSize: '13px',
+  cursor: 'pointer'
+};
