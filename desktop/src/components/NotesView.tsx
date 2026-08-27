@@ -2463,9 +2463,12 @@ export default function NotesView({
   const allExistingTags = useMemo(() => {
     const tagSet = new Set<string>();
     const tagRegex = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
+    // BUG DÜZELTMESİ: ```mermaid gibi kod bloklarındaki "style X fill:#4a5568" satırları
+    // sahte #etiket olarak algılanmasın diye taramadan önce kod blokları çıkarılır.
     Object.values(fileContents).forEach(content => {
       let m;
-      while ((m = tagRegex.exec(content)) !== null) {
+      const scanContent = content.replace(/```[\s\S]*?```/g, '');
+      while ((m = tagRegex.exec(scanContent)) !== null) {
         tagSet.add(m[1].toLowerCase());
       }
     });
@@ -3400,6 +3403,11 @@ export default function NotesView({
     return null;
   });
   const lineRefs = useRef<{ [key: number]: HTMLTextAreaElement | null }>({});
+  // İSTEK (kullanıcı geri bildirimi: elle "14:40 => ..." şeklinde zaman damgalı ilerleme
+  // notu düşme alışkanlığı) — handleAddProgressNote'un yeni eklediği satırın index'ini,
+  // setEditorContent'in fonksiyonel güncellemesi bitene kadar geçici olarak taşır (aşağıdaki
+  // odaklama setTimeout'u tarafından okunur).
+  const pendingProgressNoteLineRef = useRef<number | null>(null);
 
   const lastLoadedContentRef = useRef<string>('');
   const lastLoadedPathRef = useRef<string>('');
@@ -5480,6 +5488,12 @@ export default function NotesView({
     // yerel bir değişkende toplanır, gerçek onQuestReward çağrısı setEditorContent'in
     // DIŞINDA, bu fonksiyon başına bir kere yapılır.
     let questRewardToApply: LineCompletionResult | null = null;
+    // İSTEK (2. adım): görev "Bitti" olarak işaretlenince, altında birikmiş "HH:MM => ..."
+    // ilerleme notları — VARSA ve görevin bir [project:]/[proje:] etiketi varsa — o projenin
+    // Changelog.md'sine otomatik tek bir giriş olarak düşürülür. Veri toplama SENKRON olarak
+    // burada (updater içinde) yapılır, gerçek dosya yazma İŞLEMİ ise updater bittikten SONRA
+    // (aşağıda) — bir state updater içinde async iş yapmak StrictMode'da çift çalışabilir.
+    let changelogEntryToApply: { projectSlug: string; taskContent: string; notes: string[] } | null = null;
     setEditorContent(prevContent => {
       const linesArr = prevContent.split('\n');
       if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
@@ -5501,6 +5515,26 @@ export default function NotesView({
           newLine = reward.newLine;
           questRewardToApply = reward;
         }
+
+        const projMatch = newLine.match(/\[(?:project|proje):([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)\]/i);
+        if (projMatch) {
+          const collectedNotes: string[] = [];
+          for (let i = lineIdx + 1; i < linesArr.length; i++) {
+            const trimmed = linesArr[i].trim();
+            if (/^\d{2}:\d{2}\s*=>/.test(trimmed)) { collectedNotes.push(trimmed); continue; }
+            if (trimmed === '') continue;
+            break;
+          }
+          if (collectedNotes.length > 0) {
+            const cleanTaskContent = suffix
+              .replace(/^\]\s*/, '')
+              .replace(/\[[^\]]+\]/g, '')
+              .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+            changelogEntryToApply = { projectSlug: projMatch[1].toLowerCase(), taskContent: cleanTaskContent, notes: collectedNotes };
+          }
+        }
       }
 
       linesArr[lineIdx] = newLine;
@@ -5508,6 +5542,51 @@ export default function NotesView({
     });
     if (questRewardToApply) {
       onQuestReward?.(questRewardToApply);
+    }
+    if (changelogEntryToApply) {
+      await appendProgressNotesToProjectChangelog(changelogEntryToApply.projectSlug, changelogEntryToApply.taskContent, changelogEntryToApply.notes);
+    }
+  };
+
+  // İSTEK (2. adım): projectSlug'a karşılık gelen proje notunu (#proje etiketli, dosya adı
+  // slug'ı eşleşen) bulup, yanındaki {ProjeAdı}/Changelog.md dosyasına (bkz. WebScrapping
+  // pilot şablonu) yeni girişi EN ÜSTE (kronolojik, en yeni en üstte) ekler. Proje notu
+  // bulunamazsa (ör. proje etiketi var ama hiç proje notu oluşturulmamışsa) sessizce atlanır —
+  // her tamamlanan görevde gürültü yaratmamak için.
+  const appendProgressNotesToProjectChangelog = async (projectSlug: string, taskContent: string, progressNotes: string[]) => {
+    try {
+      const projectNote = notes.find(n => {
+        const nameSlug = n.name.replace(/\.md$/i, '').toLowerCase().replace(/\s+/g, '-');
+        if (nameSlug !== projectSlug) return false;
+        const c = fileContents[n.path] || '';
+        return /#proje\b/i.test(c) || /#project\b/i.test(c);
+      });
+      if (!projectNote) return;
+
+      const projectName = projectNote.name.replace(/\.md$/i, '');
+      const changelogPath = `${projectNote.path.replace(/\.md$/i, '')}/Changelog.md`;
+
+      let existingChangelog = '';
+      try {
+        existingChangelog = await readNoteContent(changelogPath);
+      } catch (e) {
+        existingChangelog = `# Changelog — ${projectName}\n\nBu dosya, projenin gelişme geçmişini kronolojik (en yeni en üstte) olarak tutar.\n\n---\n`;
+      }
+
+      const now = new Date();
+      const dateLabel = now.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
+      const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const notesLines = progressNotes.map(n => `- ${n}`).join('\n');
+      const entry = `### 🗓️ ${dateLabel} - ${timeLabel}\n**Görev:** ${taskContent}\n**Notlar:**\n${notesLines}\n**Durum:** 🟢 Tamamlandı\n\n---\n\n`;
+
+      const splitIdx = existingChangelog.indexOf('\n---\n');
+      const newChangelogContent = splitIdx !== -1
+        ? existingChangelog.slice(0, splitIdx + 5) + '\n' + entry + existingChangelog.slice(splitIdx + 5)
+        : existingChangelog.trimEnd() + '\n\n---\n\n' + entry;
+
+      await onSaveNote(changelogPath, newChangelogContent);
+    } catch (err) {
+      console.error('Changelog\'a ilerleme notu eklenemedi:', err);
     }
   };
 
@@ -5562,6 +5641,49 @@ export default function NotesView({
 
       return linesArr.join('\n');
     });
+  };
+
+  // İSTEK (kullanıcı geri bildirimi: göreve çalışırken ara ara elle "14:40 => ne yaptım"
+  // şeklinde zaman damgalı ilerleme notu düşüyordu, saat kısmını otomatikleştirelim): görev
+  // satırının hemen altına — ÖNCEDEN eklenmiş "HH:MM => " notları varsa onların da altına,
+  // kullanıcının elle kurduğu düzeni bozmadan — o anki saatle yeni bir satır ekler ve
+  // odaklanmayı o satıra taşır (imleç "=> " sonunda, yazmaya hazır).
+  const handleAddProgressNote = (lineIdx: number) => {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const newLineText = `${hh}:${mm} => `;
+
+    setEditorContent(prevContent => {
+      const linesArr = prevContent.split('\n');
+      if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
+
+      let insertAt = lineIdx + 1;
+      for (let i = lineIdx + 1; i < linesArr.length; i++) {
+        const trimmed = linesArr[i].trim();
+        if (/^\d{2}:\d{2}\s*=>/.test(trimmed)) { insertAt = i + 1; continue; }
+        if (trimmed === '') continue;
+        break;
+      }
+
+      linesArr.splice(insertAt, 0, '', newLineText);
+      pendingProgressNoteLineRef.current = insertAt + 1;
+      return linesArr.join('\n');
+    });
+
+    setTimeout(() => {
+      const targetIdx = pendingProgressNoteLineRef.current;
+      pendingProgressNoteLineRef.current = null;
+      if (targetIdx === null) return;
+      setFocusedLineIdx(targetIdx);
+      setTimeout(() => {
+        const el = lineRefs.current[targetIdx];
+        if (el) {
+          el.focus();
+          el.setSelectionRange(el.value.length, el.value.length);
+        }
+      }, 40);
+    }, 40);
   };
 
   const handleDeleteTaskLine = async (lineIdx: number) => {
@@ -8947,6 +9069,26 @@ export default function NotesView({
           <div className="row-control-score">
             <div className="score-num-display">{score}</div>
             <span className="score-desc-lbl">Task Score</span>
+          </div>
+        </div>
+
+        <div className="drawer-row">
+          <div className="row-label">
+            <Clock size={14} />
+            <span>İLERLEME NOTU</span>
+          </div>
+          <div className="row-control">
+            <button
+              type="button"
+              className="pill-btn"
+              onClick={() => {
+                handleAddProgressNote(lineIdx);
+                setExpandedTaskIdx(null);
+              }}
+              title="O anki saati 'HH:MM => ' olarak görevin altına ekler, yazmaya hazır bırakır"
+            >
+              ⏱️ Not Ekle
+            </button>
           </div>
         </div>
 

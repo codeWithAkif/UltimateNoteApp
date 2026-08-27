@@ -157,6 +157,14 @@ const NAV_SHORTCUT_TARGETS: Record<string, string> = {
   nav_music: 'music'
 };
 
+// BUG DÜZELTMESİ (kullanıcı geri bildirimi: "mermaid içindeki style'ları etiket olarak
+// algılamamalı"): ```mermaid ... ``` gibi kod bloklarının içindeki "style DOM fill:#4a5568"
+// satırlarındaki "#4a5568" genel #etiket taramasına (aşağı) yakalanıp sahte birer etiket
+// olarak Sidebar/Not Özellikleri'nde beliriyordu. Not içeriğinden #etiket taramaya başlamadan
+// ÖNCE tüm ```...``` kod bloklarını çıkarır — kod örneklerindeki "#" hiçbir zaman gerçek bir
+// etiket değildir.
+const stripFencedCodeForTagScan = (text: string): string => text.replace(/```[\s\S]*?```/g, '');
+
 // Type Definitions
 interface NoteItem {
   name: string;
@@ -1298,10 +1306,10 @@ export default function App() {
     
     // Parse tags from content
     const tags = Array.from(new Set(
-      (content.match(/#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g) || [])
+      (stripFencedCodeForTagScan(content).match(/#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g) || [])
         .map(t => t.substring(1).toLowerCase())
     ));
-    
+
     return { lineCount, wordCount, charCount, readTime, tags };
   };
 
@@ -1319,7 +1327,7 @@ export default function App() {
     if (!cleanTag) return;
     
     const existingTags = Array.from(new Set(
-      (content.match(/#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g) || [])
+      (stripFencedCodeForTagScan(content).match(/#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g) || [])
         .map(t => t.substring(1).toLowerCase())
     ));
     if (existingTags.includes(cleanTag.toLowerCase())) return;
@@ -3388,7 +3396,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const tagRegexGlobal = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
         const noteLevelTags: string[] = [];
         let noteTagMatch;
-        while ((noteTagMatch = tagRegexGlobal.exec(content)) !== null) {
+        const contentForTagScan = stripFencedCodeForTagScan(content);
+        while ((noteTagMatch = tagRegexGlobal.exec(contentForTagScan)) !== null) {
           const t = noteTagMatch[1].toLowerCase();
           if (t !== 'todo' && !noteLevelTags.includes(t)) {
             noteLevelTags.push(t);
@@ -3874,10 +3883,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           const tagRegex = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
           const noteTags: string[] = [];
           let tagMatch;
-          while ((tagMatch = tagRegex.exec(fileContent)) !== null) {
+          // BUG DÜZELTMESİ: kod bloklarındaki (```sql, ```mermaid, ...) "#1", "#4a5568" gibi
+          // metinler sahte etiket sanılıp Sidebar'a sızıyordu — taramadan önce çıkarılır.
+          const fileContentForTagScan = stripFencedCodeForTagScan(fileContent);
+          while ((tagMatch = tagRegex.exec(fileContentForTagScan)) !== null) {
             noteTags.push(tagMatch[1].toLowerCase());
           }
-          
+
           // Extract the clean H1 title from the first line if it exists
           const firstLine = fileContent.split('\n')[0] || '';
           let displayName = note.name;
@@ -4014,10 +4026,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const tagRegex = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
         const noteTags: string[] = [];
         let tagMatch;
-        while ((tagMatch = tagRegex.exec(fileContent)) !== null) {
+        const fileContentForTagScan = stripFencedCodeForTagScan(fileContent);
+        while ((tagMatch = tagRegex.exec(fileContentForTagScan)) !== null) {
           noteTags.push(tagMatch[1].toLowerCase());
         }
-        
+
         // Extract the clean H1 title from the first line if it exists
         const firstLine = fileContent.split('\n')[0] || '';
         let displayName = note.name || note.path.split('/').pop().replace('.md', '');

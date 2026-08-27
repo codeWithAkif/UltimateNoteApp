@@ -1189,10 +1189,13 @@ export default function CalendarView({
         if (!content) continue;
 
         // Parse note-level tags
+        // BUG DÜZELTMESİ: ```mermaid gibi kod bloklarındaki "style X fill:#4a5568" satırları
+        // sahte #etiket olarak algılanmasın diye taramadan önce kod blokları çıkarılır.
         const tagRegexGlobal = /#([a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+)/g;
         const noteLevelTags: string[] = [];
         let noteTagMatch;
-        while ((noteTagMatch = tagRegexGlobal.exec(content)) !== null) {
+        const contentForTagScan = content.replace(/```[\s\S]*?```/g, '');
+        while ((noteTagMatch = tagRegexGlobal.exec(contentForTagScan)) !== null) {
           const t = noteTagMatch[1].toLowerCase();
           if (t !== 'todo' && !noteLevelTags.includes(t)) {
             noteLevelTags.push(t);
@@ -2001,7 +2004,13 @@ export default function CalendarView({
   const findContinuableTask = (content: string, projectSlug?: string): WorkspaceTask | undefined => {
     const trimmed = content.trim().toLowerCase();
     return tasks.find(t =>
-      !t.isChecked &&
+      // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "aynı isimle ekledim yine de yeni kart
+      // açtı"): görev kullanıcı tarafından değil, SİSTEM tarafından (otomatik-geç-kapatma /
+      // overdue-auto-revert mekanizması) [outcome:incomplete] ile zorla kapatılmış olabilir —
+      // bu gerçek bir tamamlanma değildir, kullanıcı hâlâ o işe devam ediyor demektir. Böyle
+      // bir görev de "devam edilebilir" sayılır (aşağıda handleContinueTaskSession checkbox'ı
+      // yeniden açar).
+      (!t.isChecked || t.questOutcome === 'incomplete') &&
       !t.isExternal &&
       !t.isSubtask &&
       t.content.trim().toLowerCase() === trimmed &&
@@ -2022,6 +2031,21 @@ export default function CalendarView({
       if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
 
       let newLine = lines[task.lineIdx];
+
+      // Sistem tarafından "incomplete" diye kapatılmış görev yeniden açılıyor: checkbox'ı
+      // boşalt, gerçek olmayan [completed:]/[outcome:] damgalarını temizle — kullanıcı devam
+      // ettiğine göre bu satır artık gerçekten bitmiş değil.
+      if (task.isChecked && task.questOutcome === 'incomplete') {
+        newLine = newLine
+          .replace(/^(\s*[*\-]\s+\[)[xX](\])/, '$1 $2')
+          .replace(/\s*\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
+          .replace(/\s*\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
+          // Eski [started:] yeni oturumun planlanan penceresinden ÖNCEKİ bir ana ait —
+          // dakiklik hesabını bozmasın diye temizlenir; kullanıcı ▶️'ye tekrar basınca
+          // gerçek (yeni) başlangıç anı yazılacak.
+          .replace(/\s*\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '');
+      }
+
       if (task.dueDate) {
         const oldSession = task.timeSlot
           ? `[session:${task.dueDate}T${task.timeSlot}]`
@@ -2076,7 +2100,7 @@ export default function CalendarView({
 
       let taskLine = `\n- [ ] ${content} [due:${dateStr}]`;
       if (timeSlot) {
-        taskLine += ` [time:${timeSlot}]`;
+        taskLine += ` [plannedtime:${timeSlot}]`;
       }
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
       // Görev fiziksel olarak SADECE günün notuna yazılır (kullanıcının sevdiği yapı korunur) —
@@ -2085,7 +2109,7 @@ export default function CalendarView({
       // (bkz. ProjectsView.tsx getProjectProgress/currentProjectTasks) bu etiketi canlı olarak
       // sorgulayıp aynı satırı sayar, fiziksel ikinci bir kopya oluşturulmaz.
       if (projectSlug) {
-        taskLine += ` [proje:${projectSlug}]`;
+        taskLine += ` [project:${projectSlug}]`;
       }
 
       await onSaveNote(relativePath, existingContent + taskLine);
