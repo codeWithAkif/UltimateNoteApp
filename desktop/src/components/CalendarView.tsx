@@ -2754,6 +2754,19 @@ export default function CalendarView({
   // [plannedtime:] TEMİZLENİR — iş otomatik olarak "Planlanmamış Görevler"e geri döner, kullanıcı
   // istediği an başka bir seans için tekrar takvime sürükleyebilir.
   const handleCompleteSession = async (task: WorkspaceTask) => {
+    // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "seansı tamamla dedim, checkboxların yerleri
+    // kaydı"): İş Planla artık seansları AYRI, girintili checklist satırları olarak yazıyor
+    // (bkz. ProjectsView.tsx rewriteWorkItemChildren) — bu satırların KENDİ bağımsız checkbox'ı
+    // zaten var, "tamamlama" demek sadece O checkbox'ı işaretlemek demektir. Aşağıdaki eski
+    // (etiket-tabanlı) satır-yeniden-yazma mantığı bu satırlara UYGULANIRSA `.replace(/\s+/g,
+    // ' ')` başlangıçtaki girintiyi de tek boşluğa indirger — satır üst seviyeye "fırlar" (kök
+    // ebeveyn zincirinden kopar). Bu yüzden isSessionLine için hiçbir özel işlem YAPILMAZ,
+    // sadece normal (girintiyi bozmayan) checkbox toggle'ı çağrılır.
+    if (task.isSessionLine) {
+      await handleToggleTodo(task.id);
+      setTaskContextMenu(null);
+      return;
+    }
     try {
       const fileContent = await readNoteContent(task.filePath);
       const lines = fileContent.split('\n');
@@ -2787,12 +2800,20 @@ export default function CalendarView({
     setTaskContextMenu(null);
   };
 
-  // "İşi Tamamla": hangi kart (ana/[plan:]) üzerinden çağrılırsa çağrılsın, her zaman İŞİN
-  // KENDİSİNİ (ana, occurrence-olmayan satırı) checkbox'ını işaretler — handleToggleTodo'nun
-  // occurrence-özel dallanmasına düşmesin diye ana görev nesnesi ayrıca bulunur.
+  // "İşi Tamamla": hangi kart (ana/[plan:]/seans) üzerinden çağrılırsa çağrılsın, her zaman
+  // İŞİN KENDİSİNİ işaretler. Eski (etiket-tabanlı) occurrence'lar ana işle AYNI satırı
+  // paylaşır (lineIdx eşleşmesiyle bulunur) — ama YENİ nested seans satırları (isSessionLine)
+  // ana işten (subtask'tan) TAMAMEN AYRI bir satırdır, kendi parentTaskId'si ile bulunmalı,
+  // yoksa "İşi Tamamla" yanlışlıkla sadece o SEANSI işaretlerdi.
   const handleCompleteWholeTask = async (task: WorkspaceTask) => {
-    const mainTask = tasks.find(t => t.filePath === task.filePath && t.lineIdx === task.lineIdx && !t.isPlanOccurrence && !t.isSessionOccurrence && !t.isExternal) || task;
-    await handleToggleTodo(mainTask.id);
+    let mainTask: WorkspaceTask | undefined;
+    if (task.parentTaskId) {
+      mainTask = tasks.find(t => t.id === task.parentTaskId);
+    }
+    if (!mainTask) {
+      mainTask = tasks.find(t => t.filePath === task.filePath && t.lineIdx === task.lineIdx && !t.isPlanOccurrence && !t.isSessionOccurrence && !t.isExternal);
+    }
+    await handleToggleTodo((mainTask || task).id);
     setTaskContextMenu(null);
   };
 
