@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
-import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2 } from 'lucide-react';
+import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2, CheckCircle2, Circle } from 'lucide-react';
 
 interface NoteItem {
   name: string;
@@ -242,7 +242,11 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // Kanban'da sadece subtask (derinlik 1) kart olur, seans satırları (derinlik 2) filtrelenir —
   // bkz. currentProjectTasks'taki subtaskDepth kontrolü.
   interface PlannerSession { dateStr: string; startTime: string; endTime: string; }
-  interface PlannerSubtask { id: string; name: string; hours: number; sessions: PlannerSession[]; }
+  // İSTEK (kullanıcı: "peki subtaskı nasıl tam olarak işaretliyoruz"): önceden bu modalda
+  // subtask'ın KENDİ tamamlanma durumu hiç görünmüyordu/değiştirilemiyordu — sadece Kanban
+  // tahtasından (kartı "Bitti" sütununa sürükleyerek) ya da notun kendisinden mümkündü.
+  // Artık isChecked buradan da (bkz. aşağıdaki checkbox) doğrudan işaretlenebiliyor.
+  interface PlannerSubtask { id: string; name: string; hours: number; sessions: PlannerSession[]; isChecked: boolean; }
   const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
   const [plannerTaskName, setPlannerTaskName] = useState('');
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
@@ -288,9 +292,10 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const result: PlannerSubtask[] = [];
     let i = parentIdx + 1;
     while (i < lines.length && /^ {2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) {
-      const subMatch = lines[i].match(/^ {2}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
+      const subMatch = lines[i].match(/^ {2}[*\-]\s+\[([ xX\/])\]\s+(.*)$/);
       if (subMatch) {
-        const rawText = subMatch[1];
+        const isChecked = subMatch[1].toLowerCase() === 'x';
+        const rawText = subMatch[2];
         const hoursMatch = rawText.match(/\[hours:([\d.]+)\]/i);
         // Geriye dönük uyumluluk: v1.26.2-1.26.4'te subtask satırının KENDİSİ [due:]/
         // [plannedtime:]/[plan:] taşıyordu (bkz. yukarıdaki "İKİNCİ/ÜÇÜNCÜ DENEME" notu) —
@@ -306,7 +311,8 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           id: `sub-${i}-${Date.now()}-${Math.random()}`,
           name: rawText.replace(/\[[^\]]+\]/g, '').trim(),
           hours: hoursMatch ? parseFloat(hoursMatch[1]) : 4,
-          sessions
+          sessions,
+          isChecked
         });
       } else if (result.length > 0) {
         // TAM 4 boşluklu bir SEANS satırı — az önce push edilen subtask'a ait.
@@ -366,9 +372,12 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     subtasks.forEach(s => {
       const bucket = byName.get(s.name.trim().toLowerCase());
       const old = bucket && bucket.length ? bucket.shift() : undefined;
-      const oldSubMatch = old ? old.subLine.match(/^( {2}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
-      const subPrefix = oldSubMatch ? oldSubMatch[1] : '  - [ ]';
-      const preservedSub = (oldSubMatch ? oldSubMatch[2] : '')
+      const oldSubMatch = old ? old.subLine.match(/^ {2}[*\-]\s+\[[ xX\/]\]\s*(.*)$/) : null;
+      // İSTEK ("subtaskı nasıl tam olarak işaretliyoruz"): checkbox artık ESKİ satırdan
+      // pasifçe KORUNMUYOR — bu modaldaki checkbox tıklaması dahil, `s.isChecked` STATE'İNDEN
+      // aktif olarak YAZILIYOR (hours/due gibi planlayıcının yönettiği diğer alanlarla tutarlı).
+      const subPrefix = `  - [${s.isChecked ? 'x' : ' '}]`;
+      const preservedSub = (oldSubMatch ? oldSubMatch[1] : '')
         .replace(/\[hours:[\d.]+\]/gi, '')
         .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
         .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
@@ -1097,7 +1106,23 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                   {plannerSubtasks.map((s, i) => (
                     <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-tertiary)', borderRadius: '6px', padding: '6px 10px' }}>
                       <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '16px' }}>{i + 1}.</span>
-                      <span style={{ flex: 1, fontSize: '13px' }}>{s.name}</span>
+                      {/* İSTEK ("peki subtaskı nasıl tam olarak işaretliyoruz"): önceden bu
+                          modalda subtask'ın kendi tamamlanma durumu hiç görünmüyordu — sadece
+                          Kanban'dan ("Bitti" sütununa sürükleyerek) ya da notun kendisinden
+                          mümkündü. Artık buradan da doğrudan işaretlenebiliyor. */}
+                      <button
+                        type="button"
+                        title={s.isChecked ? 'Bu iş bitti — geri al' : 'Bu işi bitti olarak işaretle'}
+                        onClick={() => {
+                          const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, isChecked: !x.isChecked } : x);
+                          setPlannerSubtasks(updated);
+                          rewriteWorkItemChildren(updated);
+                        }}
+                        style={{ background: 'transparent', border: 'none', color: s.isChecked ? '#4caf50' : 'var(--text-muted)', cursor: 'pointer', display: 'flex', flexShrink: 0 }}
+                      >
+                        {s.isChecked ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                      </button>
+                      <span style={{ flex: 1, fontSize: '13px', textDecoration: s.isChecked ? 'line-through' : 'none', color: s.isChecked ? 'var(--text-muted)' : undefined }}>{s.name}</span>
                       {/* İSTEK (kullanıcı: "session mantığının ayrı bir yapı olmasını istiyorum"):
                           her seans artık gerçek, bağımsız bir alt-alt satır (kendi checkbox'ı) —
                           burada sadece kaç tane planlandığını ve ilkinin tarihini özetliyoruz. */}
@@ -1168,7 +1193,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                   disabled={!plannerNewSubtaskName.trim() || !plannerTaskName.trim()}
                   onClick={() => {
                     const hours = parseFloat(plannerNewSubtaskHours) || 1;
-                    const updated = [...plannerSubtasks, { id: `${Date.now()}-${Math.random()}`, name: plannerNewSubtaskName.trim(), hours, sessions: [] }];
+                    const updated = [...plannerSubtasks, { id: `${Date.now()}-${Math.random()}`, name: plannerNewSubtaskName.trim(), hours, sessions: [], isChecked: false }];
                     setPlannerSubtasks(updated);
                     rewriteWorkItemChildren(updated);
                     setPlannerNewSubtaskName('');
