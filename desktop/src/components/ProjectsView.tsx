@@ -170,9 +170,16 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // oluşturulanlar dahil, kendi [project:] etiketini taşırlar) eskiden !t.isSubtask ile
   // Kanban'dan tamamen dışlanıyordu — tek tek ilerleme takibi imkansızdı. Artık alt görevler
   // de kendi kartı olarak görünüyor, sürükleyip durumunu değiştirebilirsin.
-  const currentProjectTasks = selectedProject
+  // İSTEK (kullanıcı: "session mantığının ayrı bir yapı olmasını istiyorum — Task > subtask >
+  // session iç içe"): artık İş Planla bir alt görevin zamanlanmış seanslarını AYRI, alt
+  // görevin ALTINA girintili gerçek checklist satırları olarak yazıyor (bkz. rewriteWorkItemChildren
+  // aşağıda). Bunlar da teknik olarak "subtask" (isSubtask:true) ama Kanban'da kendi kartı OLMAMALI
+  // — sadece bir seviye üstteki iş kalemi (subtaskDepth 1) kart olur, 2+ derinlikteki seans
+  // satırları (subtaskDepth 2) burada FİLTRELENİR (onlar Takvim'de kendi kartları olarak görünür).
+  const currentProjectTasks = (selectedProject
     ? timelineItems.filter(t => t.isTodo && isProjectTask(t, selectedProject))
-    : timelineItems.filter(t => t.isTodo && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))));
+    : timelineItems.filter(t => t.isTodo && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))))
+  ).filter(t => (t.subtaskDepth ?? 0) < 2);
 
   // Renk/icon seçimi, müşteri notunun İÇİNE [renk:hex]/[icon:emoji] etiketi olarak yazılır
   // (bkz. App.tsx'teki projectColors haritası — CalendarView bu etiketleri görev kartlarında
@@ -218,17 +225,24 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // iki AYRI iş kalemi gibi göründü), gerekli saat toplamı da ikiye katlandı ve sığmama
   // hatası yanlış çıktı (kullanıcı geri bildirimi: "subtaskları arttırmışsın, onlar SESSION
   // olmalıydı, taskı neden arttırdın").
-  // ÜÇÜNCÜ (kalıcı) ÇÖZÜM: "seans" (session) ile "subtask" ayrı kavramlar. Subtask TEK satır,
-  // TEK checkbox olarak kalır (planlayıcı onu asla çoğaltmaz) — hours/due/plannedTime hep
-  // subtask'ın kendisine ait TEK bir ana zaman aralığını temsil eder. Öğleyi aşan fazla
-  // saatler subtask'a EK bir seans olarak, `extraPlan` alanıyla [plan:TARİH THH:MM-HH:MM]
-  // etiketi olarak AYNI satıra eklenir (Calendar'ın zaten var olan, çok-seanslı planlama
-  // altyapısı — bkz. CalendarView.tsx isPlanOccurrence). Bu kart takvimde ayrı ve bağımsız
-  // "tamamlandı" işaretlenebilir GÖRÜNÜR ama subtask'ın checkbox'ını TETİKLEMEZ — Calendar'daki
-  // handleToggleTodo'nun isPlanOccurrence dalı, bu kartı tamamlandı işaretlemeyi ana checkbox'ı
-  // değiştirmek yerine [plan:...] etiketini [session:...] (geçmiş kaydı) etiketine çevirerek
-  // uygular. Subtask'ın kendi checkbox'ı SADECE elle (Kanban/Not görünümünde) kapatılır.
-  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; extraPlan?: string; }
+  // ÜÇÜNCÜ DENEME: subtask'a `extraPlan` alanıyla EK bir [plan:] etiketi eklemek (Calendar'ın
+  // isPlanOccurrence altyapısını yeniden kullanarak) → checkbox paylaşımı sorununu çözdü AMA
+  // dönüşüm sonrası ortaya çıkan [session:] geçmiş kaydı kartı hâlâ aynı satırın PAYLAŞILAN
+  // checkbox'ına bağlıydı ve aktif bir görev gibi görünüyordu (kullanıcı: "ilkine bastım
+  // ikincisi de kapandı... task ve session olayı KESİN bir şekilde ayırt edilsin").
+  // DÖRDÜNCÜ (kalıcı) ÇÖZÜM — kullanıcının kendi önerisi: gerçek 3 SEVİYELİ iç içe checklist.
+  //   - [ ] İş (ana görev)
+  //     - [ ] Alt görev (subtask, TEK satır, TEK checkbox, hours taşır — asla çoğalmaz)
+  //       - [ ] 2026-08-27 09:00-12:00   (seans — kendi GERÇEK checkbox'ı, kendi satırı)
+  //       - [ ] 2026-08-27 13:00-18:00   (ikinci seans — TAMAMEN bağımsız satır/checkbox)
+  // Bu, App.tsx/CalendarView.tsx'in zaten var olan girinti-tabanlı (parentStack) tarayıcısını
+  // kullanır — her satır (derinliği ne olursa olsun) KENDİ checkbox/due/plannedtime'ını taşır,
+  // hiçbir özel "occurrence" mekanizmasına veya tag paylaşımına gerek YOK. Bir seansı tamamlamak
+  // sadece O satırın checkbox'ını işaretler; subtask'ın kendi checkbox'ı ayrı, elle kapatılır.
+  // Kanban'da sadece subtask (derinlik 1) kart olur, seans satırları (derinlik 2) filtrelenir —
+  // bkz. currentProjectTasks'taki subtaskDepth kontrolü.
+  interface PlannerSession { dateStr: string; startTime: string; endTime: string; }
+  interface PlannerSubtask { id: string; name: string; hours: number; sessions: PlannerSession[]; }
   const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
   const [plannerTaskName, setPlannerTaskName] = useState('');
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
@@ -261,8 +275,10 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     return Array.from(new Set(names));
   };
 
-  // Bir "iş"in nottaki İÇİNDE zaten kayıtlı alt görevlerini (varsa tarih/saatleriyle) okur —
-  // modal açılırken veya iş adı bir mevcut işle eşleşince kullanılır.
+  // Bir "iş"in nottaki İÇİNDE zaten kayıtlı alt görevlerini (varsa seanslarıyla) okur — modal
+  // açılırken veya iş adı bir mevcut işle eşleşince kullanılır. Girinti TAM olarak ayırt edilir:
+  // subtask = 2 boşluk, seans = 4 boşluk (bkz. yukarıdaki "3 seviyeli yapı" yorumu) — \s{2,}
+  // (2+) KULLANILMAZ, aksi halde seans satırları yanlışlıkla yeni birer subtask sanılır.
   const loadWorkItemSubtasks = (path: string, taskName: string): PlannerSubtask[] => {
     const content = scannedContents[path] || '';
     const lines = content.split('\n');
@@ -271,34 +287,44 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     if (parentIdx === -1) return [];
     const result: PlannerSubtask[] = [];
     let i = parentIdx + 1;
-    while (i < lines.length && /^\s{2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) {
-      const nameMatch = lines[i].match(/^\s{2,}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
-      if (nameMatch) {
-        const rawText = nameMatch[1];
+    while (i < lines.length && /^ {2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) {
+      const subMatch = lines[i].match(/^ {2}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
+      if (subMatch) {
+        const rawText = subMatch[1];
         const hoursMatch = rawText.match(/\[hours:([\d.]+)\]/i);
-        const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
-        const timeMatch = rawText.match(/\[plannedtime:(\d{2}:\d{2}-\d{2}:\d{2})\]/i);
-        // Ek seans (bkz. yukarıdaki PlannerSubtask.extraPlan yorumu) — Calendar'ın kendi
-        // [plan:] etiketiyle AYNI biçim, bu satırdaki mevcut değeri kaybetmemek için okunur.
-        const planMatch = rawText.match(/\[plan:(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?)\]/i);
+        // Geriye dönük uyumluluk: v1.26.2-1.26.4'te subtask satırının KENDİSİ [due:]/
+        // [plannedtime:]/[plan:] taşıyordu (bkz. yukarıdaki "İKİNCİ/ÜÇÜNCÜ DENEME" notu) —
+        // eski diskteki bu format burada otomatik SEANS'a göçürülür; bir sonraki
+        // rewriteWorkItemChildren çağrısında yeni (iç içe satır) formatla yeniden yazılır.
+        const legacyDue = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
+        const legacyTime = rawText.match(/\[(?:plannedtime|time):(\d{2}:\d{2})-(\d{2}:\d{2})\]/i);
+        const legacyPlan = rawText.match(/\[plan:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})-(\d{2}:\d{2})\]/i);
+        const sessions: PlannerSession[] = [];
+        if (legacyDue && legacyTime) sessions.push({ dateStr: legacyDue[1], startTime: legacyTime[1], endTime: legacyTime[2] });
+        if (legacyPlan) sessions.push({ dateStr: legacyPlan[1], startTime: legacyPlan[2], endTime: legacyPlan[3] });
         result.push({
           id: `sub-${i}-${Date.now()}-${Math.random()}`,
           name: rawText.replace(/\[[^\]]+\]/g, '').trim(),
           hours: hoursMatch ? parseFloat(hoursMatch[1]) : 4,
-          due: dueMatch ? dueMatch[1] : undefined,
-          plannedTime: timeMatch ? timeMatch[1] : undefined,
-          extraPlan: planMatch ? planMatch[1] : undefined
+          sessions
         });
+      } else if (result.length > 0) {
+        // TAM 4 boşluklu bir SEANS satırı — az önce push edilen subtask'a ait.
+        const sessMatch = lines[i].match(/^ {4}[*\-]\s+\[[ xX\/]\]\s+.*?(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})-(\d{2}:\d{2})/);
+        if (sessMatch) {
+          result[result.length - 1].sessions.push({ dateStr: sessMatch[1], startTime: sessMatch[2], endTime: sessMatch[3] });
+        }
       }
       i++;
     }
     return result;
   };
 
-  // Tek çekirdek yazma fonksiyonu — ebeveyn "iş" satırını korur (yoksa oluşturur), alt görev
-  // BLOĞUNU verilen listeden YENİDEN üretir. Hem "Alt Görev Ekle/Sil/Düzenle" hem "Zamanla →
-  // Uygula" AYNI fonksiyonu çağırır; farkları sadece hangi alanları (due/plannedTime) taşıyan
-  // bir subtasks listesi verdikleridir.
+  // Tek çekirdek yazma fonksiyonu — ebeveyn "iş" satırını korur (yoksa oluşturur), alt görev +
+  // seans BLOĞUNU verilen listeden YENİDEN üretir. Hem "Alt Görev Ekle/Sil/Düzenle" hem
+  // "Zamanla → Uygula" AYNI fonksiyonu çağırır; farkları sadece subtask'ların `sessions`
+  // dizisinin dolu olup olmadığıdır. Her subtask KENDİ satırı, her seans subtask'ın ALTINA
+  // girintili KENDİ satırı olarak yazılır — hiçbiri paylaşılan bir checkbox/tag TAŞIMAZ.
   const rewriteWorkItemChildren = async (subtasks: PlannerSubtask[], parentDue?: string) => {
     if (!plannerProject || !onSaveNote || !plannerTaskName.trim()) return;
     const projectSlug = plannerProject.name.toLocaleLowerCase('tr').replace(/\s+/g, '-');
@@ -307,52 +333,76 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const parentRegex = new RegExp(`^[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(plannerTaskName)}\\s*\\[`, 'i');
     const parentIdx = lines.findIndex(l => parentRegex.test(l));
 
-    // BUG DÜZELTMESİ: eskiden her yeniden yazımda TÜM alt görev satırları "- [ ]" (işaretsiz)
-    // olarak SIFIRDAN üretiliyordu — bir alt görevi tamamlanmış işaretleyip SONRA başka bir
-    // alt görev eklesen/düzenlesen, tamamlanma (checkbox + [started:]/[completed:]/[outcome:])
-    // SESSİZCE kayboluyordu. Artık her satırın MEVCUT checkbox işareti ve bilinmeyen (hours/
-    // due/plannedtime/project DIŞINDAKİ) etiketleri İSİM eşleştirmesiyle korunuyor (konum değil
-    // — öğle bölünmesinde araya YENİ bir satır eklendiğinde konum kayması yanlış satırı
-    // eşleştirmesin diye) — sadece bizim yönettiğimiz alanlar güncelleniyor.
-    let existingChildRaw: string[] = [];
+    // BUG DÜZELTMESİ: eskiden her yeniden yazımda TÜM satırlar "- [ ]" (işaretsiz) olarak
+    // SIFIRDAN üretiliyordu — bir alt görevi/seansı tamamlanmış işaretleyip SONRA başka bir
+    // şey eklesen/düzenlesen, tamamlanma (checkbox + [started:]/[completed:]/[outcome:])
+    // SESSİZCE kayboluyordu. Artık her satırın MEVCUT checkbox işareti ve bilinmeyen etiketleri
+    // İSİM/SEANS eşleştirmesiyle korunuyor (konum değil — araya yeni bir satır eklendiğinde
+    // konum kayması yanlış satırı eşleştirmesin diye).
+    // Mevcut bloğu subtask satırları VE altlarındaki seans satırları olarak grupla.
+    type ExistingGroup = { subLine: string; sessionLines: string[] };
+    const existingGroups: ExistingGroup[] = [];
     if (parentIdx !== -1) {
       let i = parentIdx + 1;
-      while (i < lines.length && /^\s{2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) { existingChildRaw.push(lines[i]); i++; }
+      while (i < lines.length && /^ {2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) {
+        if (/^ {2}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) {
+          existingGroups.push({ subLine: lines[i], sessionLines: [] });
+        } else if (existingGroups.length > 0) {
+          existingGroups[existingGroups.length - 1].sessionLines.push(lines[i]);
+        }
+        i++;
+      }
     }
-    const byName = new Map<string, string[]>();
-    existingChildRaw.forEach(line => {
-      const m = line.match(/^\s{2,}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
+    const byName = new Map<string, ExistingGroup[]>();
+    existingGroups.forEach(g => {
+      const m = g.subLine.match(/^ {2}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
       if (!m) return;
       const cleanName = m[1].replace(/\[[^\]]+\]/g, '').trim().toLowerCase();
       if (!byName.has(cleanName)) byName.set(cleanName, []);
-      byName.get(cleanName)!.push(line);
+      byName.get(cleanName)!.push(g);
     });
 
-    const childLines = subtasks.map(s => {
+    const childLines: string[] = [];
+    subtasks.forEach(s => {
       const bucket = byName.get(s.name.trim().toLowerCase());
       const old = bucket && bucket.length ? bucket.shift() : undefined;
-      const oldMatch = old ? old.match(/^(\s{2,}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
-      const prefix = oldMatch ? oldMatch[1] : '  - [ ]';
-      const preserved = (oldMatch ? oldMatch[2] : '')
+      const oldSubMatch = old ? old.subLine.match(/^( {2}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
+      const subPrefix = oldSubMatch ? oldSubMatch[1] : '  - [ ]';
+      const preservedSub = (oldSubMatch ? oldSubMatch[2] : '')
         .replace(/\[hours:[\d.]+\]/gi, '')
         .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
         .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
-        .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
-        // Ek seans (bkz. PlannerSubtask.extraPlan) — bu, planlayıcının YÖNETTİĞİ bir alan,
-        // eski değeri burada silinip aşağıda `s.extraPlan`'dan güncel haliyle yeniden yazılır.
         .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
+        .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
+      let subLine = preservedSub && preservedSub.toLowerCase().includes(s.name.toLowerCase())
+        ? `${subPrefix} ${preservedSub}`
+        : `${subPrefix} ${s.name}${preservedSub ? ' ' + preservedSub : ''}`;
+      subLine += ` [hours:${s.hours}] [project:${projectSlug}]`;
+      childLines.push(subLine);
 
-      let l = preserved && preserved.toLowerCase().includes(s.name.toLowerCase())
-        ? `${prefix} ${preserved}`
-        : `${prefix} ${s.name}${preserved ? ' ' + preserved : ''}`;
-      l += ` [hours:${s.hours}]`;
-      if (s.due) l += ` [due:${s.due}]`;
-      if (s.plannedTime) l += ` [plannedtime:${s.plannedTime}]`;
-      if (s.extraPlan) l += ` [plan:${s.extraPlan}]`;
-      l += ` [project:${projectSlug}]`;
-      return l;
+      // Seans satırları — mevcut olanları TARİH+SAAT imzasıyla eşleştirip checkbox/tag korur,
+      // eşleşmeyen (yeni) seanslar işaretsiz olarak eklenir.
+      const oldSessions = old ? [...old.sessionLines] : [];
+      s.sessions.forEach(sess => {
+        const sig = `${sess.dateStr} ${sess.startTime}-${sess.endTime}`;
+        const matchIdx = oldSessions.findIndex(l => l.includes(sig));
+        const oldSessLine = matchIdx !== -1 ? oldSessions.splice(matchIdx, 1)[0] : undefined;
+        const oldSessMatch = oldSessLine ? oldSessLine.match(/^( {4}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
+        const sessPrefix = oldSessMatch ? oldSessMatch[1] : '    - [ ]';
+        const preservedSess = (oldSessMatch ? oldSessMatch[2] : '')
+          .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+          .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+          .replace(new RegExp(escapeRegExp(sig), 'i'), '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        let sessLine = `${sessPrefix} ${s.name} ${sig}`;
+        if (preservedSess) sessLine += ` ${preservedSess}`;
+        sessLine += ` [due:${sess.dateStr}] [plannedtime:${sess.startTime}-${sess.endTime}] [project:${projectSlug}]`;
+        childLines.push(sessLine);
+      });
     });
 
     let newLines: string[];
@@ -362,7 +412,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       newLines = [...lines, '', parentLine, ...childLines];
     } else {
       let childEnd = parentIdx + 1;
-      while (childEnd < lines.length && /^\s{2,}[*\-]\s+\[[ xX\/]\]/.test(lines[childEnd])) childEnd++;
+      while (childEnd < lines.length && /^ {2,}[*\-]\s+\[[ xX\/]\]/.test(lines[childEnd])) childEnd++;
       let parentLine = lines[parentIdx];
       if (parentDue) {
         parentLine = parentLine.replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '').trimEnd() + ` [due:${parentDue}]`;
@@ -569,24 +619,23 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     [plannerProject, plannerSubtasks, plannerDeadline, plannerDedication, plannerMode]
   );
 
-  // "Zamanla → Uygula" — AYRI bir adım: alt görev TANIMLARINI (isim/saat) değiştirmez,
-  // sadece her birine hesaplanan [due:]/[plannedtime:]'ı ekler/günceller. İstediğin an tarih/
-  // oranı değiştirip yeniden Uygula'ya basınca aynı satırlar güncellenir — yeniden yazılmaz.
+  // "Zamanla → Uygula" — AYRI bir adım: alt görev TANIMLARINI (isim/saat) değiştirmez, sadece
+  // her birinin `sessions` dizisini hesaplanan yerleştirmeyle değiştirir. İstediğin an tarih/
+  // oranı değiştirip yeniden Uygula'ya basınca aynı satırlar güncellenir (bkz. yukarıdaki
+  // rewriteWorkItemChildren'daki tarih+saat imzasıyla eşleştirme — yeniden yazılmaz).
   const handleApplyPlanner = async () => {
     if (!plannerProject || !plannerSchedule || !onSaveNote) return;
-    // Öğleyi aşan bir yerleştirme SUBTASK'ı ÇOĞALTMAZ (bkz. yukarıdaki PlannerSubtask
-    // yorumundaki üç deneme özeti) — aynı subtask'a, Calendar'da ayrı ve bağımsız
-    // tamamlanabilir bir kart olarak görünecek EK bir seans (extraPlan → [plan:] etiketi)
-    // eklenir.
+    // Öğleyi aşan bir yerleştirme SUBTASK'ı ÇOĞALTMAZ — aynı subtask'a, kendi ALTINDA
+    // girintili, TAMAMEN bağımsız checkbox'lı ikinci bir SEANS satırı eklenir (bkz. yukarıdaki
+    // PlannerSubtask yorumundaki "DÖRDÜNCÜ (kalıcı) ÇÖZÜM").
     const updated: PlannerSubtask[] = plannerSubtasks.map(s => {
       const p = plannerSchedule.placements.find(pl => pl.subtaskId === s.id);
       if (!p) return s;
-      return {
-        ...s,
-        due: p.dateStr,
-        plannedTime: `${p.startTime}-${p.endTime}`,
-        extraPlan: p.afternoonSplit ? `${p.dateStr}T${p.afternoonSplit.startTime}-${p.afternoonSplit.endTime}` : undefined
-      };
+      const sessions: PlannerSession[] = [{ dateStr: p.dateStr, startTime: p.startTime, endTime: p.endTime }];
+      if (p.afternoonSplit) {
+        sessions.push({ dateStr: p.dateStr, startTime: p.afternoonSplit.startTime, endTime: p.afternoonSplit.endTime });
+      }
+      return { ...s, sessions };
     });
     setPlannerSubtasks(updated);
     await rewriteWorkItemChildren(updated, plannerDeadline);
@@ -1049,21 +1098,19 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                     <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-tertiary)', borderRadius: '6px', padding: '6px 10px' }}>
                       <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '16px' }}>{i + 1}.</span>
                       <span style={{ flex: 1, fontSize: '13px' }}>{s.name}</span>
-                      {s.due && (
+                      {/* İSTEK (kullanıcı: "session mantığının ayrı bir yapı olmasını istiyorum"):
+                          her seans artık gerçek, bağımsız bir alt-alt satır (kendi checkbox'ı) —
+                          burada sadece kaç tane planlandığını ve ilkinin tarihini özetliyoruz. */}
+                      {s.sessions.length > 0 && (
                         <>
-                          <span style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
-                            📅 {s.due.slice(5)}
+                          <span title={s.sessions.map(sess => `${sess.dateStr} ${sess.startTime}-${sess.endTime}`).join(' + ')} style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
+                            📅 {s.sessions[0].dateStr.slice(5)}{s.sessions.length > 1 ? ` +${s.sessions.length - 1} seans` : ''}
                           </span>
-                          {s.extraPlan && (
-                            <span title="Öğleden sonrası ayrı bir seans olarak takvimde, bağımsız tamamlanabilir" style={{ fontSize: '10px', color: '#ffa726', background: 'rgba(255,167,38,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
-                              +1 seans
-                            </span>
-                          )}
                           <button
                             type="button"
-                            title="Takvimden geri çek (planı ve ek seansı iptal et)"
+                            title="Takvimden geri çek (tüm seansları iptal et)"
                             onClick={() => {
-                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined, extraPlan: undefined } : x);
+                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, sessions: [] } : x);
                               setPlannerSubtasks(updated);
                               rewriteWorkItemChildren(updated);
                             }}
@@ -1121,7 +1168,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                   disabled={!plannerNewSubtaskName.trim() || !plannerTaskName.trim()}
                   onClick={() => {
                     const hours = parseFloat(plannerNewSubtaskHours) || 1;
-                    const updated = [...plannerSubtasks, { id: `${Date.now()}-${Math.random()}`, name: plannerNewSubtaskName.trim(), hours }];
+                    const updated = [...plannerSubtasks, { id: `${Date.now()}-${Math.random()}`, name: plannerNewSubtaskName.trim(), hours, sessions: [] }];
                     setPlannerSubtasks(updated);
                     rewriteWorkItemChildren(updated);
                     setPlannerNewSubtaskName('');

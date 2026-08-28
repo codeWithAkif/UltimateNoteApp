@@ -198,6 +198,13 @@ export interface TimelineItem {
   ownTags: string[];
   isSubtask?: boolean;
   parentId?: string;
+  // İSTEK (kullanıcı: "session mantığının ayrı bir yapı olmasını istiyorum — Task > subtask >
+  // session" şeklinde 3 seviyeli, iç içe checklist): girinti tabanlı ebeveyn-yığını (parentStack)
+  // zaten rastgele derinlikte iç içe geçmeyi destekliyordu, ama tüketen kod (örn. ProjectsView'in
+  // Kanban görünümü) "subtask" (İş Planla alt görevi) ile onun altındaki "session" (zamanlanmış
+  // seans) satırlarını AYIRT edemiyordu — ikisi de isSubtask:true. subtaskDepth (0=ana iş,
+  // 1=subtask, 2=session, ...) bu ayrımı yapmayı sağlar.
+  subtaskDepth?: number;
 }
 
 interface AlarmItem {
@@ -3467,6 +3474,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
             let isSubtask = false;
             let parentId = undefined;
+            const subtaskDepth = parentStack.length;
             if (parentStack.length > 0) {
               isSubtask = true;
               parentId = parentStack[parentStack.length - 1].id;
@@ -3571,7 +3579,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               tags: mergedTags,
               ownTags: taskTags,
               isSubtask,
-              parentId
+              parentId,
+              subtaskDepth
             });
           } else if (logHeaderMatch) {
             const dateStr = logHeaderMatch[1];
