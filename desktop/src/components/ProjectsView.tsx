@@ -319,6 +319,11 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // lazım, bana kaç gün diye sormalı"): kullanıcı bir TARİH değil, "kaç iş günü içinde"
   // sorusuna cevap verir — bitiş tarihi bundan HESAPLANIR ve kendisine gösterilir.
   const [plannerDeadlineDays, setPlannerDeadlineDays] = useState('10');
+  // İSTEK (kullanıcı geri bildirimi: "başlangıç tarihini belirleyebilmem lazım, birkaç gün
+  // önce başlamış olabilirim, default today gelsin"): "kaç iş günü" sayımı varsayılan olarak
+  // bugünden başlar ama kullanıcı geriye/ileriye alabilir (işe zaten başlamıştıysa).
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+  const [plannerStartDate, setPlannerStartDate] = useState(todayStr);
   const [plannerDedication, setPlannerDedication] = useState(80);
   // İSTEK (kullanıcı geri bildirimi: "bana sorularak belirlensin, birden fazla seçenek
   // olsun"): dedike oranının nasıl uygulanacağı HER SEFERİNDE bu seçiciyle sorulur —
@@ -347,11 +352,12 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const pad2 = (n: number) => String(n).padStart(2, '0');
   const formatDateStr = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
-  // "Kaç iş günü içinde?" sorusundan bitiş tarihini hesaplar (bugünden itibaren, sadece
-  // hafta içi günleri sayarak).
-  const addBusinessDays = (days: number): Date => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
+  // "Kaç iş günü içinde?" sorusundan bitiş tarihini hesaplar — İSTEK: bugünden değil,
+  // kullanıcının belirlediği BAŞLANGIÇ tarihinden itibaren (işe birkaç gün önce başlamış
+  // olabilir), sadece hafta içi günleri sayarak.
+  const addBusinessDays = (startDateStr: string, days: number): Date => {
+    const d = new Date(`${startDateStr}T00:00:00`);
+    if (isNaN(d.getTime())) d.setTime(new Date().setHours(0, 0, 0, 0));
     let added = 0;
     while (added < days) {
       d.setDate(d.getDate() + 1);
@@ -363,17 +369,18 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
 
   const plannerDeadlineDaysNum = Math.max(1, parseInt(plannerDeadlineDays, 10) || 1);
   const plannerDeadline = useMemo(
-    () => formatDateStr(addBusinessDays(plannerDeadlineDaysNum)),
+    () => formatDateStr(addBusinessDays(plannerStartDate, plannerDeadlineDaysNum)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [plannerDeadlineDaysNum, plannerProject?.path]
+    [plannerDeadlineDaysNum, plannerStartDate, plannerProject?.path]
   );
 
-  // Bugünden (dahil) verilen bitiş tarihine (dahil) kadar SADECE hafta içi (Pzt-Cum) günler.
+  // BAŞLANGIÇ tarihinden (dahil) verilen bitiş tarihine (dahil) kadar SADECE hafta içi
+  // (Pzt-Cum) günler.
   const getWeekdaysUntil = (deadlineStr: string): Date[] => {
     if (!deadlineStr) return [];
     const days: Date[] = [];
-    const cursor = new Date();
-    cursor.setHours(0, 0, 0, 0);
+    const cursor = new Date(`${plannerStartDate}T00:00:00`);
+    if (isNaN(cursor.getTime())) cursor.setTime(new Date().setHours(0, 0, 0, 0));
     const end = new Date(`${deadlineStr}T00:00:00`);
     if (isNaN(end.getTime()) || end < cursor) return [];
     while (cursor <= end) {
@@ -679,6 +686,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                                 setPlannerNewSubtaskName('');
                                 setPlannerNewSubtaskHours('4');
                                 setPlannerDeadlineDays('10');
+                                setPlannerStartDate(todayStr);
                                 setPlannerDedication(80);
                                 setPlannerMode('skip-days');
                                 setPlannerShowSchedule(false);
@@ -963,9 +971,23 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                       <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '16px' }}>{i + 1}.</span>
                       <span style={{ flex: 1, fontSize: '13px' }}>{s.name}</span>
                       {s.due && (
-                        <span style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
-                          📅 {s.due.slice(5)}
-                        </span>
+                        <>
+                          <span style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
+                            📅 {s.due.slice(5)}{s.extraPlan && ' +1'}
+                          </span>
+                          <button
+                            type="button"
+                            title="Takvimden geri çek (planı iptal et)"
+                            onClick={() => {
+                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined, extraPlan: undefined } : x);
+                              setPlannerSubtasks(updated);
+                              rewriteWorkItemChildren(updated);
+                            }}
+                            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', fontSize: '12px' }}
+                          >
+                            ↩
+                          </button>
+                        </>
                       )}
                       <input
                         type="number"
@@ -1048,6 +1070,16 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
             <>
             <div style={{ display: 'flex', gap: '14px', marginBottom: '14px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>BAŞLANGIÇ TARİHİ</label>
+                <input
+                  type="date"
+                  value={plannerStartDate}
+                  onChange={(e) => setPlannerStartDate(e.target.value || todayStr)}
+                  style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 12px', fontSize: '13px', outline: 'none' }}
+                />
+                <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>İşe zaten başlamışsan geriye alabilirsin — varsayılan bugün.</span>
+              </div>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>KAÇ İŞ GÜNÜ İÇİNDE?</label>
                 <input
                   type="number"
@@ -1060,6 +1092,9 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                   Son tarih: <strong style={{ color: 'var(--text-secondary)' }}>{new Date(`${plannerDeadline}T00:00:00`).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>
                 </span>
               </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '14px', marginBottom: '14px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>DEDİKE % ({plannerDedication})</label>
                 <input
