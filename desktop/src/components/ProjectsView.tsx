@@ -219,7 +219,14 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const lines = content.split('\n');
     const names: string[] = [];
     for (let i = 0; i < lines.length - 1; i++) {
-      const m = lines[i].match(/^\s*[*\-]\s+\[[ xX\/]\]\s+(.*?)\s*\[(?:project|proje):([a-z0-9\-]+)\]/i);
+      // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "Mevcut işlerde sadece ana tasklar
+      // gözükmeli"): eskiden \s* ile başlayan regex, GİRİNTİLİ alt görev satırlarını da
+      // "iş" (ebeveyn) sanıyordu — bir alt görev, kendinden SONRAKİ alt görevi (o da
+      // [hours:] taşıdığı için) "benim çocuğum" gibi yanlış yorumluyordu. Ebeveyn satır
+      // GİRİNTİSİZ (en fazla tire öncesi birkaç boşluk) olmak ZORUNDA — iki+ boşlukla
+      // başlayan satırlar (alt görevler) burada asla eşleşmemeli.
+      if (/^\s{2,}/.test(lines[i])) continue;
+      const m = lines[i].match(/^[*\-]\s+\[[ xX\/]\]\s+(.*?)\s*\[(?:project|proje):([a-z0-9\-]+)\]/i);
       if (!m || m[2].toLowerCase() !== projectSlug) continue;
       if (/^\s{2,}[*\-]\s+\[[ xX\/]\][^\n]*\[hours:/i.test(lines[i + 1])) {
         names.push(m[1].replace(/\[[^\]]+\]/g, '').trim());
@@ -233,7 +240,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const loadWorkItemSubtasks = (path: string, taskName: string): PlannerSubtask[] => {
     const content = scannedContents[path] || '';
     const lines = content.split('\n');
-    const parentRegex = new RegExp(`^\\s*[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(taskName)}\\s*\\[`, 'i');
+    const parentRegex = new RegExp(`^[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(taskName)}\\s*\\[`, 'i');
     const parentIdx = lines.findIndex(l => parentRegex.test(l));
     if (parentIdx === -1) return [];
     const result: PlannerSubtask[] = [];
@@ -267,7 +274,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const projectSlug = plannerProject.name.toLocaleLowerCase('tr').replace(/\s+/g, '-');
     const content = scannedContents[plannerProject.path] || '';
     const lines = content.split('\n');
-    const parentRegex = new RegExp(`^\\s*[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(plannerTaskName)}\\s*\\[`, 'i');
+    const parentRegex = new RegExp(`^[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(plannerTaskName)}\\s*\\[`, 'i');
     const parentIdx = lines.findIndex(l => parentRegex.test(l));
 
     const childLines = subtasks.map(s => {
@@ -304,9 +311,24 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // sabit bir mantığa kilitlenmiyoruz.
   const [plannerMode, setPlannerMode] = useState<'skip-days' | 'shorten-hours'>('skip-days');
 
+  // İSTEK (kullanıcı geri bildirimi: "9-18 arası dedim, 12-13 öğle arasını da hesaba
+  // katarak 9-18 olacak şekilde yap"): 09:00-18:00 arası TAKVİM penceresi, ama 12:00-13:00
+  // öğle arası GERÇEK çalışma kapasitesine dahil DEĞİL — bir gün 9 saatlik bir aralık gibi
+  // GÖRÜNÜR (09-18) ama içinde 8 saatlik gerçek iş barındırır. Bkz. hourOffsetToClockTime.
   const DAY_START_HOUR = 9;
   const DAY_END_HOUR = 18;
-  const FULL_DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
+  const LUNCH_START_HOUR = 12;
+  const LUNCH_END_HOUR = 13;
+  const FULL_DAY_HOURS = (DAY_END_HOUR - DAY_START_HOUR) - (LUNCH_END_HOUR - LUNCH_START_HOUR);
+
+  // Günün başından itibaren GERÇEK çalışma saati cinsinden bir ofseti (öğle arası HARİÇ
+  // tutularak), gerçek saat:dakikaya çevirir — örn. offsetHours=3 → 12:00 (öğleye kadar
+  // sabah dolmuş), offsetHours=3.5 → 13:30 (öğle arası atlanıp öğleden sonraya geçilmiş).
+  const hourOffsetToClockTime = (offsetHours: number): number => {
+    const morningCapacity = LUNCH_START_HOUR - DAY_START_HOUR;
+    if (offsetHours <= morningCapacity) return DAY_START_HOUR + offsetHours;
+    return LUNCH_END_HOUR + (offsetHours - morningCapacity);
+  };
 
   const pad2 = (n: number) => String(n).padStart(2, '0');
   const formatDateStr = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -405,7 +427,8 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const placements: PlannerPlacement[] = plannerSubtasks
       .map((sub, idx) => {
         if (idx >= usedDays.length) return null;
-        const endH = DAY_START_HOUR + Math.max(0.25, sub.hours || 0);
+        // Öğle arasını (12-13) atlayarak gerçek saat karşılığını bul — bkz. hourOffsetToClockTime.
+        const endH = hourOffsetToClockTime(Math.max(0.25, sub.hours || 0));
         return {
           subtaskId: sub.id,
           label: sub.name,
