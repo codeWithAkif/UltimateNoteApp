@@ -209,11 +209,11 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // zaten kayıtlı olan bu alt görevlere [due:]/[plannedtime:] ekler — tanımlamayı bozmaz.
   // İSTEK (kullanıcı geri bildirimi: "ben gerçek bir ayrım istiyorum, öğle arasındaki yeri
   // boş bırak, taskı ikiye ayır — istersem her birini ayrı ayrı kaydıracağım"): öğleyi aşan
-  // bir alt görev artık SADECE görsel değil, GERÇEKTEN iki bağımsız kart olur — sabah kısmı
-  // ana [due:]/[plannedtime:] olarak, öğleden sonraki kısmı ise Calendar'da zaten var olan
-  // [plan:] mekanizmasıyla (bkz. CalendarView.tsx isPlanOccurrence) AYRI, tam etkileşimli
-  // (kendi başına sürüklenip taşınabilen) bir kart olarak yazılır.
-  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; extraPlan?: string; }
+  // bir alt görev GERÇEKTEN İKİ AYRI satıra (iki bağımsız checkbox) bölünür — bkz.
+  // handleApplyPlanner. İLK DENEME (tek satır + Calendar'ın [plan:] mekanizması) görsel
+  // olarak ayrı ama AYNI checkbox'ı paylaştığından, biri tamamlanınca ikisi de tamamlanmış
+  // görünüyordu (kullanıcı geri bildirimi) — o yüzden artık gerçek iki ayrı satır kullanılıyor.
+  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; }
   const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
   const [plannerTaskName, setPlannerTaskName] = useState('');
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
@@ -263,14 +263,12 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         const hoursMatch = rawText.match(/\[hours:([\d.]+)\]/i);
         const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
         const timeMatch = rawText.match(/\[plannedtime:(\d{2}:\d{2}-\d{2}:\d{2})\]/i);
-        const planMatch = rawText.match(/\[plan:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}-\d{2}:\d{2})\]/i);
         result.push({
           id: `sub-${i}-${Date.now()}-${Math.random()}`,
           name: rawText.replace(/\[[^\]]+\]/g, '').trim(),
           hours: hoursMatch ? parseFloat(hoursMatch[1]) : 4,
           due: dueMatch ? dueMatch[1] : undefined,
-          plannedTime: timeMatch ? timeMatch[1] : undefined,
-          extraPlan: planMatch ? planMatch[1] : undefined
+          plannedTime: timeMatch ? timeMatch[1] : undefined
         });
       }
       i++;
@@ -290,11 +288,46 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const parentRegex = new RegExp(`^[*\\-]\\s+\\[[ xX\\/]\\]\\s+${escapeRegExp(plannerTaskName)}\\s*\\[`, 'i');
     const parentIdx = lines.findIndex(l => parentRegex.test(l));
 
+    // BUG DÜZELTMESİ: eskiden her yeniden yazımda TÜM alt görev satırları "- [ ]" (işaretsiz)
+    // olarak SIFIRDAN üretiliyordu — bir alt görevi tamamlanmış işaretleyip SONRA başka bir
+    // alt görev eklesen/düzenlesen, tamamlanma (checkbox + [started:]/[completed:]/[outcome:])
+    // SESSİZCE kayboluyordu. Artık her satırın MEVCUT checkbox işareti ve bilinmeyen (hours/
+    // due/plannedtime/project DIŞINDAKİ) etiketleri İSİM eşleştirmesiyle korunuyor (konum değil
+    // — öğle bölünmesinde araya YENİ bir satır eklendiğinde konum kayması yanlış satırı
+    // eşleştirmesin diye) — sadece bizim yönettiğimiz alanlar güncelleniyor.
+    let existingChildRaw: string[] = [];
+    if (parentIdx !== -1) {
+      let i = parentIdx + 1;
+      while (i < lines.length && /^\s{2,}[*\-]\s+\[[ xX\/]\]/.test(lines[i])) { existingChildRaw.push(lines[i]); i++; }
+    }
+    const byName = new Map<string, string[]>();
+    existingChildRaw.forEach(line => {
+      const m = line.match(/^\s{2,}[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
+      if (!m) return;
+      const cleanName = m[1].replace(/\[[^\]]+\]/g, '').trim().toLowerCase();
+      if (!byName.has(cleanName)) byName.set(cleanName, []);
+      byName.get(cleanName)!.push(line);
+    });
+
     const childLines = subtasks.map(s => {
-      let l = `  - [ ] ${s.name} [hours:${s.hours}]`;
+      const bucket = byName.get(s.name.trim().toLowerCase());
+      const old = bucket && bucket.length ? bucket.shift() : undefined;
+      const oldMatch = old ? old.match(/^(\s{2,}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
+      const prefix = oldMatch ? oldMatch[1] : '  - [ ]';
+      const preserved = (oldMatch ? oldMatch[2] : '')
+        .replace(/\[hours:[\d.]+\]/gi, '')
+        .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+        .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+        .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      let l = preserved && preserved.toLowerCase().includes(s.name.toLowerCase())
+        ? `${prefix} ${preserved}`
+        : `${prefix} ${s.name}${preserved ? ' ' + preserved : ''}`;
+      l += ` [hours:${s.hours}]`;
       if (s.due) l += ` [due:${s.due}]`;
       if (s.plannedTime) l += ` [plannedtime:${s.plannedTime}]`;
-      if (s.extraPlan) l += ` [plan:${s.extraPlan}]`;
       l += ` [project:${projectSlug}]`;
       return l;
     });
@@ -391,7 +424,15 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     return days;
   };
 
-  interface PlannerPlacement { subtaskId: string; label: string; dateStr: string; startTime: string; endTime: string; extraPlan?: string; }
+  interface PlannerPlacement {
+    subtaskId: string; label: string; dateStr: string; startTime: string; endTime: string;
+    // İSTEK (kullanıcı geri bildirimi: "üstteki parçayı tamamlandı işaretleyince alttaki de
+    // tamamlandı oluyor, böyle olmamalı"): önceki [plan:] tabanlı deneme AYNI satırı (aynı
+    // TEK checkbox'ı) iki karta bölüyordu — biri tamamlanınca ikisi de tamamlanmış görünüyordu.
+    // Artık öğleyi aşan bir görev GERÇEKTEN İKİ AYRI satıra (iki bağımsız checkbox) bölünür —
+    // bkz. handleApplyPlanner'daki afternoonSplit kullanımı.
+    afternoonSplit?: { hours: number; startTime: string; endTime: string };
+  }
   interface PlannerSchedule {
     placements: PlannerPlacement[];
     usedDays: string[];
@@ -446,10 +487,11 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     // TAM OLARAK bir ana [due:]/[plannedtime:] çiftine sahip olur, ki alt görev listesiyle
     // hep bire-bir eşleşsin.
     // İSTEK 3 (kullanıcı: "gerçek bir ayrım istiyorum, öğle arasını boş bırak, taskı ikiye
-    // ayır, istersem her birini ayrı kaydırırım"): öğle kotasını (3sa sabah) aşan bir görev
-    // SADECE görsel değil, GERÇEKTEN iki parçaya bölünür — sabah kısmı ana plannedtime,
-    // öğleden sonraki kısmı ise ayrı, tam etkileşimli bir [plan:] kartı olur (bkz.
-    // handleApplyPlanner'daki extraPlan aktarımı, CalendarView'daki isPlanOccurrence).
+    // ayır, istersem her birini ayrı kaydırırım" + "üstteki parçayı tamamlandı işaretleyince
+    // alttaki de tamamlandı oluyor, böyle olmamalı"): öğle kotasını (3sa sabah) aşan bir görev
+    // GERÇEKTEN iki AYRI satıra (iki bağımsız checkbox) bölünür — bkz. handleApplyPlanner'daki
+    // afternoonSplit kullanımı. İLK deneme (tek satır + [plan:] kartı) aynı checkbox'ı
+    // paylaştığı için biri tamamlanınca ikisi de tamamlanmış görünüyordu.
     const MORNING_CAPACITY = LUNCH_START_HOUR - DAY_START_HOUR;
     const placements: PlannerPlacement[] = plannerSubtasks
       .map((sub, idx) => {
@@ -473,7 +515,11 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           dateStr,
           startTime: hourToTime(DAY_START_HOUR),
           endTime: hourToTime(LUNCH_START_HOUR),
-          extraPlan: `${dateStr}T${hourToTime(LUNCH_END_HOUR)}-${hourToTime(afternoonEnd)}`
+          afternoonSplit: {
+            hours: afternoonHours,
+            startTime: hourToTime(LUNCH_END_HOUR),
+            endTime: hourToTime(afternoonEnd)
+          }
         };
       })
       .filter((p): p is PlannerPlacement => p !== null);
@@ -505,9 +551,22 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // oranı değiştirip yeniden Uygula'ya basınca aynı satırlar güncellenir — yeniden yazılmaz.
   const handleApplyPlanner = async () => {
     if (!plannerProject || !plannerSchedule || !onSaveNote) return;
-    const updated = plannerSubtasks.map(s => {
+    // Öğleyi aşan bir yerleştirme, TEK subtask'ı GERÇEKTEN İKİ ayrı satıra (iki bağımsız
+    // checkbox) genişletir — bkz. yukarıdaki PlannerPlacement.afternoonSplit yorumu.
+    const updated: PlannerSubtask[] = [];
+    plannerSubtasks.forEach(s => {
       const p = plannerSchedule.placements.find(pl => pl.subtaskId === s.id);
-      return p ? { ...s, due: p.dateStr, plannedTime: `${p.startTime}-${p.endTime}`, extraPlan: p.extraPlan } : s;
+      if (!p) { updated.push(s); return; }
+      updated.push({ ...s, due: p.dateStr, plannedTime: `${p.startTime}-${p.endTime}` });
+      if (p.afternoonSplit) {
+        updated.push({
+          id: `${s.id}-pm`,
+          name: `${s.name} (öğleden sonra)`,
+          hours: p.afternoonSplit.hours,
+          due: p.dateStr,
+          plannedTime: `${p.afternoonSplit.startTime}-${p.afternoonSplit.endTime}`
+        });
+      }
     });
     setPlannerSubtasks(updated);
     await rewriteWorkItemChildren(updated, plannerDeadline);
@@ -973,13 +1032,13 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                       {s.due && (
                         <>
                           <span style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
-                            📅 {s.due.slice(5)}{s.extraPlan && ' +1'}
+                            📅 {s.due.slice(5)}
                           </span>
                           <button
                             type="button"
                             title="Takvimden geri çek (planı iptal et)"
                             onClick={() => {
-                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined, extraPlan: undefined } : x);
+                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined } : x);
                               setPlannerSubtasks(updated);
                               rewriteWorkItemChildren(updated);
                             }}
