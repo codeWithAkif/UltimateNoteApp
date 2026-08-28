@@ -203,7 +203,10 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
   const [plannerNewSubtaskName, setPlannerNewSubtaskName] = useState('');
   const [plannerNewSubtaskHours, setPlannerNewSubtaskHours] = useState('4');
-  const [plannerDeadline, setPlannerDeadline] = useState('');
+  // İSTEK (kullanıcı geri bildirimi: "neden son tarihi ben seçiyorum, otomatik belirlemesi
+  // lazım, bana kaç gün diye sormalı"): kullanıcı bir TARİH değil, "kaç iş günü içinde"
+  // sorusuna cevap verir — bitiş tarihi bundan HESAPLANIR ve kendisine gösterilir.
+  const [plannerDeadlineDays, setPlannerDeadlineDays] = useState('10');
   const [plannerDedication, setPlannerDedication] = useState(80);
   // İSTEK (kullanıcı geri bildirimi: "bana sorularak belirlensin, birden fazla seçenek
   // olsun"): dedike oranının nasıl uygulanacağı HER SEFERİNDE bu seçiciyle sorulur —
@@ -213,6 +216,30 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const DAY_START_HOUR = 9;
   const DAY_END_HOUR = 18;
   const FULL_DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
+
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const formatDateStr = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  // "Kaç iş günü içinde?" sorusundan bitiş tarihini hesaplar (bugünden itibaren, sadece
+  // hafta içi günleri sayarak).
+  const addBusinessDays = (days: number): Date => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    let added = 0;
+    while (added < days) {
+      d.setDate(d.getDate() + 1);
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) added++;
+    }
+    return d;
+  };
+
+  const plannerDeadlineDaysNum = Math.max(1, parseInt(plannerDeadlineDays, 10) || 1);
+  const plannerDeadline = useMemo(
+    () => formatDateStr(addBusinessDays(plannerDeadlineDaysNum)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [plannerDeadlineDaysNum, plannerProject?.path]
+  );
 
   // Bugünden (dahil) verilen bitiş tarihine (dahil) kadar SADECE hafta içi (Pzt-Cum) günler.
   const getWeekdaysUntil = (deadlineStr: string): Date[] => {
@@ -275,34 +302,33 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       return mm === 60 ? `${pad(hh + 1)}:00` : `${pad(hh)}:${pad(mm)}`;
     };
 
+    // İSTEK (kullanıcı geri bildirimi: "neden 9-17 ve 17-18 gibi ikiye ayırmış anlamadım"):
+    // ÖNCEDEN bir görevin gün içindeki kalan (küçük) boşluğuna bir SONRAKİ görev sığdırılmaya
+    // çalışılıyordu — bu da her görevi 1sa/7sa gibi anlamsız parçalara bölüp bir sonraki güne
+    // taşırıyordu. Artık her alt görev KENDİ gününde, günün BAŞINDAN (09:00) başlar; bir
+    // görev günün tamamını doldurmasa bile kalan boşluk bir SONRAKİ görev tarafından
+    // kullanılmaz — sıradaki görev her zaman yeni bir günde başlar. Daha basit, okunması
+    // kolay bir plan; karşılığında bazı günlerde kapasite tam kullanılmayabilir.
     const placements: PlannerPlacement[] = [];
     let dayIdx = 0;
-    let dayCursorHour = DAY_START_HOUR;
 
     for (const sub of plannerSubtasks) {
       let remainingHours = sub.hours || 0;
       let part = 1;
       const totalParts = Math.max(1, Math.ceil(remainingHours / dailyCapacity) || 1);
       while (remainingHours > 0 && dayIdx < usedDays.length) {
-        const capacityLeftToday = DAY_START_HOUR + dailyCapacity - dayCursorHour;
-        if (capacityLeftToday <= 0.01) {
-          dayIdx++;
-          dayCursorHour = DAY_START_HOUR;
-          continue;
-        }
-        const chunk = Math.min(remainingHours, capacityLeftToday);
-        const startH = dayCursorHour;
-        const endH = dayCursorHour + chunk;
+        const chunk = Math.min(remainingHours, dailyCapacity);
+        const endH = DAY_START_HOUR + chunk;
         placements.push({
           subtaskId: sub.id,
           label: totalParts > 1 ? `${sub.name} (${part}/${totalParts})` : sub.name,
           dateStr: format(usedDays[dayIdx]),
-          startTime: hourToTime(startH),
+          startTime: hourToTime(DAY_START_HOUR),
           endTime: hourToTime(endH)
         });
-        dayCursorHour = endH;
         remainingHours -= chunk;
         part++;
+        dayIdx++;
       }
     }
 
@@ -535,7 +561,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                                 setPlannerSubtasks([]);
                                 setPlannerNewSubtaskName('');
                                 setPlannerNewSubtaskHours('4');
-                                setPlannerDeadline('');
+                                setPlannerDeadlineDays('10');
                                 setPlannerDedication(80);
                                 setPlannerMode('skip-days');
                               }}
@@ -844,13 +870,17 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
 
             <div style={{ display: 'flex', gap: '14px', marginBottom: '14px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>SON TARİH</label>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>KAÇ İŞ GÜNÜ İÇİNDE?</label>
                 <input
-                  type="date"
-                  value={plannerDeadline}
-                  onChange={(e) => setPlannerDeadline(e.target.value)}
+                  type="number"
+                  min="1"
+                  value={plannerDeadlineDays}
+                  onChange={(e) => setPlannerDeadlineDays(e.target.value)}
                   style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 12px', fontSize: '13px', outline: 'none' }}
                 />
+                <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                  Son tarih: <strong style={{ color: 'var(--text-secondary)' }}>{new Date(`${plannerDeadline}T00:00:00`).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>
+                </span>
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>DEDİKE % ({plannerDedication})</label>
