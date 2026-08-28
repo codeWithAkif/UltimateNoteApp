@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
-import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus } from 'lucide-react';
+import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2 } from 'lucide-react';
 
 interface NoteItem {
   name: string;
@@ -193,6 +193,176 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   >(null);
   const [createModalInput, setCreateModalInput] = useState('');
 
+  // ============ İŞ PLANLA (esnek, tekrar-hesaplanabilir Gantt planlayıcı) ============
+  // İSTEK (kullanıcı): "bir işin subtask'ları var, X iş günü içinde bitmesi lazım, işe
+  // %Y dedike çalışacağım — takvime otomatik dağıtılsın, önizleme göster, Uygula deyince
+  // yazsın, sonra istediğim an tarih/oranı değiştirip yeniden Uygula diyebileyim."
+  interface PlannerSubtask { id: string; name: string; hours: number; }
+  const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
+  const [plannerTaskName, setPlannerTaskName] = useState('');
+  const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
+  const [plannerNewSubtaskName, setPlannerNewSubtaskName] = useState('');
+  const [plannerNewSubtaskHours, setPlannerNewSubtaskHours] = useState('4');
+  const [plannerDeadline, setPlannerDeadline] = useState('');
+  const [plannerDedication, setPlannerDedication] = useState(80);
+  // İSTEK (kullanıcı geri bildirimi: "bana sorularak belirlensin, birden fazla seçenek
+  // olsun"): dedike oranının nasıl uygulanacağı HER SEFERİNDE bu seçiciyle sorulur —
+  // sabit bir mantığa kilitlenmiyoruz.
+  const [plannerMode, setPlannerMode] = useState<'skip-days' | 'shorten-hours'>('skip-days');
+
+  const DAY_START_HOUR = 9;
+  const DAY_END_HOUR = 18;
+  const FULL_DAY_HOURS = DAY_END_HOUR - DAY_START_HOUR;
+
+  // Bugünden (dahil) verilen bitiş tarihine (dahil) kadar SADECE hafta içi (Pzt-Cum) günler.
+  const getWeekdaysUntil = (deadlineStr: string): Date[] => {
+    if (!deadlineStr) return [];
+    const days: Date[] = [];
+    const cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    const end = new Date(`${deadlineStr}T00:00:00`);
+    if (isNaN(end.getTime()) || end < cursor) return [];
+    while (cursor <= end) {
+      const dow = cursor.getDay(); // 0=Paz, 6=Cmt
+      if (dow !== 0 && dow !== 6) days.push(new Date(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return days;
+  };
+
+  interface PlannerPlacement { subtaskId: string; label: string; dateStr: string; startTime: string; endTime: string; }
+  interface PlannerSchedule {
+    placements: PlannerPlacement[];
+    usedDays: string[];
+    totalRequiredHours: number;
+    totalAvailableHours: number;
+    fits: boolean;
+    shortfallHours: number;
+  }
+
+  // Çekirdek dağıtım algoritması — hem önizleme hem "Uygula" AYNI fonksiyonu kullanır ki
+  // ikisi arasında hiçbir tutarsızlık olmasın (gördüğün önizleme birebir yazılan şeydir).
+  const computePlannerSchedule = (): PlannerSchedule => {
+    const weekdays = getWeekdaysUntil(plannerDeadline);
+    const totalRequiredHours = plannerSubtasks.reduce((sum, s) => sum + (s.hours || 0), 0);
+
+    let usedDays: Date[];
+    let dailyCapacity: number;
+    if (plannerMode === 'skip-days') {
+      // %80 → ~5 günden 4'ü kullanılır (1 gün tamamen boş) — kullanılan günler eşit
+      // aralıklarla seçilir (hep en sona/en başa yığılmasın diye).
+      const useCount = Math.max(0, Math.round(weekdays.length * (plannerDedication / 100)));
+      usedDays = [];
+      if (useCount > 0 && weekdays.length > 0) {
+        for (let i = 0; i < useCount; i++) {
+          const idx = Math.min(weekdays.length - 1, Math.floor((i * weekdays.length) / useCount));
+          usedDays.push(weekdays[idx]);
+        }
+        usedDays = Array.from(new Set(usedDays.map(d => d.getTime()))).map(t => new Date(t)).sort((a, b) => a.getTime() - b.getTime());
+      }
+      dailyCapacity = FULL_DAY_HOURS;
+    } else {
+      usedDays = weekdays;
+      dailyCapacity = FULL_DAY_HOURS * (plannerDedication / 100);
+    }
+
+    const totalAvailableHours = usedDays.length * dailyCapacity;
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const hourToTime = (h: number) => {
+      const hh = Math.floor(h);
+      const mm = Math.round((h - hh) * 60 / 15) * 15;
+      return mm === 60 ? `${pad(hh + 1)}:00` : `${pad(hh)}:${pad(mm)}`;
+    };
+
+    const placements: PlannerPlacement[] = [];
+    let dayIdx = 0;
+    let dayCursorHour = DAY_START_HOUR;
+
+    for (const sub of plannerSubtasks) {
+      let remainingHours = sub.hours || 0;
+      let part = 1;
+      const totalParts = Math.max(1, Math.ceil(remainingHours / dailyCapacity) || 1);
+      while (remainingHours > 0 && dayIdx < usedDays.length) {
+        const capacityLeftToday = DAY_START_HOUR + dailyCapacity - dayCursorHour;
+        if (capacityLeftToday <= 0.01) {
+          dayIdx++;
+          dayCursorHour = DAY_START_HOUR;
+          continue;
+        }
+        const chunk = Math.min(remainingHours, capacityLeftToday);
+        const startH = dayCursorHour;
+        const endH = dayCursorHour + chunk;
+        placements.push({
+          subtaskId: sub.id,
+          label: totalParts > 1 ? `${sub.name} (${part}/${totalParts})` : sub.name,
+          dateStr: format(usedDays[dayIdx]),
+          startTime: hourToTime(startH),
+          endTime: hourToTime(endH)
+        });
+        dayCursorHour = endH;
+        remainingHours -= chunk;
+        part++;
+      }
+    }
+
+    const fits = placements.length > 0 && plannerSubtasks.every(s => placements.some(p => p.subtaskId === s.id)) && totalRequiredHours <= totalAvailableHours;
+
+    return {
+      placements,
+      usedDays: usedDays.map(d => format(d)),
+      totalRequiredHours,
+      totalAvailableHours,
+      fits,
+      shortfallHours: Math.max(0, totalRequiredHours - totalAvailableHours)
+    };
+
+    function format(d: Date): string {
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+  };
+
+  const plannerSchedule = useMemo(
+    () => (plannerProject ? computePlannerSchedule() : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [plannerProject, plannerSubtasks, plannerDeadline, plannerDedication, plannerMode]
+  );
+
+  // "Uygula" — proje notunun İÇİNE (ayrı bir dosyaya değil) tek bir ebeveyn görev + altına
+  // girintili alt görevler olarak yazar. Zaten AÇIK bir plan varsa (aynı iş adıyla daha önce
+  // yazılmışsa) o bloğu SİLİP yeniden yazar — "tarihi/oranı değiştir, tekrar Uygula'ya bas"
+  // akışını (yeniden hesapla + yeniden yaz) destekler.
+  const handleApplyPlanner = async () => {
+    if (!plannerProject || !plannerSchedule || !onSaveNote) return;
+    const projectSlug = plannerProject.name.toLocaleLowerCase('tr').replace(/\s+/g, '-');
+    const content = scannedContents[plannerProject.path] || '';
+    const lines = content.split('\n');
+
+    // Aynı isimli eski plan bloğunu (ebeveyn satır + hemen altındaki girintili satırlar) temizle.
+    const parentRegex = new RegExp(`^\\s*[*\\-]\\s+\\[[ xX/]\\]\\s+${plannerTaskName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*\\[`, 'i');
+    let cleaned: string[] = [];
+    let skipping = false;
+    for (const line of lines) {
+      if (parentRegex.test(line)) { skipping = true; continue; }
+      if (skipping) {
+        if (/^\s{2,}[*\-]\s+\[/.test(line)) continue; // girintili eski alt görev
+        skipping = false;
+      }
+      cleaned.push(line);
+    }
+
+    const newLines: string[] = [
+      '',
+      `- [ ] ${plannerTaskName} [project:${projectSlug}] [due:${plannerDeadline}]`
+    ];
+    plannerSchedule.placements.forEach(p => {
+      newLines.push(`  - [ ] ${p.label} [due:${p.dateStr}] [plannedtime:${p.startTime}-${p.endTime}] [project:${projectSlug}]`);
+    });
+
+    await onSaveNote(plannerProject.path, [...cleaned, ...newLines].join('\n'));
+    setPlannerProject(null);
+  };
+
   // İSTEK: "Yeni Müşteri" — klasör iskeleti: {clientsFolder}/{MüşteriAdı}/{MüşteriAdı}.md,
   // içine #müşteri etiketi yazılır. Alt "Projeler" klasörü, ilk proje eklendiğinde kendiliğinden
   // oluşur (writeNote ara klasörleri otomatik oluşturuyor — bkz. electron/main.cjs mkdirSync
@@ -350,11 +520,37 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           <Briefcase size={18} />
                           {note.name.replace('.md', '')}
                         </h3>
-                        {stats.blocked > 0 && (
-                          <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px' }}>
-                            🔴 Bloklu: {stats.blocked}
-                          </span>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {stats.blocked > 0 && (
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px' }}>
+                              🔴 Bloklu: {stats.blocked}
+                            </span>
+                          )}
+                          {onSaveNote && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPlannerProject({ path: note.path, name: note.name.replace('.md', '') });
+                                setPlannerTaskName('');
+                                setPlannerSubtasks([]);
+                                setPlannerNewSubtaskName('');
+                                setPlannerNewSubtaskHours('4');
+                                setPlannerDeadline('');
+                                setPlannerDedication(80);
+                                setPlannerMode('skip-days');
+                              }}
+                              title="İş Planla — Gantt tarzı otomatik takvim dağıtımı"
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '4px',
+                                background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
+                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer',
+                                fontSize: '11px', fontWeight: 700, padding: '3px 8px'
+                              }}
+                            >
+                              <Gauge size={12} /> İş Planla
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
@@ -561,6 +757,201 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           )}
         </div>
       </div>
+
+      {plannerProject && plannerSchedule && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', zIndex: 2100,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'
+          }}
+          onClick={() => setPlannerProject(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '640px', maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto',
+              background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
+              borderRadius: '12px', padding: '22px', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: 'var(--text-primary)'
+            }}
+          >
+            <h3 style={{ margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Gauge size={18} /> İş Planla — {plannerProject.name}
+            </h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+              Bir iş için alt görevleri, son tarihi ve dedike oranını gir — önizlemede nasıl dağıldığını gör, beğenince Uygula'ya bas.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>İŞ ADI</label>
+              <input
+                type="text"
+                value={plannerTaskName}
+                onChange={(e) => setPlannerTaskName(e.target.value)}
+                placeholder="Örn: Esnek Teklif"
+                style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 12px', fontSize: '13px', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>ALT GÖREVLER (tahmini saat ile)</label>
+              {plannerSubtasks.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px' }}>
+                  {plannerSubtasks.map((s, i) => (
+                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-tertiary)', borderRadius: '6px', padding: '6px 10px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '16px' }}>{i + 1}.</span>
+                      <span style={{ flex: 1, fontSize: '13px' }}>{s.name}</span>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{s.hours}sa</span>
+                      <button type="button" onClick={() => setPlannerSubtasks(prev => prev.filter(x => x.id !== s.id))}
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={plannerNewSubtaskName}
+                  onChange={(e) => setPlannerNewSubtaskName(e.target.value)}
+                  placeholder="Alt görev adı..."
+                  style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 12px', fontSize: '13px', outline: 'none' }}
+                />
+                <input
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  value={plannerNewSubtaskHours}
+                  onChange={(e) => setPlannerNewSubtaskHours(e.target.value)}
+                  style={{ width: '70px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 10px', fontSize: '13px', outline: 'none' }}
+                />
+                <button
+                  type="button"
+                  disabled={!plannerNewSubtaskName.trim()}
+                  onClick={() => {
+                    const hours = parseFloat(plannerNewSubtaskHours) || 1;
+                    setPlannerSubtasks(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, name: plannerNewSubtaskName.trim(), hours }]);
+                    setPlannerNewSubtaskName('');
+                    setPlannerNewSubtaskHours('4');
+                  }}
+                  style={{ background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: '#fff', padding: '8px 12px', fontSize: '12.5px', fontWeight: 700, cursor: plannerNewSubtaskName.trim() ? 'pointer' : 'not-allowed', opacity: plannerNewSubtaskName.trim() ? 1 : 0.5 }}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '14px', marginBottom: '14px' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>SON TARİH</label>
+                <input
+                  type="date"
+                  value={plannerDeadline}
+                  onChange={(e) => setPlannerDeadline(e.target.value)}
+                  style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-primary)', padding: '8px 12px', fontSize: '13px', outline: 'none' }}
+                />
+              </div>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>DEDİKE % ({plannerDedication})</label>
+                <input
+                  type="range"
+                  min="10"
+                  max="100"
+                  step="5"
+                  value={plannerDedication}
+                  onChange={(e) => setPlannerDedication(parseInt(e.target.value, 10))}
+                  style={{ width: '100%' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '18px' }}>
+              <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)' }}>DEDİKE %, TAKVİMDE NASIL UYGULANSIN?</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="button" onClick={() => setPlannerMode('skip-days')}
+                  style={{
+                    flex: 1, padding: '10px', borderRadius: '8px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer',
+                    background: plannerMode === 'skip-days' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                    color: plannerMode === 'skip-days' ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border-color)'
+                  }}>
+                  📅 Haftada gün atla<br /><span style={{ fontSize: '10.5px', fontWeight: 400, opacity: 0.85 }}>Kullanılan günler tam 09-18</span>
+                </button>
+                <button type="button" onClick={() => setPlannerMode('shorten-hours')}
+                  style={{
+                    flex: 1, padding: '10px', borderRadius: '8px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer',
+                    background: plannerMode === 'shorten-hours' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                    color: plannerMode === 'shorten-hours' ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border-color)'
+                  }}>
+                  ⏱️ Her gün saati kısalt<br /><span style={{ fontSize: '10.5px', fontWeight: 400, opacity: 0.85 }}>Hiçbir gün tamamen boş kalmaz</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Önizleme (Gantt-tarzı gün ızgarası) */}
+            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '14px', marginBottom: '16px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase' }}>Önizleme</div>
+              {!plannerDeadline ? (
+                <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Bir son tarih seç.</div>
+              ) : plannerSubtasks.length === 0 ? (
+                <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Henüz alt görev eklenmedi.</div>
+              ) : plannerSchedule.usedDays.length === 0 ? (
+                <div style={{ fontSize: '12.5px', color: '#ef4444' }}>Bu tarih aralığında kullanılabilir hafta içi gün yok.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: `140px repeat(${plannerSchedule.usedDays.length}, 34px)`, gap: '2px', minWidth: 'max-content' }}>
+                    <div />
+                    {plannerSchedule.usedDays.map(d => (
+                      <div key={d} style={{ fontSize: '9.5px', color: 'var(--text-muted)', textAlign: 'center', writingMode: 'vertical-rl', height: '36px' }}>
+                        {d.slice(5)}
+                      </div>
+                    ))}
+                    {plannerSubtasks.map(sub => (
+                      <React.Fragment key={sub.id}>
+                        <div style={{ fontSize: '11.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center' }}>{sub.name}</div>
+                        {plannerSchedule.usedDays.map(d => {
+                          const p = plannerSchedule.placements.find(pl => pl.subtaskId === sub.id && pl.dateStr === d);
+                          return (
+                            <div key={d} title={p ? `${p.startTime}-${p.endTime}` : ''} style={{
+                              height: '22px', borderRadius: '4px',
+                              background: p ? 'var(--accent-color)' : 'var(--bg-tertiary)'
+                            }} />
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {plannerSubtasks.length > 0 && plannerDeadline && (
+                <div style={{ marginTop: '10px', fontSize: '12px', color: plannerSchedule.fits ? 'var(--text-secondary)' : '#ef4444' }}>
+                  Gerekli: {plannerSchedule.totalRequiredHours}sa · Kullanılabilir: {Math.round(plannerSchedule.totalAvailableHours * 10) / 10}sa
+                  {!plannerSchedule.fits && ` — bu tempoyla ${Math.round(plannerSchedule.shortfallHours * 10) / 10} saat sığmıyor, son tarihi ilerlet veya dedike %'ni artır.`}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button type="button" onClick={() => setPlannerProject(null)}
+                style={{ flex: 1, background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-secondary)', padding: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                disabled={!plannerTaskName.trim() || !plannerDeadline || plannerSubtasks.length === 0}
+                onClick={handleApplyPlanner}
+                style={{
+                  flex: 1, background: 'var(--accent-color)', border: 'none', borderRadius: '8px', color: '#fff',
+                  padding: '10px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                  opacity: (!plannerTaskName.trim() || !plannerDeadline || plannerSubtasks.length === 0) ? 0.5 : 1
+                }}
+              >
+                Uygula — Takvime Yaz
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {createModal && (
         <div
