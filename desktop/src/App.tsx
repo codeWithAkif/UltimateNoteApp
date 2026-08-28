@@ -3537,6 +3537,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
               .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
+              .replace(/\[hours:[\d.]+\]/gi, '')
               .replace(/\[başlama:[^\]]+\]/gi, '')
               .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp

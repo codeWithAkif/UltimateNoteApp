@@ -165,9 +165,14 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     });
   };
 
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "Kanban view'de subtaskları görmüyorum,
+  // bitirdim şu aşamada şeklinde yönetebilmek için"): alt görevler ("İş Planla" ile
+  // oluşturulanlar dahil, kendi [project:] etiketini taşırlar) eskiden !t.isSubtask ile
+  // Kanban'dan tamamen dışlanıyordu — tek tek ilerleme takibi imkansızdı. Artık alt görevler
+  // de kendi kartı olarak görünüyor, sürükleyip durumunu değiştirebilirsin.
   const currentProjectTasks = selectedProject
-    ? timelineItems.filter(t => t.isTodo && !t.isSubtask && isProjectTask(t, selectedProject))
-    : timelineItems.filter(t => t.isTodo && !t.isSubtask && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))));
+    ? timelineItems.filter(t => t.isTodo && isProjectTask(t, selectedProject))
+    : timelineItems.filter(t => t.isTodo && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))));
 
   // Renk/icon seçimi, müşteri notunun İÇİNE [renk:hex]/[icon:emoji] etiketi olarak yazılır
   // (bkz. App.tsx'teki projectColors haritası — CalendarView bu etiketleri görev kartlarında
@@ -202,7 +207,13 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // her ekleme/silme/düzenleme ANINDA nota [hours:N] etiketli, TARİHSİZ birer satır olarak
   // yazılır (bkz. rewriteWorkItemChildren). "Zamanla" (Uygula) tamamen AYRI bir adım: sadece
   // zaten kayıtlı olan bu alt görevlere [due:]/[plannedtime:] ekler — tanımlamayı bozmaz.
-  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; }
+  // İSTEK (kullanıcı geri bildirimi: "ben gerçek bir ayrım istiyorum, öğle arasındaki yeri
+  // boş bırak, taskı ikiye ayır — istersem her birini ayrı ayrı kaydıracağım"): öğleyi aşan
+  // bir alt görev artık SADECE görsel değil, GERÇEKTEN iki bağımsız kart olur — sabah kısmı
+  // ana [due:]/[plannedtime:] olarak, öğleden sonraki kısmı ise Calendar'da zaten var olan
+  // [plan:] mekanizmasıyla (bkz. CalendarView.tsx isPlanOccurrence) AYRI, tam etkileşimli
+  // (kendi başına sürüklenip taşınabilen) bir kart olarak yazılır.
+  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; extraPlan?: string; }
   const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
   const [plannerTaskName, setPlannerTaskName] = useState('');
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
@@ -252,12 +263,14 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         const hoursMatch = rawText.match(/\[hours:([\d.]+)\]/i);
         const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
         const timeMatch = rawText.match(/\[plannedtime:(\d{2}:\d{2}-\d{2}:\d{2})\]/i);
+        const planMatch = rawText.match(/\[plan:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}-\d{2}:\d{2})\]/i);
         result.push({
           id: `sub-${i}-${Date.now()}-${Math.random()}`,
           name: rawText.replace(/\[[^\]]+\]/g, '').trim(),
           hours: hoursMatch ? parseFloat(hoursMatch[1]) : 4,
           due: dueMatch ? dueMatch[1] : undefined,
-          plannedTime: timeMatch ? timeMatch[1] : undefined
+          plannedTime: timeMatch ? timeMatch[1] : undefined,
+          extraPlan: planMatch ? planMatch[1] : undefined
         });
       }
       i++;
@@ -281,6 +294,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       let l = `  - [ ] ${s.name} [hours:${s.hours}]`;
       if (s.due) l += ` [due:${s.due}]`;
       if (s.plannedTime) l += ` [plannedtime:${s.plannedTime}]`;
+      if (s.extraPlan) l += ` [plan:${s.extraPlan}]`;
       l += ` [project:${projectSlug}]`;
       return l;
     });
@@ -370,7 +384,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     return days;
   };
 
-  interface PlannerPlacement { subtaskId: string; label: string; dateStr: string; startTime: string; endTime: string; }
+  interface PlannerPlacement { subtaskId: string; label: string; dateStr: string; startTime: string; endTime: string; extraPlan?: string; }
   interface PlannerSchedule {
     placements: PlannerPlacement[];
     usedDays: string[];
@@ -422,19 +436,37 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     // görev günün tamamını doldurmasa bile kalan boşluk bir SONRAKİ görev tarafından
     // kullanılmaz — sıradaki görev her zaman yeni bir günde başlar.
     // İSTEK 2 (subtask'lar artık KALICI, TEK satır — "planlama ayrı olsun"): her alt görev
-    // TAM OLARAK bir [due:]/[plannedtime:] çiftine sahip olur (birden fazla satıra bölünmez),
-    // ki alt görev listesi düzenlerken/tekrar planlarken hep bire-bir eşleşsin.
+    // TAM OLARAK bir ana [due:]/[plannedtime:] çiftine sahip olur, ki alt görev listesiyle
+    // hep bire-bir eşleşsin.
+    // İSTEK 3 (kullanıcı: "gerçek bir ayrım istiyorum, öğle arasını boş bırak, taskı ikiye
+    // ayır, istersem her birini ayrı kaydırırım"): öğle kotasını (3sa sabah) aşan bir görev
+    // SADECE görsel değil, GERÇEKTEN iki parçaya bölünür — sabah kısmı ana plannedtime,
+    // öğleden sonraki kısmı ise ayrı, tam etkileşimli bir [plan:] kartı olur (bkz.
+    // handleApplyPlanner'daki extraPlan aktarımı, CalendarView'daki isPlanOccurrence).
+    const MORNING_CAPACITY = LUNCH_START_HOUR - DAY_START_HOUR;
     const placements: PlannerPlacement[] = plannerSubtasks
       .map((sub, idx) => {
         if (idx >= usedDays.length) return null;
-        // Öğle arasını (12-13) atlayarak gerçek saat karşılığını bul — bkz. hourOffsetToClockTime.
-        const endH = hourOffsetToClockTime(Math.max(0.25, sub.hours || 0));
+        const hours = Math.max(0.25, sub.hours || 0);
+        const dateStr = format(usedDays[idx]);
+        if (hours <= MORNING_CAPACITY) {
+          return {
+            subtaskId: sub.id,
+            label: sub.name,
+            dateStr,
+            startTime: hourToTime(DAY_START_HOUR),
+            endTime: hourToTime(DAY_START_HOUR + hours)
+          };
+        }
+        const afternoonHours = hours - MORNING_CAPACITY;
+        const afternoonEnd = LUNCH_END_HOUR + afternoonHours;
         return {
           subtaskId: sub.id,
           label: sub.name,
-          dateStr: format(usedDays[idx]),
+          dateStr,
           startTime: hourToTime(DAY_START_HOUR),
-          endTime: hourToTime(endH)
+          endTime: hourToTime(LUNCH_START_HOUR),
+          extraPlan: `${dateStr}T${hourToTime(LUNCH_END_HOUR)}-${hourToTime(afternoonEnd)}`
         };
       })
       .filter((p): p is PlannerPlacement => p !== null);
@@ -468,7 +500,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     if (!plannerProject || !plannerSchedule || !onSaveNote) return;
     const updated = plannerSubtasks.map(s => {
       const p = plannerSchedule.placements.find(pl => pl.subtaskId === s.id);
-      return p ? { ...s, due: p.dateStr, plannedTime: `${p.startTime}-${p.endTime}` } : s;
+      return p ? { ...s, due: p.dateStr, plannedTime: `${p.startTime}-${p.endTime}`, extraPlan: p.extraPlan } : s;
     });
     setPlannerSubtasks(updated);
     await rewriteWorkItemChildren(updated, plannerDeadline);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import NotesView from './NotesView';
 import { createPortal } from 'react-dom';
 import { 
@@ -1379,6 +1379,7 @@ export default function CalendarView({
               // Gelecekte planlanan ek oturumlar (bkz. handleAddPlanOccurrence) — kendi
               // kartlarında ayrıca render edilir, başlıkta ham etiket görünmesin.
               .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
+              .replace(/\[hours:[\d.]+\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 
@@ -3739,6 +3740,19 @@ export default function CalendarView({
                                 ? tempEventHeights[task.id] || minToPx(endMinutes - startMinutes)
                                 : minToPx(endMinutes - startMinutes);
 
+                              // İSTEK (kullanıcı geri bildirimi: "öğle arası kavramını uygulamamış,
+                              // ikiye bölmek gibi olsun"): bir kart 12:00-13:00 aralığını kapsıyorsa,
+                              // o dilimi görsel olarak "oyup" gerçek bir boşluk hissi veriyoruz —
+                              // veri/sürükleme mantığına dokunmadan, sadece görsel bir bindirme ile.
+                              const LUNCH_START_MIN = 12 * 60;
+                              const LUNCH_END_MIN = 13 * 60;
+                              const lunchGap = (startMinutes < LUNCH_END_MIN && endMinutes > LUNCH_START_MIN && endMinutes > startMinutes)
+                                ? {
+                                    topPct: Math.max(0, ((LUNCH_START_MIN - startMinutes) / (endMinutes - startMinutes)) * 100),
+                                    heightPct: Math.min(100, ((Math.min(endMinutes, LUNCH_END_MIN) - Math.max(startMinutes, LUNCH_START_MIN)) / (endMinutes - startMinutes)) * 100)
+                                  }
+                                : null;
+
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                               // Süre sürüklenirken kart üzerindeki saat etiketi de canlı olarak
                               // güncellensin ki kullanıcı hangi saate geldiğini anında görebilsin.
@@ -4022,6 +4036,24 @@ export default function CalendarView({
                                     } : {})
                                   }}
                                 >
+                                  {/* Öğle arası (12:00-13:00) çentiği — bkz. yukarıdaki lunchGap hesaplaması */}
+                                  {lunchGap && (
+                                    <div
+                                      title="Öğle arası"
+                                      style={{
+                                        position: 'absolute', left: 0, right: 0, zIndex: 2,
+                                        top: `${lunchGap.topPct}%`, height: `${lunchGap.heightPct}%`,
+                                        minHeight: '4px',
+                                        background: 'var(--bg-primary)',
+                                        borderTop: '1px dashed rgba(255,255,255,0.25)',
+                                        borderBottom: '1px dashed rgba(255,255,255,0.25)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        fontSize: '9px', opacity: 0.8, pointerEvents: 'none'
+                                      }}
+                                    >
+                                      {lunchGap.heightPct > 8 && '🍽️'}
+                                    </div>
+                                  )}
                                   {/* Drag Handle or Indicator bar — müşteri rengi atanmışsa öncelik rengi yerine onu kullanır */}
                                   {!task.isExternal && (
                                     <div
