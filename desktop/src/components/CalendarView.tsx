@@ -270,6 +270,20 @@ export interface WorkspaceTask {
   questStartedAt: string | null;
   questCompletedAt: string | null;
   questOutcome: 'fast' | 'ontime' | 'late' | 'incomplete' | null;
+  // İSTEK (kullanıcı: "ben sağ üstte o subtaskı görmek istiyorum, sürükleyip bırakınca bir
+  // seans oluşmalı"): [hours:] etiketi taşıyan bir satır, İş Planla'nın kendisi oluşturduğu
+  // BİR İŞ KALEMİDİR (subtask) — kendi hiç [due:] taşımaz (bkz. ProjectsView.tsx
+  // rewriteWorkItemChildren), bu yüzden normal "isSubtask olan hiçbir şey Planlanmamış'ta
+  // gösterilmez" kuralının İSTİSNASIdır: her zaman havuzda kalmalı ki tekrar tekrar yeni bir
+  // seans için sürüklenebilsin. Bkz. unscheduledTasks/handleScheduleTask/handleUnscheduleTask.
+  hasHoursTag?: boolean;
+  // Bir SEANS satırı: ebeveyni hasHoursTag taşıyan (yani bir İş Planla iş kalemi olan) ama
+  // kendisi [hours:] taşımayan iç içe satır — bkz. yukarıdaki hasHoursTag yorumu. Böyle bir
+  // kart "Planlanmamış"a sürüklenince (unschedule) sadece planı temizlemek YETMEZ, tüm satır
+  // SİLİNİR — aksi halde ne havuzda (isSubtask hâlâ true) ne takvimde (artık due yok)
+  // görünmeyen "hayalet" bir satır kalırdı (kullanıcı geri bildirimi: "sürükleyip sağ tarafa
+  // attım, kayboldu").
+  isSessionLine?: boolean;
 }
 
 interface ICSEvent {
@@ -1385,6 +1399,9 @@ export default function CalendarView({
 
             const questTags = parseQuestTags(rawText);
             const hasSessionHistory = /\[session:\d{4}-\d{2}-\d{2}/i.test(rawText);
+            // Bkz. yukarıdaki WorkspaceTask.hasHoursTag yorumu — İş Planla'nın ürettiği bir iş
+            // kalemi (subtask) olup olmadığını ayırt eder.
+            const hasHoursTag = /\[hours:[\d.]+\]/i.test(rawText);
 
             noteTasks.push({
               id: taskId,
@@ -1399,6 +1416,7 @@ export default function CalendarView({
               timeSlot,
               repeat,
               hasSessionHistory,
+              hasHoursTag,
               score,
               tags: Array.from(new Set([...taskTags, ...noteLevelTags])),
               // BUG DÜZELTMESİ (kullanıcı geri bildirimi: müşteri filtresi ilgisiz görevleri
@@ -1513,6 +1531,11 @@ export default function CalendarView({
                 dueDate: task.dueDate,
                 priority: task.priority
               });
+              // Bkz. yukarıdaki WorkspaceTask.isSessionLine yorumu: ebeveyni bir İş Planla iş
+              // kalemiyse (hasHoursTag) ama kendisi değilse, bu bir SEANS satırıdır.
+              if (parent.hasHoursTag && !task.hasHoursTag) {
+                task.isSessionLine = true;
+              }
             }
           }
         });
@@ -1692,6 +1715,40 @@ export default function CalendarView({
       return;
     }
 
+    // İSTEK (kullanıcı: "ben sağ üstte o subtaskı görmek istiyorum, sürükleyip bırakınca bir
+    // seans oluşmalı otomatik subtaskın altında"): İş Planla iş kalemini (hasHoursTag) takvime
+    // sürüklemek KENDİ satırına due/plannedtime yazmaz — bir iş kalemi hiçbir zaman "zamanlanmış"
+    // sayılmaz, bu yüzden ALTINA girintili YENİ bir SEANS satırı eklenir. İş kalemi böylece HER
+    // ZAMAN havuzda kalır (bkz. yukarıdaki unscheduledTasks'taki hasHoursTag istisnası) — tekrar
+    // tekrar sürüklenip başka bir seans daha eklenebilir.
+    if (task.hasHoursTag) {
+      try {
+        const fileContent = await readNoteContent(task.filePath);
+        const lines = fileContent.split('\n');
+        if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+        const subLine = lines[task.lineIdx];
+        const indentMatch = subLine.match(/^(\s*)/);
+        const subIndent = indentMatch ? indentMatch[1].length : 0;
+        const sessionIndent = ' '.repeat(subIndent + 2);
+        const nameMatch = subLine.match(/^\s*[*\-]\s+\[[ xX\/]\]\s+(.*)$/);
+        const cleanName = nameMatch ? nameMatch[1].replace(/\[[^\]]+\]/g, '').trim() : task.content;
+        const projTagMatch = subLine.match(/\[(?:project|proje):([^\]]+)\]/i);
+        const projTag = projTagMatch ? ` [project:${projTagMatch[1]}]` : '';
+        const ts = timeSlot || '10:00-11:00';
+        const sessionLine = `${sessionIndent}- [ ] ${cleanName} ${dateStr} ${ts} [due:${dateStr}] [plannedtime:${ts}]${projTag}`;
+        // Bu iş kaleminin mevcut çocuk bloğunun (varsa diğer seansların) SONUNA ekle.
+        let insertAt = task.lineIdx + 1;
+        const childRe = new RegExp(`^ {${subIndent + 1},}[*\\-]`);
+        while (insertAt < lines.length && childRe.test(lines[insertAt])) insertAt++;
+        lines.splice(insertAt, 0, sessionLine);
+        await onSaveNote(task.filePath, lines.join('\n'));
+        setRefreshTrigger(prev => prev + 1);
+      } catch (err) {
+        console.error('Seans eklenemedi:', err);
+      }
+      return;
+    }
+
     try {
       const fileContent = await readNoteContent(task.filePath);
       const lines = fileContent.split('\n');
@@ -1699,7 +1756,7 @@ export default function CalendarView({
 
       const rawLine = lines[task.lineIdx];
       const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
-      
+
       let cleanText = '';
       let prefix = '';
       if (lineBodyMatch) {
@@ -1949,6 +2006,27 @@ export default function CalendarView({
   const handleUnscheduleTask = async (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
+
+    // İSTEK (kullanıcı: "seansı sürükleyip sağ tarafa attım, kayboldu — bir tutarsızlık var"):
+    // bir SEANS satırı (isSessionLine) "Planlanmamış"a sürüklenince sadece due/plannedtime'ını
+    // TEMİZLEMEK yetmez — o satır ne havuzda (isSubtask hâlâ true, hasHoursTag yok) ne takvimde
+    // (artık due yok) görünmeyen bir "hayalet" satır olarak kalırdı. Bunun yerine SATIRIN
+    // KENDİSİ tamamen silinir — iş kalemi zaten havuzda kalıcı olarak durduğundan (bkz.
+    // unscheduledTasks/handleScheduleTask'taki hasHoursTag istisnası), istenirse yeniden
+    // sürüklenip taze bir seans eklenebilir.
+    if (task.isSessionLine) {
+      try {
+        const fileContent = await readNoteContent(task.filePath);
+        const lines = fileContent.split('\n');
+        if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+        lines.splice(task.lineIdx, 1);
+        await onSaveNote(task.filePath, lines.join('\n'));
+        setRefreshTrigger(prev => prev + 1);
+      } catch (err) {
+        console.error('Seans silinemedi:', err);
+      }
+      return;
+    }
 
     // Bir [plan:] kartını "Planlanmamış"a sürüklemek, o TEK günün planından vazgeçmek demek —
     // sadece kendi [plan:...] etiketi silinir, ana görev/checkbox/diğer plan günleri etkilenmez.
@@ -2536,7 +2614,12 @@ export default function CalendarView({
 
   // Filter tasks based on schedule status
   const unscheduledTasks = tasks.filter(t => {
-    if (t.isSubtask) return false; // Subtasks are nested, not top-level
+    // İSTEK (kullanıcı: "ben sağ üstte o subtaskı görmek istiyorum, sürükleyip bırakınca bir
+    // seans oluşmalı"): İş Planla'nın oluşturduğu bir iş kalemi (hasHoursTag) kendi hiç [due:]
+    // taşımaz — normal "subtask'lar havuzda gösterilmez" kuralının bilinçli İSTİSNASIdır, ki
+    // her zaman tekrar sürüklenip yeni bir seans eklenebilsin (bkz. handleScheduleTask'taki
+    // hasHoursTag dalı). Bir SEANS satırı (isSessionLine) ise bu istisnaya girmez.
+    if (t.isSubtask && !t.hasHoursTag) return false; // Subtasks are nested, not top-level
 
     // Tamamlanmış görevler "Planlanmamış Görevler" panelinde gösterilmez.
     if (t.isChecked) return false;
@@ -2551,6 +2634,11 @@ export default function CalendarView({
       t.tags.includes('hide-unplanned')
     );
     if (hasExcludeTag) return false;
+
+    // İş Planla iş kalemi: kaç tane (zamanlanmış) seansı olursa olsun HER ZAMAN havuzda kalır
+    // — aşağıdaki "en az bir zamanlanmamış alt görevi olmalı" kuralı burada UYGULANMAZ, çünkü
+    // amaç zaten TAMAMEN zamanlanmış bir iş kalemine bile YENİ bir seans ekleyebilmek.
+    if (t.hasHoursTag) return true;
 
     if (t.subtasks && t.subtasks.length > 0) {
       // Main task with subtasks: show it if it itself has no dueDate AND it has at least one
