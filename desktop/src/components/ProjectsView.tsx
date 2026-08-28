@@ -209,11 +209,26 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // zaten kayıtlı olan bu alt görevlere [due:]/[plannedtime:] ekler — tanımlamayı bozmaz.
   // İSTEK (kullanıcı geri bildirimi: "ben gerçek bir ayrım istiyorum, öğle arasındaki yeri
   // boş bırak, taskı ikiye ayır — istersem her birini ayrı ayrı kaydıracağım"): öğleyi aşan
-  // bir alt görev GERÇEKTEN İKİ AYRI satıra (iki bağımsız checkbox) bölünür — bkz.
-  // handleApplyPlanner. İLK DENEME (tek satır + Calendar'ın [plan:] mekanizması) görsel
-  // olarak ayrı ama AYNI checkbox'ı paylaştığından, biri tamamlanınca ikisi de tamamlanmış
-  // görünüyordu (kullanıcı geri bildirimi) — o yüzden artık gerçek iki ayrı satır kullanılıyor.
-  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; }
+  // bir alt görev takvimde İKİ AYRI, bağımsız KART olarak görünür — ama artık İKİ AYRI
+  // SUBTASK olarak DEĞİL (bkz. aşağıdaki not).
+  // İLK DENEME: tek satır + Calendar'ın [plan:] mekanizması → AYNI checkbox'ı paylaştığından
+  // biri tamamlanınca ikisi de tamamlanmış görünüyordu (kullanıcı geri bildirimi).
+  // İKİNCİ DENEME: öğleyi aşan görevi GERÇEKTEN iki ayrı subtask satırına bölmek → bu sefer
+  // subtask LİSTESİ ikiye katlandı ("Şema Tasarım..." VE "Şema Tasarım... (öğleden sonra)"
+  // iki AYRI iş kalemi gibi göründü), gerekli saat toplamı da ikiye katlandı ve sığmama
+  // hatası yanlış çıktı (kullanıcı geri bildirimi: "subtaskları arttırmışsın, onlar SESSION
+  // olmalıydı, taskı neden arttırdın").
+  // ÜÇÜNCÜ (kalıcı) ÇÖZÜM: "seans" (session) ile "subtask" ayrı kavramlar. Subtask TEK satır,
+  // TEK checkbox olarak kalır (planlayıcı onu asla çoğaltmaz) — hours/due/plannedTime hep
+  // subtask'ın kendisine ait TEK bir ana zaman aralığını temsil eder. Öğleyi aşan fazla
+  // saatler subtask'a EK bir seans olarak, `extraPlan` alanıyla [plan:TARİH THH:MM-HH:MM]
+  // etiketi olarak AYNI satıra eklenir (Calendar'ın zaten var olan, çok-seanslı planlama
+  // altyapısı — bkz. CalendarView.tsx isPlanOccurrence). Bu kart takvimde ayrı ve bağımsız
+  // "tamamlandı" işaretlenebilir GÖRÜNÜR ama subtask'ın checkbox'ını TETİKLEMEZ — Calendar'daki
+  // handleToggleTodo'nun isPlanOccurrence dalı, bu kartı tamamlandı işaretlemeyi ana checkbox'ı
+  // değiştirmek yerine [plan:...] etiketini [session:...] (geçmiş kaydı) etiketine çevirerek
+  // uygular. Subtask'ın kendi checkbox'ı SADECE elle (Kanban/Not görünümünde) kapatılır.
+  interface PlannerSubtask { id: string; name: string; hours: number; due?: string; plannedTime?: string; extraPlan?: string; }
   const [plannerProject, setPlannerProject] = useState<{ path: string; name: string } | null>(null);
   const [plannerTaskName, setPlannerTaskName] = useState('');
   const [plannerSubtasks, setPlannerSubtasks] = useState<PlannerSubtask[]>([]);
@@ -263,12 +278,16 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         const hoursMatch = rawText.match(/\[hours:([\d.]+)\]/i);
         const dueMatch = rawText.match(/\[due:(\d{4}-\d{2}-\d{2})\]/i);
         const timeMatch = rawText.match(/\[plannedtime:(\d{2}:\d{2}-\d{2}:\d{2})\]/i);
+        // Ek seans (bkz. yukarıdaki PlannerSubtask.extraPlan yorumu) — Calendar'ın kendi
+        // [plan:] etiketiyle AYNI biçim, bu satırdaki mevcut değeri kaybetmemek için okunur.
+        const planMatch = rawText.match(/\[plan:(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?)\]/i);
         result.push({
           id: `sub-${i}-${Date.now()}-${Math.random()}`,
           name: rawText.replace(/\[[^\]]+\]/g, '').trim(),
           hours: hoursMatch ? parseFloat(hoursMatch[1]) : 4,
           due: dueMatch ? dueMatch[1] : undefined,
-          plannedTime: timeMatch ? timeMatch[1] : undefined
+          plannedTime: timeMatch ? timeMatch[1] : undefined,
+          extraPlan: planMatch ? planMatch[1] : undefined
         });
       }
       i++;
@@ -319,6 +338,9 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
         .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
         .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
+        // Ek seans (bkz. PlannerSubtask.extraPlan) — bu, planlayıcının YÖNETTİĞİ bir alan,
+        // eski değeri burada silinip aşağıda `s.extraPlan`'dan güncel haliyle yeniden yazılır.
+        .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
 
@@ -328,6 +350,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       l += ` [hours:${s.hours}]`;
       if (s.due) l += ` [due:${s.due}]`;
       if (s.plannedTime) l += ` [plannedtime:${s.plannedTime}]`;
+      if (s.extraPlan) l += ` [plan:${s.extraPlan}]`;
       l += ` [project:${projectSlug}]`;
       return l;
     });
@@ -551,22 +574,19 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // oranı değiştirip yeniden Uygula'ya basınca aynı satırlar güncellenir — yeniden yazılmaz.
   const handleApplyPlanner = async () => {
     if (!plannerProject || !plannerSchedule || !onSaveNote) return;
-    // Öğleyi aşan bir yerleştirme, TEK subtask'ı GERÇEKTEN İKİ ayrı satıra (iki bağımsız
-    // checkbox) genişletir — bkz. yukarıdaki PlannerPlacement.afternoonSplit yorumu.
-    const updated: PlannerSubtask[] = [];
-    plannerSubtasks.forEach(s => {
+    // Öğleyi aşan bir yerleştirme SUBTASK'ı ÇOĞALTMAZ (bkz. yukarıdaki PlannerSubtask
+    // yorumundaki üç deneme özeti) — aynı subtask'a, Calendar'da ayrı ve bağımsız
+    // tamamlanabilir bir kart olarak görünecek EK bir seans (extraPlan → [plan:] etiketi)
+    // eklenir.
+    const updated: PlannerSubtask[] = plannerSubtasks.map(s => {
       const p = plannerSchedule.placements.find(pl => pl.subtaskId === s.id);
-      if (!p) { updated.push(s); return; }
-      updated.push({ ...s, due: p.dateStr, plannedTime: `${p.startTime}-${p.endTime}` });
-      if (p.afternoonSplit) {
-        updated.push({
-          id: `${s.id}-pm`,
-          name: `${s.name} (öğleden sonra)`,
-          hours: p.afternoonSplit.hours,
-          due: p.dateStr,
-          plannedTime: `${p.afternoonSplit.startTime}-${p.afternoonSplit.endTime}`
-        });
-      }
+      if (!p) return s;
+      return {
+        ...s,
+        due: p.dateStr,
+        plannedTime: `${p.startTime}-${p.endTime}`,
+        extraPlan: p.afternoonSplit ? `${p.dateStr}T${p.afternoonSplit.startTime}-${p.afternoonSplit.endTime}` : undefined
+      };
     });
     setPlannerSubtasks(updated);
     await rewriteWorkItemChildren(updated, plannerDeadline);
@@ -1034,11 +1054,16 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           <span style={{ fontSize: '10px', color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
                             📅 {s.due.slice(5)}
                           </span>
+                          {s.extraPlan && (
+                            <span title="Öğleden sonrası ayrı bir seans olarak takvimde, bağımsız tamamlanabilir" style={{ fontSize: '10px', color: '#ffa726', background: 'rgba(255,167,38,0.12)', padding: '2px 6px', borderRadius: '8px' }}>
+                              +1 seans
+                            </span>
+                          )}
                           <button
                             type="button"
-                            title="Takvimden geri çek (planı iptal et)"
+                            title="Takvimden geri çek (planı ve ek seansı iptal et)"
                             onClick={() => {
-                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined } : x);
+                              const updated = plannerSubtasks.map(x => x.id === s.id ? { ...x, due: undefined, plannedTime: undefined, extraPlan: undefined } : x);
                               setPlannerSubtasks(updated);
                               rewriteWorkItemChildren(updated);
                             }}

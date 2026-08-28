@@ -2033,6 +2033,24 @@ export default function CalendarView({
       const lines = fileContent.split('\n');
       if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
 
+      // İSTEK (kullanıcı geri bildirimi: "bir seansı bitirmek subtaskı kapatmak olamaz"):
+      // [plan:] kartı (isPlanOccurrence) bu satırın PAYLAŞILAN checkbox'ına dokunmaz — ana iş
+      // kalemi (subtask) tek bir bütün olarak sadece kendi checkbox'ı elle tıklanınca kapanır.
+      // Bir seansı "yaptım" işaretlemek, o seansın [plan:...] etiketini geçmiş kaydı olan
+      // [session:...] etiketine çevirir (aynen handleContinueTaskSession'ın kullandığı format)
+      // — kart takvimden "planlanan gelecek" olmaktan çıkıp salt-okunur bir geçmiş izine döner,
+      // ana satırın checkbox'ı hiç değişmez.
+      if (task.isPlanOccurrence) {
+        const rawLine = lines[task.lineIdx];
+        const planTag = task.timeSlot ? `[plan:${task.dueDate}T${task.timeSlot}]` : `[plan:${task.dueDate}]`;
+        if (!rawLine.includes(planTag)) return;
+        const sessionTag = task.timeSlot ? `[session:${task.dueDate}T${task.timeSlot}]` : `[session:${task.dueDate}]`;
+        lines[task.lineIdx] = rawLine.replace(planTag, sessionTag);
+        await onSaveNote(task.filePath, lines.join('\n'));
+        setRefreshTrigger(prev => prev + 1);
+        return;
+      }
+
       const rawLine = lines[task.lineIdx];
       const match = rawLine.match(/^(\s*[*\-]\s+\[)([ xX/])(\]\s*.*)$/);
       if (!match) return;
