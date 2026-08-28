@@ -1238,6 +1238,20 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                         <div style={{ fontSize: '11.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center' }}>{sub.name}</div>
                         {plannerSchedule.usedDays.map(d => {
                           const p = plannerSchedule.placements.find(pl => pl.subtaskId === sub.id && pl.dateStr === d);
+                          // İSTEK (kullanıcı geri bildirimi: "burada iki adet blok görmeyi
+                          // beklerdim, biri 9-12 diğeri 13-18, şuan sadece 9-12 görünüyor —
+                          // tabi bu iki subtask demek değil, sessionları ifade eder tek
+                          // subtask karşısında"): öğleyi aşan bir yerleştirmenin ek seansı
+                          // (afternoonSplit) önizlemede de İKİNCİ, ayrı renkli bir bar olarak
+                          // görünür — tek subtask satırında iki bağımsız seans bloğu.
+                          if (p && p.afternoonSplit) {
+                            return (
+                              <div key={d} style={{ height: '22px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                <div title={`${p.startTime}-${p.endTime}`} style={{ flex: 1, background: 'var(--accent-color)', borderRadius: '3px 3px 0 0' }} />
+                                <div title={`${p.afternoonSplit.startTime}-${p.afternoonSplit.endTime} (ek seans)`} style={{ flex: 1, background: '#ffa726', borderRadius: '0 0 3px 3px' }} />
+                              </div>
+                            );
+                          }
                           return (
                             <div key={d} title={p ? `${p.startTime}-${p.endTime}` : ''} style={{
                               height: '22px', borderRadius: '4px',

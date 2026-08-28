@@ -2640,6 +2640,74 @@ export default function CalendarView({
     x: number; y: number; dateStr: string; startTime: string; endTime: string; dayDate: Date; showBookPicker: boolean;
   } | null>(null);
 
+  // İSTEK (kullanıcı geri bildirimi: "task ve session olayı kesin bir şekilde ayırt edilsin —
+  // istersen iki tamamlama koy, biri session tamamlama diğeri bu task bitti, ya da sağ
+  // tıklayınca bir menü açılır"): planlanmış bir karta SAĞ TIKLAYINCA iki AÇIKÇA farklı eylem
+  // sunan bir bağlam menüsü açılır — "Seansı Tamamla" (bu zaman bloğunu bitir, ana checkbox'a
+  // dokunma) ve "İşi Tamamla" (bütün işi kapat). Önceden bunlar TEK bir sol tık ile karışık bir
+  // şekilde birbirine karışıyordu (bkz. handleCompleteSession/handleCompleteWholeTask).
+  const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; task: WorkspaceTask } | null>(null);
+
+  const handleTaskContextMenu = (e: React.MouseEvent, task: WorkspaceTask) => {
+    if (task.isExternal || task.isSessionOccurrence) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setTaskContextMenu({
+      x: Math.min(e.clientX, window.innerWidth - 220),
+      y: Math.min(e.clientY, window.innerHeight - 140),
+      task
+    });
+  };
+
+  // "Seansı Tamamla": bu KART'ın temsil ettiği zaman bloğunu geçmiş kaydına ([session:...])
+  // çevirir — ana işin checkbox'ına HİÇ dokunmaz. [plan:] kartında (isPlanOccurrence) kendi
+  // [plan:] etiketi [session:]'e çevrilir (bkz. handleToggleTodo'daki aynı mantık). ANA kartta
+  // (due/plannedtime) ise o an aktif olan zaman aralığı [session:] geçmişine eklenip [due:]/
+  // [plannedtime:] TEMİZLENİR — iş otomatik olarak "Planlanmamış Görevler"e geri döner, kullanıcı
+  // istediği an başka bir seans için tekrar takvime sürükleyebilir.
+  const handleCompleteSession = async (task: WorkspaceTask) => {
+    try {
+      const fileContent = await readNoteContent(task.filePath);
+      const lines = fileContent.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+
+      if (task.isPlanOccurrence) {
+        const rawLine = lines[task.lineIdx];
+        const planTag = task.timeSlot ? `[plan:${task.dueDate}T${task.timeSlot}]` : `[plan:${task.dueDate}]`;
+        if (!rawLine.includes(planTag)) return;
+        const sessionTag = task.timeSlot ? `[session:${task.dueDate}T${task.timeSlot}]` : `[session:${task.dueDate}]`;
+        lines[task.lineIdx] = rawLine.replace(planTag, sessionTag);
+      } else {
+        let newLine = lines[task.lineIdx];
+        if (task.dueDate) {
+          const sessionTag = task.timeSlot ? `[session:${task.dueDate}T${task.timeSlot}]` : `[session:${task.dueDate}]`;
+          newLine = `${newLine} ${sessionTag}`;
+        }
+        newLine = newLine
+          .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
+          .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        lines[task.lineIdx] = newLine;
+      }
+
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Seans tamamlanamadı:', err);
+    }
+    setTaskContextMenu(null);
+  };
+
+  // "İşi Tamamla": hangi kart (ana/[plan:]) üzerinden çağrılırsa çağrılsın, her zaman İŞİN
+  // KENDİSİNİ (ana, occurrence-olmayan satırı) checkbox'ını işaretler — handleToggleTodo'nun
+  // occurrence-özel dallanmasına düşmesin diye ana görev nesnesi ayrıca bulunur.
+  const handleCompleteWholeTask = async (task: WorkspaceTask) => {
+    const mainTask = tasks.find(t => t.filePath === task.filePath && t.lineIdx === task.lineIdx && !t.isPlanOccurrence && !t.isSessionOccurrence && !t.isExternal) || task;
+    await handleToggleTodo(mainTask.id);
+    setTaskContextMenu(null);
+  };
+
   const handleSlotContextMenu = (e: React.MouseEvent<HTMLDivElement>, dayDate: Date) => {
     e.preventDefault();
     e.stopPropagation();
@@ -3821,7 +3889,11 @@ export default function CalendarView({
                               // bürünür — kullanıcı "Başla"ya hiç dokunmadan bile geciktiğini görür,
                               // bildirim açmasına gerek kalmaz.
                               const taskPlannedStartMs = new Date(dayStr + 'T00:00:00').setHours(timeData.startHour, timeData.startMin, 0, 0);
-                              const isOverdueToStart = !task.isExternal && !task.isChecked && !task.questStartedAt &&
+                              // BUG DÜZELTMESİ (kullanıcı geri bildirimi: geçmiş bir [session:] izinin
+                              // aktif bir görev gibi "gecikti" uyarısı/canlı geri sayımla görünmesi
+                              // kafa karıştırıyordu): isSessionOccurrence kartları salt-okunur bir
+                              // geçmiş kaydıdır, "başlaman gerekiyordu" uyarısı burada anlamsız.
+                              const isOverdueToStart = !task.isExternal && !task.isSessionOccurrence && !task.isChecked && !task.questStartedAt &&
                                 (now.getTime() > taskPlannedStartMs);
 
                               // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -3975,6 +4047,7 @@ export default function CalendarView({
                                     e.stopPropagation();
                                     handleSelectTaskForNote(task);
                                   }}
+                                  onContextMenu={(e) => handleTaskContextMenu(e, task)}
                                   onMouseEnter={(e) => handleMouseEnterCard(e, task)}
                                   onMouseLeave={handleMouseLeaveCard}
                                   className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''}`}
@@ -4089,7 +4162,7 @@ export default function CalendarView({
                                   )}
 
                                   {/* Dedicated Checkbox */}
-                                  <div 
+                                  <div
                                     className="event-checkbox-wrapper"
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -4100,11 +4173,18 @@ export default function CalendarView({
                                       dueDate: task.dueDate,
                                       timeSlot: task.timeSlot
                                     });
+                                      } else if (task.isSessionOccurrence) {
+                                        // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "ilkine bastım ikincisi de
+                                        // kapandı"): bu kart salt-okunur bir GEÇMİŞ izidir (bkz. yukarıdaki
+                                        // isSessionOccurrence render notu) — AYNI satırı (aynı checkbox'ı) ana
+                                        // görevle paylaşır, o yüzden checkbox'ı tıklanabilir bırakmak ana işin
+                                        // tamamlanma durumunu yanlışlıkla değiştiriyordu. Artık tamamen inert.
+                                        return;
                                       } else {
                                         handleToggleTodo(task.id);
                                       }
                                     }}
-                                    style={isSmallCard ? { display: 'flex', alignItems: 'center', cursor: task.isExternal ? 'default' : 'pointer' } : undefined}
+                                    style={isSmallCard ? { display: 'flex', alignItems: 'center', cursor: (task.isExternal || task.isSessionOccurrence) ? 'default' : 'pointer' } : undefined}
                                   >
                                     {task.isExternal ? (
                                       <span 
@@ -4139,7 +4219,10 @@ export default function CalendarView({
                                       geri sayım kartın sağ üst köşesine (start butonunun biraz
                                       solunda) ayrıca eklenir, aksi halde tam da en acil (kısa
                                       süreli) görevlerde sayaç hiç görünmezdi. */}
-                                  {isSmallCard && !task.isExternal && !task.isChecked && (
+                                  {/* BUG DÜZELTMESİ: isSessionOccurrence (geçmiş [session:] izi) salt-okunur
+                                      bir kayıttır — canlı geri sayım/▶️/🕐 gibi "aktif görev" öğeleri
+                                      burada anlamsız ve kafa karıştırıcıydı (kullanıcı geri bildirimi). */}
+                                  {isSmallCard && !task.isExternal && !task.isSessionOccurrence && !task.isChecked && (
                                     <div style={{ position: 'absolute', top: '2px', right: task.questOutcome || task.questStartedAt ? '4px' : '32px', zIndex: 11 }}>
                                       <TaskCountdown startTime={taskStartDate} deadline={taskDeadlineDate} size="compact" />
                                     </div>
@@ -4149,7 +4232,7 @@ export default function CalendarView({
                                       Tek tıkla başlatma — önceden yalnızca Görev Havuzu'nun detay
                                       çekmecesinden mümkündü. Kartın sağ üst köşesine mutlak
                                       konumlanır ki mevcut flex düzenini (checkbox+içerik) bozmasın. */}
-                                  {!task.isExternal && !task.questOutcome && !task.questStartedAt && !task.isChecked && (
+                                  {!task.isExternal && !task.isSessionOccurrence && !task.questOutcome && !task.questStartedAt && !task.isChecked && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -4187,7 +4270,7 @@ export default function CalendarView({
                                       saat butonuyla açılan tek bir modalda birleştirilir.
                                       isSmallCard'da ▶️ butonuyla çakışmaması için ayrı bir
                                       satıra (biraz aşağıya) konumlanır. */}
-                                  {!task.isExternal && !task.isChecked && (
+                                  {!task.isExternal && !task.isSessionOccurrence && !task.isChecked && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -4229,7 +4312,7 @@ export default function CalendarView({
                                             kullanıcının "takvimde bir timer koyar mısın... son 10dk kala
                                             kırmızı olsun" isteği. Görev başlatılmış olmasa bile gösterilir
                                             (planlanan bitişe göre). */}
-                                        {!task.isExternal && !task.isChecked && (
+                                        {!task.isExternal && !task.isSessionOccurrence && !task.isChecked && (
                                           <TaskCountdown startTime={taskStartDate} deadline={taskDeadlineDate} size="full" />
                                         )}
                                       </div>
@@ -5271,6 +5354,48 @@ export default function CalendarView({
                 ))}
               </>
             )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {taskContextMenu && createPortal(
+        <div
+          onClick={() => setTaskContextMenu(null)}
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2500 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'fixed',
+              top: taskContextMenu.y,
+              left: taskContextMenu.x,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+              padding: '6px',
+              minWidth: '210px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px'
+            }}
+          >
+            <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', padding: '4px 8px 6px', borderBottom: '1px solid var(--border-color)', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {taskContextMenu.task.content}
+            </div>
+            <button type="button" onClick={() => handleCompleteSession(taskContextMenu.task)} style={contextMenuBtnStyle}>
+              ✅ Seansı Tamamla
+            </button>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', padding: '0 8px 4px' }}>
+              Bu zaman bloğu biter, iş açık kalır — Planlanmamış'a geri döner.
+            </div>
+            <button type="button" onClick={() => handleCompleteWholeTask(taskContextMenu.task)} style={contextMenuBtnStyle}>
+              🏁 İşi Tamamla
+            </button>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', padding: '0 8px 2px' }}>
+              Bütün iş biter — ana checkbox işaretlenir.
+            </div>
           </div>
         </div>,
         document.body
