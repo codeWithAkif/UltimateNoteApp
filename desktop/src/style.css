@@ -3527,15 +3527,22 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* İSTEK (kullanıcı: "task başlamaya/bitmesine 5dk kala kuvvetli bir uyaran istiyorum ...
-   o task bloğu çerçevesi 2 kere yanıp sönsün"): kart çerçevesi TAM İKİ kez parlak kırmızı-
-   turuncu bir çerçeveyle yanıp söner — bkz. CalendarView.tsx'teki flashTaskId state'i. Sabit
-   iterasyon sayısı (infinite DEĞİL) kasıtlı: bir kez tetiklenir, kendi kendine durur. */
+   o task bloğu çerçevesi 2 kere yanıp sönsün" + geri bildirim: "çok hızlı oldu, daha belirgin
+   olsun, 1sn yan 1sn sön sonra tekrar 1sn yan 1sn sön"): kart çerçevesi TAM İKİ kez, her biri
+   1sn AÇIK + 1sn KAPALI (net, keskin geçişli — yumuşak nabız DEĞİL) parlak turuncu bir
+   çerçeveyle yanıp söner — bkz. CalendarView.tsx'teki flashTaskId state'i (4000ms sonra
+   temizleniyor, bu sürelerle birebir eşleşsin diye). Sabit iterasyon sayısı (infinite DEĞİL)
+   kasıtlı: iki kez tetiklenir, kendi kendine durur. %0-49/%50-99 arası değer SABİT tutularak
+   (ease/linear farketmeksizin) görünür geçiş SADECE %49→%50 ve %99→%100 sınırlarında keskin
+   bir "anahtar" gibi olur.
+*/
 .task-reminder-flash {
-  animation: taskReminderFlash 0.7s ease-in-out 2;
+  animation: taskReminderFlash 2s linear 2;
 }
 @keyframes taskReminderFlash {
-  0%, 100% { box-shadow: none; outline: 2px solid transparent; }
-  50% { box-shadow: 0 0 0 3px #f97316, 0 0 22px rgba(249,115,22,0.9); outline: 2px solid #f97316; }
+  0%, 49% { box-shadow: 0 0 0 3px #f97316, 0 0 22px rgba(249,115,22,0.9); outline: 2px solid #f97316; }
+  50%, 99.9% { box-shadow: none; outline: 2px solid transparent; }
+  100% { box-shadow: 0 0 0 3px #f97316, 0 0 22px rgba(249,115,22,0.9); outline: 2px solid #f97316; }
 }
 
 /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):

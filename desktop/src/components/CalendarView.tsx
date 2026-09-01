@@ -1235,7 +1235,10 @@ export default function CalendarView({
         onRequestFocusCalendar?.();
         setCurrentDate(new Date(`${task.dueDate}T00:00:00`));
         setFlashTaskId(task.id);
-        setTimeout(() => setFlashTaskId(curr => (curr === task.id ? null : curr)), 1600);
+        // İSTEK (kullanıcı geri bildirimi: "1sn yan 1sn sön sonra tekrar 1sn yan 1sn sön"):
+        // CSS animasyonu (taskReminderFlash) 2sn × 2 tekrar = 4000ms sürüyor — bu sürenin
+        // SONUNDA temizlenir, aksi halde animasyon bitmeden class kaldırılıp "kesik" görünürdü.
+        setTimeout(() => setFlashTaskId(curr => (curr === task.id ? null : curr)), 4000);
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
