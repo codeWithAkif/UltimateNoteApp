@@ -7,7 +7,7 @@ import {
   RotateCcw, Volume2, Mic, Square, Check, Copy, Table, HelpCircle, Activity, Heart, Sparkles, 
   Pin, Music, X, Globe, PenTool, Database, Inbox,
   Briefcase, Coffee, Rocket, Smile, Columns, Heading1, Heading2, Heading3, Quote, Minus, Image, Tag, Infinity,
-  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search
+  DollarSign, PiggyBank, TrendingUp, MicOff, Maximize2, Minimize2, Type, Network, Layout, Palette, ZoomIn, ZoomOut, Video, Link2, History, GitBranch, Search, ArrowUpDown
 } from 'lucide-react';
 import Hourglass from './Hourglass';
 import { platform, isElectron, isBrowser, isCapacitor } from '../services/platform';
@@ -2966,6 +2966,15 @@ export default function NotesView({
   }, [selectedFolder]);
   const [isCreating, setIsCreating] = useState(false);
   const [creatingType, setCreatingType] = useState<'note' | 'excalidraw' | 'rfc' | 'drawio'>('note');
+
+  // İSTEK (kullanıcı: "burda sıralamayı tersine çevir, günümüzden geçmişe doğru gitsin, ufak
+  // filter sorting search kısmı olsun, filtre veya sorting varsa üstlerinde ufak koyu turuncu
+  // bir nokta olsun"): klasör not listesi için küçük bir arama + sıralama araç çubuğu.
+  // Varsayılan artık YENİDEN ESKİYE (descending) — Günlükler gibi tarih-adlı klasörlerde
+  // "bugünden geçmişe" akışı sağlar; kullanıcı isterse eskiye-yeniye'ye çevirebilir.
+  const [noteListSearch, setNoteListSearch] = useState('');
+  const [noteListSearchOpen, setNoteListSearchOpen] = useState(false);
+  const [noteListSortDesc, setNoteListSortDesc] = useState(true);
   
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Seçilen şablonun dosya yolunu ve mevcut şablon listesini filtreleyen state/memo.
@@ -4974,7 +4983,7 @@ export default function NotesView({
   // Filter notes based on selected folder and selected tag
   const filteredNotes = notes.filter((item) => {
     if (item.type !== 'note' && item.type !== 'excalidraw' && item.type !== 'drawio') return false;
-    
+
     if (selectedFolder) {
       const noteFolder = item.path.split('/').slice(0, -1).join('/');
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -4983,15 +4992,28 @@ export default function NotesView({
       const isMatch = noteFolder === selectedFolder;
       if (!isMatch) return false;
     }
-    
+
     if (selectedTag) {
       const content = fileContents[item.path] || '';
       if (!content.toLowerCase().includes('#' + selectedTag.toLowerCase())) {
         return false;
       }
     }
-    
+
+    // İSTEK: küçük arama kutusu — not adına göre filtreler.
+    if (noteListSearch.trim()) {
+      const name = item.path.split('/').pop() || '';
+      if (!name.toLocaleLowerCase('tr').includes(noteListSearch.trim().toLocaleLowerCase('tr'))) {
+        return false;
+      }
+    }
+
     return true;
+  }).sort((a, b) => {
+    // İSTEK ("sıralamayı tersine çevir, günümüzden geçmişe doğru gitsin"): dosya adına göre
+    // (tarih-adlı Günlükler notlarında bu = kronolojik) sırala — varsayılan YENİDEN ESKİYE.
+    const cmp = a.path.localeCompare(b.path, 'tr');
+    return noteListSortDesc ? -cmp : cmp;
   });
 
   // Fetch active note content when activeNotePath changes
@@ -9303,6 +9325,53 @@ export default function NotesView({
                 <span>Yeni Not</span>
               </button>
             </div>
+          </div>
+
+          {/* İSTEK (kullanıcı: "ufak filter sorting search kısmı olsun, filtre veya sorting
+              varsa üstlerinde ufak koyu turuncu bir nokta olsun"): küçük, sıkışık bir araç
+              çubuğu — arama kutusu (genişleyerek açılır) ve sıralama yönü. Aktifken (arama
+              dolu / sıralama varsayılandan farklı) ilgili butonun üstünde koyu turuncu bir
+              nokta rozeti görünür. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px 8px' }}>
+            <div style={{ position: 'relative', flex: noteListSearchOpen ? 1 : undefined }}>
+              {noteListSearchOpen ? (
+                <input
+                  type="text"
+                  autoFocus
+                  value={noteListSearch}
+                  onChange={(e) => setNoteListSearch(e.target.value)}
+                  onBlur={() => { if (!noteListSearch.trim()) setNoteListSearchOpen(false); }}
+                  placeholder="Notlarda ara..."
+                  style={{
+                    width: '100%', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
+                    borderRadius: '6px', color: 'var(--text-primary)', padding: '4px 8px', fontSize: '12px', outline: 'none'
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  title="Notlarda ara"
+                  onClick={() => setNoteListSearchOpen(true)}
+                  style={{ position: 'relative', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '3px' }}
+                >
+                  <Search size={13} />
+                  {noteListSearch.trim() && (
+                    <span style={{ position: 'absolute', top: 0, right: 0, width: '6px', height: '6px', borderRadius: '50%', background: '#c2410c' }} />
+                  )}
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              title={noteListSortDesc ? 'Yeniden eskiye sıralı — eskiden yeniye çevir' : 'Eskiden yeniye sıralı — yeniden eskiye çevir'}
+              onClick={() => setNoteListSortDesc(v => !v)}
+              style={{ position: 'relative', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '3px' }}
+            >
+              <ArrowUpDown size={13} />
+              {!noteListSortDesc && (
+                <span style={{ position: 'absolute', top: 0, right: 0, width: '6px', height: '6px', borderRadius: '50%', background: '#c2410c' }} />
+              )}
+            </button>
           </div>
 
           {isCreating && (
