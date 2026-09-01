@@ -7489,6 +7489,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
               }}
+              onRequestFocusCalendar={() => setActiveTab('calendar')}
             />
           </div>
 

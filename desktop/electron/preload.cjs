@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electron', {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  focusAndFlashWindow: () => ipcRenderer.invoke('focus-and-flash-window'),
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);

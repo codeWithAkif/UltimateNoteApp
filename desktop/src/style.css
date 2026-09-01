@@ -3526,6 +3526,18 @@ input:focus, textarea:focus, select:focus {
   100% { opacity: 1; }
 }
 
+/* İSTEK (kullanıcı: "task başlamaya/bitmesine 5dk kala kuvvetli bir uyaran istiyorum ...
+   o task bloğu çerçevesi 2 kere yanıp sönsün"): kart çerçevesi TAM İKİ kez parlak kırmızı-
+   turuncu bir çerçeveyle yanıp söner — bkz. CalendarView.tsx'teki flashTaskId state'i. Sabit
+   iterasyon sayısı (infinite DEĞİL) kasıtlı: bir kez tetiklenir, kendi kendine durur. */
+.task-reminder-flash {
+  animation: taskReminderFlash 0.7s ease-in-out 2;
+}
+@keyframes taskReminderFlash {
+  0%, 100% { box-shadow: none; outline: 2px solid transparent; }
+  50% { box-shadow: 0 0 0 3px #f97316, 0 0 22px rgba(249,115,22,0.9); outline: 2px solid #f97316; }
+}
+
 /* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
    Takvim'de erken bitirilen görevin "kazanılan süre" dolgusu için hafif nabız efekti —
    CalendarView.tsx'teki .saved-time-highlight bunu kullanır. */

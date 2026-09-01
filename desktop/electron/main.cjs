@@ -762,6 +762,19 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion();
 });
 
+// İSTEK (kullanıcı: "task başlamaya/bitmesine 5dk kala kuvvetli bir uyaran istiyorum,
+// uygulama açıksa ekrana gelsin"): pencere simge durumundaysa geri getirir, arkaplandaysa
+// öne alır/odaklar; Windows'ta ayrıca görev çubuğu simgesini yanıp söndürür (flashFrame) —
+// pencere zaten odaktaysa bu görsel olarak sessiz kalır, rahatsız etmez.
+ipcMain.handle('focus-and-flash-window', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.flashFrame(true);
+  return { success: true };
+});
+
 ipcMain.handle('restart-and-install', () => {
   autoUpdater.quitAndInstall();
   return { success: true };

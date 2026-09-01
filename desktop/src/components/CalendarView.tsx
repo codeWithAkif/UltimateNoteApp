@@ -214,6 +214,12 @@ interface CalendarViewProps {
   // kitap başlıkları — bkz. LibraryView.tsx'teki bookNotes taramasıyla AYNI mantık.
   bookNames?: string[];
   onOpenNotePath?: (path: string) => void;
+  // İSTEK (kullanıcı: "takvimdeki task başlamaya/bitmesine 5dk kala kuvvetli bir uyaran
+  // istiyorum... uygulamanın başka bir tarafında isem takvim sayfası gelsin"): CalendarView
+  // sekme aktif olmasa bile (App.tsx onu display:none ile gizli tutup her zaman mount edilmiş
+  // bırakıyor) arkaplanda çalışmaya devam eder — bu callback, App.tsx'teki sekme durumunu
+  // (activeTab) CalendarView'dan bağımsız tutmak için "Takvim'e geç" isteğini yukarı iletir.
+  onRequestFocusCalendar?: () => void;
 }
 
 export interface WorkspaceSubTask {
@@ -619,7 +625,8 @@ export default function CalendarView({
   clientNames = [],
   clientProjectSlugs = {},
   bookNames = [],
-  onOpenNotePath
+  onOpenNotePath,
+  onRequestFocusCalendar
 }: CalendarViewProps) {
   const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
 
@@ -682,10 +689,9 @@ export default function CalendarView({
     );
   };
 
-  const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>(() => {
-    if (embedded) return 'day';
-    return (isElectron || isBrowser) ? 'week' : 'day';
-  });
+  // İSTEK (kullanıcı: "takvim açılınca günlük gelsin, haftalık defaultda geliyor"): Takvim
+  // artık HER platformda varsayılan olarak "Günlük" görünümüyle açılıyor.
+  const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>('day');
   const [currentDate, setCurrentDate] = useState(new Date());
   
   // Scanned task states
@@ -1159,6 +1165,81 @@ export default function CalendarView({
     }, 30000);
     return () => clearInterval(timer);
   }, []);
+
+  // İSTEK (kullanıcı: "takvimdeki task başlamaya ve bitmesine 5dk kala kuvvetli bir uyaran
+  // istiyorum. uygulama açıksa ekrana gelsin, başka bir tarafında isem takvim sayfası gelsin
+  // ve o task bloğu çerçevesi 2 kere yanıp sönsün"): App.tsx CalendarView'ı display:none ile
+  // gizli tutup HER ZAMAN mount edilmiş bıraktığından, bu efekt aktif sekme Takvim olmasa bile
+  // arkaplanda çalışmaya devam eder — `now` zaten 30sn'de bir tikleyen state'e binerek ayrı
+  // bir interval açmaya gerek kalmadan kontrol ediyoruz.
+  const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
+  // Her görev+kenar (başlangıç/bitiş) için EN FAZLA BİR KEZ uyarı — 30sn'lik her tikte "5dk
+  // kaldı" penceresine (4:45-5:15) hâlâ giriyorsa tekrar tekrar ötmesin diye.
+  const remindedEdgesRef = useRef<Set<string>>(new Set());
+
+  // Basit, dosyasız bir "kuvvetli" bip sesi — Web Audio API ile iki kısa ton (tanınabilir,
+  // rahatsız edici olmayan bir "dikkat!" sesi).
+  const playReminderBeep = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const playTone = (freq: number, startAt: number, duration: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + startAt);
+        gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + startAt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + startAt + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + startAt);
+        osc.stop(ctx.currentTime + startAt + duration + 0.05);
+      };
+      playTone(880, 0, 0.18);
+      playTone(880, 0.26, 0.18);
+      setTimeout(() => ctx.close().catch(() => {}), 1200);
+    } catch {
+      // Ses çalınamazsa sessizce yut — görsel uyarı (flash + pencere odaklama) zaten çalışıyor.
+    }
+  };
+
+  useEffect(() => {
+    // `embedded` (sağ panel mini takvimi) koşullu render edildiği için istikrarsız
+    // mount/unmount olur ve ana (her zaman mount, display:none ile gizlenen) örnekle ÇİFT
+    // uyarı tetikleyebilirdi — hatırlatıcı motoru SADECE ana Takvim sekmesinde çalışır.
+    if (embedded) return;
+    const REMINDER_WINDOW_MS = 5 * 60 * 1000;
+    const TOLERANCE_MS = 20 * 1000; // 30sn'lik tik aralığına rahatça sığacak pencere
+    const nowMs = now.getTime();
+
+    tasks.forEach(task => {
+      if (task.isChecked || task.isExternal || task.isSessionOccurrence) return;
+      if (!task.dueDate || !task.timeSlot) return;
+      const t = parseTime(task.timeSlot);
+      if (!t) return;
+      const startMs = new Date(`${task.dueDate}T00:00:00`).setHours(t.startHour, t.startMin, 0, 0);
+      const endMs = new Date(`${task.dueDate}T00:00:00`).setHours(t.endHour, t.endMin, 0, 0);
+
+      ([['start', startMs], ['end', endMs]] as const).forEach(([edge, edgeMs]) => {
+        const diff = edgeMs - nowMs;
+        if (diff <= 0) return;
+        if (Math.abs(diff - REMINDER_WINDOW_MS) > TOLERANCE_MS) return;
+        const key = `${task.id}:${edge}:${task.dueDate}`;
+        if (remindedEdgesRef.current.has(key)) return;
+        remindedEdgesRef.current.add(key);
+
+        playReminderBeep();
+        (window as any).electron?.focusAndFlashWindow?.();
+        onRequestFocusCalendar?.();
+        setCurrentDate(new Date(`${task.dueDate}T00:00:00`));
+        setFlashTaskId(task.id);
+        setTimeout(() => setFlashTaskId(curr => (curr === task.id ? null : curr)), 1600);
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now]);
 
   const handleMouseEnterCard = (e: React.MouseEvent<HTMLDivElement>, task: WorkspaceTask) => {
     if (!task.subtasks || task.subtasks.length === 0) return;
@@ -4159,7 +4240,7 @@ export default function CalendarView({
                                   onContextMenu={(e) => handleTaskContextMenu(e, task)}
                                   onMouseEnter={(e) => handleMouseEnterCard(e, task)}
                                   onMouseLeave={handleMouseLeaveCard}
-                                  className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''}`}
+                                  className={`scheduled-event-card priority-${task.priority} ${task.isChecked ? 'completed' : ''} ${isOverdueToStart ? 'countdown-urgent-pulse' : ''} ${flashTaskId === task.id ? 'task-reminder-flash' : ''}`}
                                   onDoubleClick={(e) => {
                                     e.stopPropagation();
                                     // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe
