@@ -400,11 +400,18 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         const oldSessLine = matchIdx !== -1 ? oldSessions.splice(matchIdx, 1)[0] : undefined;
         const oldSessMatch = oldSessLine ? oldSessLine.match(/^( {4}[*\-]\s+\[[ xX\/]\])\s*(.*)$/) : null;
         const sessPrefix = oldSessMatch ? oldSessMatch[1] : '    - [ ]';
+        // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "taskların hem başında hem sonunda
+        // yazıyor, Teklif Ekranı Liste 2026-09-02 09:00-12:00 Teklif Ekranı Liste gibi"):
+        // eski satırın gövdesi zaten "{isim} {tarih} {saat}" biçiminde YAZILMIŞTI — burada
+        // due/plannedtime/project/sig etiketleri temizleniyordu ama satırın BAŞINDAKİ isim
+        // metni TEMİZLENMİYORDU, o da `preservedSess` içinde kalıp aşağıda isim İKİNCİ KEZ
+        // (sonuna) ekleniyordu. Artık isim de (büyük/küçük harf duyarsız) ayıklanıyor.
         const preservedSess = (oldSessMatch ? oldSessMatch[2] : '')
           .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
           .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
           .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
           .replace(new RegExp(escapeRegExp(sig), 'i'), '')
+          .replace(new RegExp(escapeRegExp(s.name), 'i'), '')
           .replace(/\s+/g, ' ')
           .trim();
         let sessLine = `${sessPrefix} ${s.name} ${sig}`;
