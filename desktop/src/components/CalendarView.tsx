@@ -1305,6 +1305,158 @@ export default function CalendarView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now]);
 
+  // ============ NAMAZ VAKİTLERİ ============
+  // İSTEK (kullanıcı: "namaz vakitlerini almak ve takvimimde işaretlemek istiyorum, vaktin
+  // geçmesine 20dk kala ve ezan vakti haber versin, task gibi olmasın sadece haber almak
+  // istiyorum, google takvimime de kaydolsun, şehir değiştirdiysem o andan sonra entegre
+  // edilsin"): Diyanet hesaplama yöntemiyle (Aladhan API, method=13) günlük vakitler çekilir.
+  // BİLEREK not/checklist sistemine HİÇ dokunmuyor — Kanban/Planlanmamış Görevler/Not
+  // içinde asla bir "task" olarak görünmezler, tamamen ayrı bir katman. Google Calendar'a
+  // ise (kullanıcının onayıyla) doğrudan, not sistemini atlayarak push edilirler.
+  const PRAYER_DEFS: { key: string; label: string }[] = [
+    { key: 'Fajr', label: 'İmsak' },
+    { key: 'Sunrise', label: 'Güneş' },
+    { key: 'Dhuhr', label: 'Öğle' },
+    { key: 'Asr', label: 'İkindi' },
+    { key: 'Maghrib', label: 'Akşam' },
+    { key: 'Isha', label: 'Yatsı' }
+  ];
+  const [prayerCity, setPrayerCity] = useState(() => { try { return localStorage.getItem('prayer_city') || ''; } catch { return ''; } });
+  const [prayerCountry, setPrayerCountry] = useState(() => { try { return localStorage.getItem('prayer_country') || 'Turkey'; } catch { return 'Turkey'; } });
+  const [prayerCityInput, setPrayerCityInput] = useState(prayerCity);
+  const [prayerCountryInput, setPrayerCountryInput] = useState(prayerCountry);
+  const [prayerTimes, setPrayerTimes] = useState<{ key: string; label: string; time: string }[] | null>(null);
+  const [prayerTimesError, setPrayerTimesError] = useState<string | null>(null);
+  const [flashPrayerKey, setFlashPrayerKey] = useState<string | null>(null);
+  const [prayerNotice, setPrayerNotice] = useState<string | null>(null);
+  const prayerRemindedRef = useRef<Set<string>>(new Set());
+
+  const todayForPrayer = format(now, 'yyyy-MM-dd');
+
+  // Şehir/ülke DEĞİŞİR değişmez (Kaydet'e basılınca) ve her gün (todayForPrayer değişince)
+  // yeniden çekilir — bugün için önbellekte varsa (aynı şehir/ülke) tekrar ağa gitmez.
+  useEffect(() => {
+    if (embedded || !prayerCity.trim()) { setPrayerTimes(null); return; }
+    const CACHE_KEY = 'prayer_times_cache';
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      if (cached && cached.date === todayForPrayer && cached.city === prayerCity && cached.country === prayerCountry) {
+        setPrayerTimes(cached.times);
+        setPrayerTimesError(null);
+        return;
+      }
+    } catch { /* bozuk önbellek — yeniden çekilecek */ }
+
+    (async () => {
+      try {
+        const d = new Date();
+        const dateStr = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+        const url = `https://api.aladhan.com/v1/timingsByCity/${dateStr}?city=${encodeURIComponent(prayerCity)}&country=${encodeURIComponent(prayerCountry)}&method=13`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (json.code !== 200 || !json.data?.timings) throw new Error(typeof json.data === 'string' ? json.data : 'Vakitler alınamadı.');
+        const t = json.data.timings;
+        const times = PRAYER_DEFS.map(p => ({ ...p, time: String(t[p.key] || '').split(' ')[0] }));
+        setPrayerTimes(times);
+        setPrayerTimesError(null);
+        localStorage.setItem(CACHE_KEY, JSON.stringify({ date: todayForPrayer, city: prayerCity, country: prayerCountry, times }));
+      } catch (err: any) {
+        setPrayerTimesError(err?.message || 'Namaz vakitleri alınamadı — şehir adını kontrol et.');
+        setPrayerTimes(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prayerCity, prayerCountry, todayForPrayer, embedded]);
+
+  // Hatırlatıcı: her vakit için TAM SAATİNDE ("ezan") + 4 "namaz vakti" penceresinin ÇIKIŞINA
+  // 20dk kala ("vaktin çıkması") — task hatırlatıcısıyla AYNI güçlü uyarı (bip+odaklan+yanıp
+  // sön) ama TAMAMEN AYRI bir ref/anahtar seti kullanır, task sistemine hiç karışmaz. Yatsı'nın
+  // "çıkışı" bir sonraki günün İmsak'ı olduğundan (bugünün verisiyle hesaplanamaz) BİLEREK
+  // kapsam dışı bırakıldı — sadece ezan anı hatırlatması alır.
+  useEffect(() => {
+    if (embedded || !prayerTimes) return;
+    const nowMs = now.getTime();
+    const TOLERANCE_MS = 20 * 1000;
+    const WINDOW_END_MS = 20 * 60 * 1000;
+    const toMs = (hhmm: string) => {
+      const [h, m] = hhmm.split(':').map(Number);
+      if (isNaN(h) || isNaN(m)) return NaN;
+      return new Date(`${todayForPrayer}T00:00:00`).setHours(h, m, 0, 0);
+    };
+    const byKey = new Map(prayerTimes.map(p => [p.key, p]));
+
+    const fire = (key: string, message: string) => {
+      if (prayerRemindedRef.current.has(key)) return;
+      prayerRemindedRef.current.add(key);
+      playReminderBeep();
+      (window as any).electron?.focusAndFlashWindow?.();
+      onRequestFocusCalendar?.();
+      setFlashPrayerKey(key);
+      setPrayerNotice(message);
+      setTimeout(() => setFlashPrayerKey(curr => (curr === key ? null : curr)), 4000);
+      setTimeout(() => setPrayerNotice(curr => (curr === message ? null : curr)), 8000);
+    };
+
+    // Ezan anı — her vakit için.
+    prayerTimes.forEach(p => {
+      const pMs = toMs(p.time);
+      if (isNaN(pMs)) return;
+      if (Math.abs(pMs - nowMs) <= TOLERANCE_MS) {
+        fire(`${todayForPrayer}:${p.key}:azan`, `🕌 ${p.label} ezanı okunuyor`);
+      }
+    });
+
+    // "Vaktin çıkmasına 20dk kala" — Sabah(İmsak→Güneş), Öğle(Öğle→İkindi),
+    // İkindi(İkindi→Akşam), Akşam(Akşam→Yatsı).
+    const windows: { name: string; endKey: string }[] = [
+      { name: 'Sabah', endKey: 'Sunrise' },
+      { name: 'Öğle', endKey: 'Asr' },
+      { name: 'İkindi', endKey: 'Maghrib' },
+      { name: 'Akşam', endKey: 'Isha' }
+    ];
+    windows.forEach(w => {
+      const end = byKey.get(w.endKey);
+      if (!end) return;
+      const endMs = toMs(end.time);
+      if (isNaN(endMs)) return;
+      const diff = endMs - nowMs;
+      if (diff > 0 && Math.abs(diff - WINDOW_END_MS) <= TOLERANCE_MS) {
+        fire(`${todayForPrayer}:${w.name}:ending`, `⏳ ${w.name} namazının vaktinin çıkmasına 20 dakika kaldı`);
+      }
+    });
+  }, [now, prayerTimes, embedded, todayForPrayer]);
+
+  // Google Calendar'a PUSH — not sistemini tamamen atlar (doğrudan API çağrısı), bugün için
+  // zaten gönderilmişse (localStorage'daki günlük harita) tekrar göndermez. Kullanıcı:
+  // "google da task olmalı diyorsan task olabilir" — Google tarafında normal bir etkinlik
+  // olarak görünmesi kabul edilebilir, önemli olan BURADA (Kanban/not) hiç görünmemesi.
+  useEffect(() => {
+    if (embedded || !prayerTimes || !googleOAuthStatus.isConnected) return;
+    const MAP_KEY = `prayer_gcal_ids_${todayForPrayer}`;
+    let pushedMap: Record<string, string> = {};
+    try { pushedMap = JSON.parse(localStorage.getItem(MAP_KEY) || '{}'); } catch { pushedMap = {}; }
+    const toPush = prayerTimes.filter(p => !pushedMap[p.key] && /^\d{2}:\d{2}$/.test(p.time));
+    if (toPush.length === 0) return;
+    (async () => {
+      for (const p of toPush) {
+        const [h, m] = p.time.split(':').map(Number);
+        const start = new Date(`${todayForPrayer}T00:00:00`);
+        start.setHours(h, m, 0, 0);
+        const end = new Date(start.getTime() + 20 * 60 * 1000);
+        const result = await (window as any).electron?.googleCalendarPushEvent?.({
+          summary: `🕌 ${p.label} Vakti`,
+          description: 'Ultimate NoteFactory — namaz vakti hatırlatması.',
+          startISO: start.toISOString(),
+          endISO: end.toISOString()
+        }).catch(() => null);
+        if (result?.success && result.eventId) {
+          pushedMap[p.key] = result.eventId;
+        }
+      }
+      try { localStorage.setItem(MAP_KEY, JSON.stringify(pushedMap)); } catch { /* dolu olabilir, sessizce geç */ }
+    })();
+  }, [prayerTimes, googleOAuthStatus.isConnected, embedded, todayForPrayer]);
+
   // İSTEK ("burda olanları da Google'a aktarabilir miyim"): OTOMATİK PUSH senkronu —
   // planlı (due+plannedtime taşıyan, dış/geçmiş-izi olmayan) her görev, içeriği/tarihi
   // değiştikçe arkaplanda Google Calendar'a yazılır. Hangi Google etkinliğine denk geldiği
@@ -3453,6 +3605,35 @@ export default function CalendarView({
           </div>
         </div>
 
+        {/* İSTEK ("namaz vakitlerini ... takvimimde işaretlemek istiyorum ... ikisini de
+            görsem harika olur" — hem şerit hem ızgara işaretçisi): kompakt, tek satırlık
+            günlük vakit şeridi — task DEĞİL, sadece bilgi amaçlı. */}
+        {!embedded && prayerTimes && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+            padding: '6px 16px', fontSize: '11px', color: 'var(--text-muted)',
+            borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)'
+          }}>
+            <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>🕌</span>
+            {prayerTimes.map(p => (
+              <span key={p.key} style={{ fontFamily: 'monospace' }}>
+                {p.label} <strong style={{ color: 'var(--text-secondary)' }}>{p.time}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* İSTEK: ezan/vakit-çıkışı hatırlatması tetiklenince kısa süreliğine görünen bilgi
+            şeridi — task hatırlatıcısındaki lateStartNotice ile AYNI görsel dil, ayrı state. */}
+        {prayerNotice && (
+          <div style={{
+            padding: '8px 16px', fontSize: '12px', fontWeight: 600, color: '#fff',
+            background: 'linear-gradient(90deg, #0891b2, #0e7490)', textAlign: 'center'
+          }}>
+            {prayerNotice}
+          </div>
+        )}
+
         {/* 2. Main Calendar Content Area */}
         <div className="calendar-workspace-body">
           {viewMode === 'month' ? (
@@ -4136,6 +4317,41 @@ export default function CalendarView({
                             }
                             return null;
                           })()}
+
+                          {/* İSTEK ("takvim ızgarasında ayrı işaretçiler de olsun"): her namaz
+                              vakti için ince, tıklanamaz (pointerEvents:none) bir çizgi +
+                              etiket — "şimdiki zaman" çizgisiyle AYNI konumlandırma mantığı
+                              (minToPx), ama farklı renk (camgöbeği) ve SADECE bugünün
+                              sütununda. Hatırlatma tetiklenince (flashPrayerKey) kısa süreliğine
+                              parlar. */}
+                          {prayerTimes && dayStr === todayForPrayer && prayerTimes.map(p => {
+                            const [ph, pm] = p.time.split(':').map(Number);
+                            if (isNaN(ph) || isNaN(pm)) return null;
+                            const top = minToPx(ph * 60 + pm);
+                            const isFlashing = flashPrayerKey?.startsWith(`${todayForPrayer}:${p.key}:`);
+                            return (
+                              <div
+                                key={p.key}
+                                title={`${p.label} — ${p.time}`}
+                                style={{
+                                  position: 'absolute', top: `${top}px`, left: 0, right: 0, height: '1px',
+                                  borderTop: `1px dashed ${isFlashing ? '#f97316' : 'rgba(6,182,212,0.55)'}`,
+                                  zIndex: 38, pointerEvents: 'none',
+                                  display: 'flex', alignItems: 'center',
+                                  transition: 'border-color 0.3s'
+                                }}
+                              >
+                                <span style={{
+                                  fontSize: '8.5px', color: isFlashing ? '#f97316' : '#06b6d4',
+                                  background: '#18181b', border: `1px solid ${isFlashing ? '#f97316' : 'rgba(6,182,212,0.55)'}`,
+                                  padding: '0 3px', borderRadius: '3px', fontFamily: 'monospace', lineHeight: 1.4,
+                                  marginLeft: '-1px'
+                                }}>
+                                  🕌 {p.label}
+                                </span>
+                              </div>
+                            );
+                          })}
 
                           {/* Real-time drag-to-create draft card rendering */}
                           {dragToCreate && dragToCreate.dateStr === dayStr && dragToCreate.isDragging && (() => {
@@ -6417,6 +6633,69 @@ export default function CalendarView({
                         {googleSyncStatus.errors.length > 5 && <div>...ve {googleSyncStatus.errors.length - 5} hata daha</div>}
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+
+              {/* İSTEK ("namaz vakitlerini almak ve takvimimde işaretlemek istiyorum ... task
+                  gibi bişey olsun istemiyorum, sadece haber almak istiyorum"): şehir/ülke
+                  girilince vakitler Diyanet yöntemiyle çekilir, Takvim'de şerit+işaretçi olarak
+                  gösterilir, hiçbir zaman not/Kanban sistemine task olarak yazılmaz. */}
+              <div style={{
+                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
+                borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px'
+              }}>
+                <div style={{ fontWeight: 'bold', color: '#e2e8f0', fontSize: '12px' }}>🕌 Namaz Vakitleri</div>
+                <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Şehrini gir — vakitler Diyanet hesaplama yöntemiyle otomatik çekilir, Takvim'de
+                  gösterilir ve (Google'a bağlıysan) oraya da eklenir. Bir görev/task DEĞİLDİR,
+                  Kanban veya Planlanmamış Görevler'de hiç görünmez — sadece bildirim.
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={prayerCityInput}
+                    onChange={(e) => setPrayerCityInput(e.target.value)}
+                    placeholder="Şehir (örn. Istanbul)"
+                    style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', padding: '6px 8px', fontSize: '11.5px', outline: 'none' }}
+                  />
+                  <input
+                    type="text"
+                    value={prayerCountryInput}
+                    onChange={(e) => setPrayerCountryInput(e.target.value)}
+                    placeholder="Ülke"
+                    style={{ width: '110px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', padding: '6px 8px', fontSize: '11.5px', outline: 'none' }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!prayerCityInput.trim()}
+                    onClick={() => {
+                      const city = prayerCityInput.trim();
+                      const country = prayerCountryInput.trim() || 'Turkey';
+                      setPrayerCity(city);
+                      setPrayerCountry(country);
+                      try {
+                        localStorage.setItem('prayer_city', city);
+                        localStorage.setItem('prayer_country', country);
+                        // Şehir değişti — İSTEK ("şehir değiştirdiysem o dk'dan sonra entegre
+                        // edilmeli"): eski şehrin önbelleğini geçersiz kılmak için siliyoruz,
+                        // yukarıdaki efekt city/country değiştiği an yeni şehri çekecek.
+                        localStorage.removeItem('prayer_times_cache');
+                      } catch { /* localStorage erişilemez olabilir, sessizce geç */ }
+                    }}
+                    style={{ background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: '#fff', padding: '6px 12px', fontSize: '12px', fontWeight: 700, cursor: prayerCityInput.trim() ? 'pointer' : 'not-allowed', opacity: prayerCityInput.trim() ? 1 : 0.5 }}
+                  >
+                    Kaydet
+                  </button>
+                </div>
+                {prayerTimesError && <div style={{ fontSize: '11px', color: '#ef4444' }}>⚠️ {prayerTimesError}</div>}
+                {prayerTimes && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {prayerTimes.map(p => (
+                      <span key={p.key} style={{ fontSize: '10.5px', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '3px 8px', borderRadius: '8px' }}>
+                        {p.label} {p.time}
+                      </span>
+                    ))}
                   </div>
                 )}
               </div>
