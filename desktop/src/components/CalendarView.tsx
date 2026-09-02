@@ -756,6 +756,16 @@ export default function CalendarView({
     const status = await (window as any).electron?.googleAuthStatus?.();
     if (status) setGoogleOAuthStatus(status);
   };
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "şimdi hiç gitmiyor"): `googleOAuthStatus`
+  // state'i her mount'ta `isConnected:false` ile BAŞLIYORDU ve SADECE Ayarlar modalı
+  // açıldığında (isSyncModalOpen) diskteki gerçek duruma göre güncelleniyordu. Uygulama
+  // yeniden başlatılıp kullanıcı o modalı BİR DAHA hiç açmadıysa (bağlantı zaten kurulu
+  // olsa bile), otomatik senkron motoru "bağlı değil" sanıp SESSİZCE HİÇBİR ŞEY GÖNDERMİYORDU
+  // — artık bileşen mount olur olmaz da (embedded hariç) bir kez kontrol ediliyor.
+  useEffect(() => {
+    if (!embedded) refreshGoogleOAuthStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (isSyncModalOpen) refreshGoogleOAuthStatus();
   }, [isSyncModalOpen]);
