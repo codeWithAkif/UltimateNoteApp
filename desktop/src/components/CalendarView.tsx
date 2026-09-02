@@ -1325,19 +1325,50 @@ export default function CalendarView({
         return working.get(filePath)!;
       };
 
-      // 1) Yetim [gcal:id] etiketlerini temizle (silme senkronu) — İSTEK ("silmeyi de yap,
-      // değişikliklerimde artık veri olmasın").
+      // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "sildim bi taskı, yenile dedim, sildiğim
+      // hala Google'da gözüküyor"): önceki sürüm sadece "satır HÂLÂ VAR ama aktif planlaması
+      // yok" durumunu yakalıyordu (planı kaldırma). Kullanıcı satırın TAMAMINI sildiğinde
+      // (görevi tamamen kaldırdığında) [gcal:id] etiketi dosyadan TAMAMEN KAYBOLUYOR — bu
+      // taramanın göremeyeceği bir durum, çünkü artık hiçbir satırda o etiket yok. Çözüm:
+      // "daha önce gördüğümüz TÜM ID'ler" listesini localStorage'da KALICI olarak tutmak —
+      // her geçişte "hâlâ aktif planlı bir satırda olan ID'ler" ile karşılaştırılıp, artık
+      // HİÇBİR YERDE aktif olmayan (satırı ya tamamen silinmiş ya da sadece plandan çıkmış)
+      // her ID için Google'dan silme çağrısı yapılır.
+      const KNOWN_IDS_KEY = 'google_calendar_known_event_ids';
+      let knownIds: string[] = [];
+      try { knownIds = JSON.parse(localStorage.getItem(KNOWN_IDS_KEY) || '[]'); } catch { knownIds = []; }
+
+      // Şu an hâlâ AKTİF PLANLI (due+plannedtime taşıyan) bir satırda duran ID'ler + o satırın
+      // konumu (etiketi kaldırmamak için hiçbir şey yapmıyoruz, sadece "bunlar canlı" diye not
+      // ediyoruz). Ayrıca satırı hâlâ VAR ama artık plansız olan ID'lerin konumunu da (etiketi
+      // oradan silebilmek için) ayrıca tutuyoruz.
+      const liveIds = new Set<string>();
+      const staleTagLocations = new Map<string, { filePath: string; lineIdx: number }>(); // etiket var ama plan yok
       for (const filePath of Object.keys(fileContents)) {
         const lines = getLines(filePath);
         for (let i = 0; i < lines.length; i++) {
           const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
           if (!idMatch) continue;
           const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
-          if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
-          const delResult = await (window as any).electron?.googleCalendarDeleteEvent?.(idMatch[1]).catch((err: any) => ({ success: false, error: err?.message }));
-          if (delResult?.success) deleted++;
-          else errors.push(`Silme başarısız (${idMatch[1]}): ${delResult?.error || 'bilinmeyen hata'}`);
-          lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
+          if (hasSchedule) liveIds.add(idMatch[1]);
+          else staleTagLocations.set(idMatch[1], { filePath, lineIdx: i });
+        }
+      }
+
+      // "Bilinen" ama artık AKTİF PLANLI hiçbir yerde olmayan her ID silinir — hem satırı hâlâ
+      // var ama plansız kalan (etiketi de temizlenir) hem satırı TAMAMEN silinmiş (dosyada iz
+      // bile kalmamış) durumları TEK bir mantıkla kapsar.
+      const idsToDelete = knownIds.filter(id => !liveIds.has(id));
+      for (const id of idsToDelete) {
+        const delResult = await (window as any).electron?.googleCalendarDeleteEvent?.(id).catch((err: any) => ({ success: false, error: err?.message }));
+        if (delResult?.success) deleted++;
+        else errors.push(`Silme başarısız (${id}): ${delResult?.error || 'bilinmeyen hata'}`);
+        const loc = staleTagLocations.get(id);
+        if (loc) {
+          const lines = getLines(loc.filePath);
+          if (loc.lineIdx < lines.length) {
+            lines[loc.lineIdx] = lines[loc.lineIdx].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
+          }
         }
       }
 
@@ -1374,6 +1405,7 @@ export default function CalendarView({
         }).catch((err: any) => ({ success: false, error: err?.message }));
         if (result?.success && result.eventId) {
           pushed++;
+          liveIds.add(result.eventId);
           lines[task.lineIdx] = rawLine
             .replace(/\s*\[gcal:[^\]]+\]/gi, '')
             .replace(/\s*\[gcalh:[^\]]+\]/gi, '') + ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
@@ -1390,6 +1422,10 @@ export default function CalendarView({
           await onSaveNote(filePath, updated).catch(err => errors.push(`"${filePath}" kaydedilemedi: ${err?.message || err}`));
         }
       }
+
+      // "Bilinen ID'ler" kaydını güncelle — bir sonraki geçiş, artık HİÇBİR aktif planlı
+      // satırda olmayan (satırı tamamen silinmiş dahil) ID'leri buna bakarak tespit edecek.
+      try { localStorage.setItem(KNOWN_IDS_KEY, JSON.stringify([...liveIds])); } catch { /* localStorage dolu/erişilemez olabilir, sessizce geç */ }
     } catch (err: any) {
       errors.push(err?.message || String(err));
     } finally {

@@ -91,6 +91,22 @@ function createWindow() {
     console.log(`[Frontend Console] [Level ${level}]: ${message} (Source: ${sourceId}:${line})`);
   });
 
+  // İSTEK (kullanıcı: hata ayıklama için DevTools açmayı denedi, Ctrl+Shift+I çalışmadı):
+  // uygulamanın kendi geniş klavye kısayolu sistemi (App.tsx'teki global keydown dinleyicisi)
+  // bu tuş kombinasyonunu renderer'da YAKALAYIP tüketebiliyor, Electron'un varsayılan
+  // "DevTools aç" hızlandırıcısına hiç ulaşmadan. Burada, renderer'dan TAMAMEN BAĞIMSIZ olarak
+  // (before-input-event, native seviyede) F12/Ctrl+Shift+I/Cmd+Opt+I her zaman çalışsın diye
+  // zorla dinleniyor.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const isDevToolsShortcut =
+      input.key === 'F12' ||
+      (input.control && input.shift && (input.key === 'I' || input.key === 'i')) ||
+      (input.meta && input.alt && (input.key === 'I' || input.key === 'i'));
+    if (isDevToolsShortcut && input.type === 'keyDown') {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Electron, normal bir tarayıcı sekmesinin aksine, düz metin (div/span) üzerinde
   // sağ tıklandığında OTOMATİK bir "Kopyala" menüsü GÖSTERMEZ — bu yalnızca gerçek
