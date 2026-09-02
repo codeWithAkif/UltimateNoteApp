@@ -1275,82 +1275,101 @@ export default function CalendarView({
     for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
     return Math.abs(h).toString(36);
   };
-  const googleSyncInFlightRef = useRef<Set<string>>(new Set());
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: Google Calendar'da AYNI görev için onlarca
+  // MÜKERRER etkinlik oluştu): önceki sürüm her görev için ayrı ayrı `readNoteContent` ile
+  // "OKU → o satırı değiştir → TÜM dosyayı KAYDET" yapıyordu — `readNoteContent` diskten değil,
+  // App.tsx'in `fileContents` state'inden (bkz. handleReadNoteContent'teki performans notu)
+  // okuyor, ve bu state BİZİM save'lerimizden SONRA ASENKRON günceller. Aynı dosyada birden
+  // fazla görev varsa (İş Planla'nın seans satırları gibi), bir görevin yazdığı [gcal:id]
+  // etiketi, bir SONRAKİ görevin STALE (henüz güncellenmemiş) kopya üzerinden yaptığı kaydetmeyle
+  // SİLİNİYORDU — etiket kayboluyor, bir sonraki geçişte "hiç gönderilmemiş" sanılıp YENİDEN
+  // (mükerrer) oluşturuluyordu. Artık TÜM okuma/yazma bu geçiş boyunca TEK bir yerel bellek
+  // kopyasından (`working`) yapılıyor, her dosya EN FAZLA BİR KEZ kaydediliyor — yarış durumu
+  // yapısal olarak imkânsız hale geldi. Ayrıca `googleSyncRunningRef` ile bir geçiş bitmeden
+  // YENİ bir geçişin başlaması engellendi (üst üste binen geçişler de aynı köke yol açardı).
+  const googleSyncRunningRef = useRef(false);
   useEffect(() => {
     if (embedded || !googleOAuthStatus.isConnected) return;
     const timer = setTimeout(async () => {
-      // İSTEK (kullanıcı: "silmeyi de yap, değişikliklerimde artık veri olmasın"): [gcal:id]
-      // etiketi taşıyan ama artık AKTİF PLANLAMASI (due+plannedtime) olmayan bir satır —
-      // yerelde silinmiş/planı kaldırılmış demektir (hangi ekrandan yapıldığı fark etmez:
-      // Takvim'den sürükleyip "Planlanmamış"a atma, İş Planla'daki ↩/🗑 butonları, notu elle
-      // düzenleme...). `fileContents` VAULT'TAKİ TÜM notları içerdiği için bu tarama, hangi
-      // mekanizmanın silme yaptığından TAMAMEN bağımsız, tek ve genel bir "çöp toplama"
-      // geçişidir — ayrı ayrı her silme call-site'ına özel kod eklemek yerine.
-      for (const [filePath, content] of Object.entries(fileContents)) {
-        const lines = content.split('\n');
-        let changed = false;
-        for (let i = 0; i < lines.length; i++) {
-          const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
-          if (!idMatch) continue;
-          const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
-          if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
-          const eventId = idMatch[1];
-          try {
-            await (window as any).electron?.googleCalendarDeleteEvent?.(eventId);
-          } catch (err) {
-            console.error('Google Calendar etkinliği silinemedi:', err);
-          }
-          lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
-          changed = true;
-        }
-        if (changed) {
-          await onSaveNote(filePath, lines.join('\n')).catch(err => console.error('Yetim gcal etiketi temizlenemedi:', err));
-        }
-      }
+      if (googleSyncRunningRef.current) return;
+      googleSyncRunningRef.current = true;
+      try {
+        const working = new Map<string, string[]>();
+        const getLines = (filePath: string): string[] => {
+          if (!working.has(filePath)) working.set(filePath, (fileContents[filePath] || '').split('\n'));
+          return working.get(filePath)!;
+        };
 
-      for (const task of tasks) {
-        if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence || !task.dueDate || !task.timeSlot) continue;
-        if (googleSyncInFlightRef.current.has(task.id)) continue;
-
-        const rawLine0 = (await readNoteContent(task.filePath).catch(() => '')).split('\n')[task.lineIdx] || '';
-        const existingIdMatch = rawLine0.match(/\[gcal:([^\]]+)\]/);
-        const existingHashMatch = rawLine0.match(/\[gcalh:([^\]]+)\]/);
-        const fingerprint = simpleHash(`${task.content}|${task.dueDate}|${task.timeSlot}`);
-        if (existingIdMatch && existingHashMatch && existingHashMatch[1] === fingerprint) continue; // değişmemiş
-
-        const t = parseTime(task.timeSlot);
-        if (!t) continue;
-        const startDate = new Date(`${task.dueDate}T00:00:00`);
-        startDate.setHours(t.startHour, t.startMin, 0, 0);
-        const endDate = new Date(`${task.dueDate}T00:00:00`);
-        endDate.setHours(t.endHour, t.endMin, 0, 0);
-
-        googleSyncInFlightRef.current.add(task.id);
-        try {
-          const result = await (window as any).electron?.googleCalendarPushEvent?.({
-            eventId: existingIdMatch ? existingIdMatch[1] : undefined,
-            summary: task.content,
-            description: 'Ultimate NoteFactory üzerinden senkronize edildi.',
-            startISO: startDate.toISOString(),
-            endISO: endDate.toISOString()
-          });
-          if (result?.success && result.eventId) {
-            const fileContent = await readNoteContent(task.filePath);
-            const lines = fileContent.split('\n');
-            if (task.lineIdx >= 0 && task.lineIdx < lines.length) {
-              let newLine = lines[task.lineIdx]
-                .replace(/\s*\[gcal:[^\]]+\]/gi, '')
-                .replace(/\s*\[gcalh:[^\]]+\]/gi, '');
-              newLine += ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
-              lines[task.lineIdx] = newLine;
-              await onSaveNote(task.filePath, lines.join('\n'));
+        // 1) Yetim [gcal:id] etiketlerini temizle (silme senkronu) — İSTEK ("silmeyi de yap,
+        // değişikliklerimde artık veri olmasın").
+        for (const filePath of Object.keys(fileContents)) {
+          const lines = getLines(filePath);
+          for (let i = 0; i < lines.length; i++) {
+            const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
+            if (!idMatch) continue;
+            const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
+            if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
+            try {
+              await (window as any).electron?.googleCalendarDeleteEvent?.(idMatch[1]);
+            } catch (err) {
+              console.error('Google Calendar etkinliği silinemedi:', err);
             }
+            lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
           }
-        } catch (err) {
-          console.error('Google Calendar\'a gönderilemedi:', err);
-        } finally {
-          googleSyncInFlightRef.current.delete(task.id);
         }
+
+        // 2) Push (oluştur/güncelle).
+        for (const task of tasks) {
+          if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence || !task.dueDate || !task.timeSlot) continue;
+          if (task.lineIdx < 0) continue;
+          const lines = getLines(task.filePath);
+          if (task.lineIdx >= lines.length) continue;
+          const rawLine = lines[task.lineIdx];
+          const existingIdMatch = rawLine.match(/\[gcal:([^\]]+)\]/);
+          const existingHashMatch = rawLine.match(/\[gcalh:([^\]]+)\]/);
+          const fingerprint = simpleHash(`${task.content}|${task.dueDate}|${task.timeSlot}`);
+          if (existingIdMatch && existingHashMatch && existingHashMatch[1] === fingerprint) continue; // değişmemiş
+
+          const t = parseTime(task.timeSlot);
+          if (!t) continue;
+          const startDate = new Date(`${task.dueDate}T00:00:00`);
+          startDate.setHours(t.startHour, t.startMin, 0, 0);
+          const endDate = new Date(`${task.dueDate}T00:00:00`);
+          endDate.setHours(t.endHour, t.endMin, 0, 0);
+
+          // Seans satırlarının görünen içeriği "Ad TARİH SAAT-SAAT" metnini de taşıyor (bkz.
+          // ProjectsView.tsx rewriteWorkItemChildren) — Google'daki başlıkta bu tekrar
+          // etmesin diye ayıklanıyor.
+          const summary = task.content.replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}-\d{2}:\d{2}\s*$/, '').trim() || task.content;
+
+          try {
+            const result = await (window as any).electron?.googleCalendarPushEvent?.({
+              eventId: existingIdMatch ? existingIdMatch[1] : undefined,
+              summary,
+              description: 'Ultimate NoteFactory üzerinden senkronize edildi.',
+              startISO: startDate.toISOString(),
+              endISO: endDate.toISOString()
+            });
+            if (result?.success && result.eventId) {
+              lines[task.lineIdx] = rawLine
+                .replace(/\s*\[gcal:[^\]]+\]/gi, '')
+                .replace(/\s*\[gcalh:[^\]]+\]/gi, '') + ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
+            }
+          } catch (err) {
+            console.error('Google Calendar\'a gönderilemedi:', err);
+          }
+        }
+
+        // 3) Değişen her dosyayı TEK seferde kaydet.
+        for (const [filePath, lines] of working) {
+          const original = fileContents[filePath] || '';
+          const updated = lines.join('\n');
+          if (updated !== original) {
+            await onSaveNote(filePath, updated).catch(err => console.error('Google senkron değişiklikleri kaydedilemedi:', err));
+          }
+        }
+      } finally {
+        googleSyncRunningRef.current = false;
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, 3000); // notlar sık sık (her tuş vuruşunda) kaydedilebildiği için 3sn'lik bir "sakinleşme" beklemesi
