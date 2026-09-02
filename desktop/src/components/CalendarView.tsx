@@ -4379,7 +4379,7 @@ export default function CalendarView({
                                   padding: '0 3px', borderRadius: '3px', fontFamily: 'monospace', lineHeight: 1.4,
                                   marginLeft: '-1px'
                                 }}>
-                                  🕌 {p.label}
+                                  🕌 {p.label}: {p.time}
                                 </span>
                               </div>
                             );
