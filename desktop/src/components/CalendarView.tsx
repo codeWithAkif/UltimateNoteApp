@@ -1273,11 +1273,24 @@ export default function CalendarView({
       ([['start', startMs], ['end', endMs]] as const).forEach(([edge, edgeMs]) => {
         const diff = edgeMs - nowMs;
         if (diff <= 0) return;
+        // BUG DÜZELTMESİ (kullanıcı: "bir taskı kaydırabilirim vs"): anahtar sadece tarihe
+        // göre değil, SAATE göre de değişmeli — aksi halde bir görev aynı gün içinde farklı
+        // bir saate sürüklendiğinde (yeniden zamanlandığında), ESKİ saat için zaten verilmiş
+        // olan "uyarıldı" kaydı YENİ saat için de yanlışlıkla geçerli sayılıp hatırlatma
+        // sessizce ATLANIRDI.
+        const key = `${task.id}:${edge}:${task.dueDate}:${task.timeSlot}`;
         if (Math.abs(diff - REMINDER_WINDOW_MS) > TOLERANCE_MS) return;
-        const key = `${task.id}:${edge}:${task.dueDate}`;
-        if (remindedEdgesRef.current.has(key)) return;
+        // İSTEK (kullanıcı: teşhis kaydında "5dk" görünüyor ama bildirim hiç tetiklenmiyor):
+        // dar tetikleme penceresine (280-320sn) girip girmediği VE "zaten uyarıldı" korumasının
+        // (aynı görevi birden fazla kez test edince tekrar tekrar ötmesin diye) burada
+        // ENGELLEYİP engellemediği artık AYRI AYRI görünür — önceki teşhis sadece geniş (20dk)
+        // pencereyi gösteriyordu, bu ikisi arasındaki farkı ayırt edemiyordu.
+        const alreadyReminded = remindedEdgesRef.current.has(key);
+        console.log(`[Hatırlatıcı] TETİKLEME PENCERESİNDE: "${task.content}" (${edge}) diff=${Math.round(diff / 1000)}sn, zatenUyarıldı=${alreadyReminded}`);
+        if (alreadyReminded) return;
         remindedEdgesRef.current.add(key);
 
+        console.log(`[Hatırlatıcı] BİLDİRİM GÖNDERİLİYOR: "${task.content}" (${edge})`);
         playReminderBeep();
         (window as any).electron?.focusAndFlashWindow?.();
         onRequestFocusCalendar?.();
