@@ -1279,8 +1279,37 @@ export default function CalendarView({
   useEffect(() => {
     if (embedded || !googleOAuthStatus.isConnected) return;
     const timer = setTimeout(async () => {
+      // İSTEK (kullanıcı: "silmeyi de yap, değişikliklerimde artık veri olmasın"): [gcal:id]
+      // etiketi taşıyan ama artık AKTİF PLANLAMASI (due+plannedtime) olmayan bir satır —
+      // yerelde silinmiş/planı kaldırılmış demektir (hangi ekrandan yapıldığı fark etmez:
+      // Takvim'den sürükleyip "Planlanmamış"a atma, İş Planla'daki ↩/🗑 butonları, notu elle
+      // düzenleme...). `fileContents` VAULT'TAKİ TÜM notları içerdiği için bu tarama, hangi
+      // mekanizmanın silme yaptığından TAMAMEN bağımsız, tek ve genel bir "çöp toplama"
+      // geçişidir — ayrı ayrı her silme call-site'ına özel kod eklemek yerine.
+      for (const [filePath, content] of Object.entries(fileContents)) {
+        const lines = content.split('\n');
+        let changed = false;
+        for (let i = 0; i < lines.length; i++) {
+          const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
+          if (!idMatch) continue;
+          const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
+          if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
+          const eventId = idMatch[1];
+          try {
+            await (window as any).electron?.googleCalendarDeleteEvent?.(eventId);
+          } catch (err) {
+            console.error('Google Calendar etkinliği silinemedi:', err);
+          }
+          lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
+          changed = true;
+        }
+        if (changed) {
+          await onSaveNote(filePath, lines.join('\n')).catch(err => console.error('Yetim gcal etiketi temizlenemedi:', err));
+        }
+      }
+
       for (const task of tasks) {
-        if (task.isExternal || task.isSessionOccurrence || !task.dueDate || !task.timeSlot) continue;
+        if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence || !task.dueDate || !task.timeSlot) continue;
         if (googleSyncInFlightRef.current.has(task.id)) continue;
 
         const rawLine0 = (await readNoteContent(task.filePath).catch(() => '')).split('\n')[task.lineIdx] || '';
