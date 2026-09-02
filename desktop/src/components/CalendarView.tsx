@@ -751,6 +751,13 @@ export default function CalendarView({
   const [googleClientSecretInput, setGoogleClientSecretInput] = useState('');
   const [googleConnecting, setGoogleConnecting] = useState(false);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+  // İSTEK (kullanıcı: "bağlı yazıyor ama hiçbir şey gitmiyor"): önceden senkron hataları
+  // sadece console.error'a yazılıyordu, kullanıcının GÖREBİLECEĞİ hiçbir yer yoktu — "neden
+  // gitmiyor" sorusu kör kör tahmin gerektiriyordu. Artık her geçişin özeti (ne zaman, kaç
+  // gönderildi/silindi, varsa hataların METNİ) burada saklanıp Ayarlar'da gösteriliyor.
+  const [googleSyncStatus, setGoogleSyncStatus] = useState<{ lastRunAt: number; pushed: number; deleted: number; errors: string[] } | null>(null);
+  const [googleSyncRunningNow, setGoogleSyncRunningNow] = useState(false);
+  const runGoogleSyncPassRef = useRef<(() => Promise<void>) | null>(null);
 
   const refreshGoogleOAuthStatus = async () => {
     const status = await (window as any).electron?.googleAuthStatus?.();
@@ -1298,91 +1305,104 @@ export default function CalendarView({
   // yapısal olarak imkânsız hale geldi. Ayrıca `googleSyncRunningRef` ile bir geçiş bitmeden
   // YENİ bir geçişin başlaması engellendi (üst üste binen geçişler de aynı köke yol açardı).
   const googleSyncRunningRef = useRef(false);
+
+  // İSTEK (kullanıcı: "bağlı yazıyor ama hiçbir şey gitmiyor"): TEK geçiş mantığı artık ayrı
+  // bir fonksiyon — hem otomatik (debounce'lı) efekt hem Ayarlar'daki "Şimdi Senkronize Et"
+  // butonu AYNI kodu çağırıyor, ve geçiş SONUNDA ne olduğunu (kaç gönderildi/silindi, varsa
+  // HATA METİNLERİ) `googleSyncStatus`'a yazıyor — artık hatalar sadece console'da kaybolmuyor,
+  // Ayarlar'da GÖRÜNÜYOR.
+  const runGoogleSyncPass = async () => {
+    if (googleSyncRunningRef.current) return;
+    googleSyncRunningRef.current = true;
+    setGoogleSyncRunningNow(true);
+    let pushed = 0;
+    let deleted = 0;
+    const errors: string[] = [];
+    try {
+      const working = new Map<string, string[]>();
+      const getLines = (filePath: string): string[] => {
+        if (!working.has(filePath)) working.set(filePath, (fileContents[filePath] || '').split('\n'));
+        return working.get(filePath)!;
+      };
+
+      // 1) Yetim [gcal:id] etiketlerini temizle (silme senkronu) — İSTEK ("silmeyi de yap,
+      // değişikliklerimde artık veri olmasın").
+      for (const filePath of Object.keys(fileContents)) {
+        const lines = getLines(filePath);
+        for (let i = 0; i < lines.length; i++) {
+          const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
+          if (!idMatch) continue;
+          const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
+          if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
+          const delResult = await (window as any).electron?.googleCalendarDeleteEvent?.(idMatch[1]).catch((err: any) => ({ success: false, error: err?.message }));
+          if (delResult?.success) deleted++;
+          else errors.push(`Silme başarısız (${idMatch[1]}): ${delResult?.error || 'bilinmeyen hata'}`);
+          lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
+        }
+      }
+
+      // 2) Push (oluştur/güncelle).
+      for (const task of tasks) {
+        if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence || !task.dueDate || !task.timeSlot) continue;
+        if (task.lineIdx < 0) continue;
+        const lines = getLines(task.filePath);
+        if (task.lineIdx >= lines.length) continue;
+        const rawLine = lines[task.lineIdx];
+        const existingIdMatch = rawLine.match(/\[gcal:([^\]]+)\]/);
+        const existingHashMatch = rawLine.match(/\[gcalh:([^\]]+)\]/);
+        const fingerprint = simpleHash(`${task.content}|${task.dueDate}|${task.timeSlot}`);
+        if (existingIdMatch && existingHashMatch && existingHashMatch[1] === fingerprint) continue; // değişmemiş
+
+        const t = parseTime(task.timeSlot);
+        if (!t) continue;
+        const startDate = new Date(`${task.dueDate}T00:00:00`);
+        startDate.setHours(t.startHour, t.startMin, 0, 0);
+        const endDate = new Date(`${task.dueDate}T00:00:00`);
+        endDate.setHours(t.endHour, t.endMin, 0, 0);
+
+        // Seans satırlarının görünen içeriği "Ad TARİH SAAT-SAAT" metnini de taşıyor (bkz.
+        // ProjectsView.tsx rewriteWorkItemChildren) — Google'daki başlıkta bu tekrar
+        // etmesin diye ayıklanıyor.
+        const summary = task.content.replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}-\d{2}:\d{2}\s*$/, '').trim() || task.content;
+
+        const result = await (window as any).electron?.googleCalendarPushEvent?.({
+          eventId: existingIdMatch ? existingIdMatch[1] : undefined,
+          summary,
+          description: 'Ultimate NoteFactory üzerinden senkronize edildi.',
+          startISO: startDate.toISOString(),
+          endISO: endDate.toISOString()
+        }).catch((err: any) => ({ success: false, error: err?.message }));
+        if (result?.success && result.eventId) {
+          pushed++;
+          lines[task.lineIdx] = rawLine
+            .replace(/\s*\[gcal:[^\]]+\]/gi, '')
+            .replace(/\s*\[gcalh:[^\]]+\]/gi, '') + ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
+        } else {
+          errors.push(`"${summary}" gönderilemedi: ${result?.error || 'bilinmeyen hata'}`);
+        }
+      }
+
+      // 3) Değişen her dosyayı TEK seferde kaydet.
+      for (const [filePath, lines] of working) {
+        const original = fileContents[filePath] || '';
+        const updated = lines.join('\n');
+        if (updated !== original) {
+          await onSaveNote(filePath, updated).catch(err => errors.push(`"${filePath}" kaydedilemedi: ${err?.message || err}`));
+        }
+      }
+    } catch (err: any) {
+      errors.push(err?.message || String(err));
+    } finally {
+      googleSyncRunningRef.current = false;
+      setGoogleSyncRunningNow(false);
+      setGoogleSyncStatus({ lastRunAt: Date.now(), pushed, deleted, errors });
+    }
+  };
+  runGoogleSyncPassRef.current = runGoogleSyncPass;
+
   useEffect(() => {
     if (embedded || !googleOAuthStatus.isConnected) return;
-    const timer = setTimeout(async () => {
-      if (googleSyncRunningRef.current) return;
-      googleSyncRunningRef.current = true;
-      try {
-        const working = new Map<string, string[]>();
-        const getLines = (filePath: string): string[] => {
-          if (!working.has(filePath)) working.set(filePath, (fileContents[filePath] || '').split('\n'));
-          return working.get(filePath)!;
-        };
-
-        // 1) Yetim [gcal:id] etiketlerini temizle (silme senkronu) — İSTEK ("silmeyi de yap,
-        // değişikliklerimde artık veri olmasın").
-        for (const filePath of Object.keys(fileContents)) {
-          const lines = getLines(filePath);
-          for (let i = 0; i < lines.length; i++) {
-            const idMatch = lines[i].match(/\[gcal:([^\]]+)\]/);
-            if (!idMatch) continue;
-            const hasSchedule = /\[due:\d{4}-\d{2}-\d{2}\]/.test(lines[i]) && /\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/.test(lines[i]);
-            if (hasSchedule) continue; // hâlâ aktif planlı — dokunma
-            try {
-              await (window as any).electron?.googleCalendarDeleteEvent?.(idMatch[1]);
-            } catch (err) {
-              console.error('Google Calendar etkinliği silinemedi:', err);
-            }
-            lines[i] = lines[i].replace(/\s*\[gcal:[^\]]+\]/gi, '').replace(/\s*\[gcalh:[^\]]+\]/gi, '');
-          }
-        }
-
-        // 2) Push (oluştur/güncelle).
-        for (const task of tasks) {
-          if (task.isExternal || task.isSessionOccurrence || task.isPlanOccurrence || !task.dueDate || !task.timeSlot) continue;
-          if (task.lineIdx < 0) continue;
-          const lines = getLines(task.filePath);
-          if (task.lineIdx >= lines.length) continue;
-          const rawLine = lines[task.lineIdx];
-          const existingIdMatch = rawLine.match(/\[gcal:([^\]]+)\]/);
-          const existingHashMatch = rawLine.match(/\[gcalh:([^\]]+)\]/);
-          const fingerprint = simpleHash(`${task.content}|${task.dueDate}|${task.timeSlot}`);
-          if (existingIdMatch && existingHashMatch && existingHashMatch[1] === fingerprint) continue; // değişmemiş
-
-          const t = parseTime(task.timeSlot);
-          if (!t) continue;
-          const startDate = new Date(`${task.dueDate}T00:00:00`);
-          startDate.setHours(t.startHour, t.startMin, 0, 0);
-          const endDate = new Date(`${task.dueDate}T00:00:00`);
-          endDate.setHours(t.endHour, t.endMin, 0, 0);
-
-          // Seans satırlarının görünen içeriği "Ad TARİH SAAT-SAAT" metnini de taşıyor (bkz.
-          // ProjectsView.tsx rewriteWorkItemChildren) — Google'daki başlıkta bu tekrar
-          // etmesin diye ayıklanıyor.
-          const summary = task.content.replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}-\d{2}:\d{2}\s*$/, '').trim() || task.content;
-
-          try {
-            const result = await (window as any).electron?.googleCalendarPushEvent?.({
-              eventId: existingIdMatch ? existingIdMatch[1] : undefined,
-              summary,
-              description: 'Ultimate NoteFactory üzerinden senkronize edildi.',
-              startISO: startDate.toISOString(),
-              endISO: endDate.toISOString()
-            });
-            if (result?.success && result.eventId) {
-              lines[task.lineIdx] = rawLine
-                .replace(/\s*\[gcal:[^\]]+\]/gi, '')
-                .replace(/\s*\[gcalh:[^\]]+\]/gi, '') + ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
-            }
-          } catch (err) {
-            console.error('Google Calendar\'a gönderilemedi:', err);
-          }
-        }
-
-        // 3) Değişen her dosyayı TEK seferde kaydet.
-        for (const [filePath, lines] of working) {
-          const original = fileContents[filePath] || '';
-          const updated = lines.join('\n');
-          if (updated !== original) {
-            await onSaveNote(filePath, updated).catch(err => console.error('Google senkron değişiklikleri kaydedilemedi:', err));
-          }
-        }
-      } finally {
-        googleSyncRunningRef.current = false;
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, 3000); // notlar sık sık (her tuş vuruşunda) kaydedilebildiği için 3sn'lik bir "sakinleşme" beklemesi
+    const timer = setTimeout(() => { runGoogleSyncPassRef.current?.(); }, 3000); // notlar sık sık (her tuş vuruşunda) kaydedilebildiği için 3sn'lik bir "sakinleşme" beklemesi
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, googleOAuthStatus.isConnected, embedded]);
@@ -6302,18 +6322,42 @@ export default function CalendarView({
                       {googleConnecting ? 'Tarayıcıda izin bekleniyor...' : '🔗 Google Calendar\'a Bağlan'}
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await (window as any).electron?.googleDisconnect?.();
-                        await refreshGoogleOAuthStatus();
-                      }}
-                      style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '7px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
-                    >
-                      Bağlantıyı Kes
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        disabled={googleSyncRunningNow}
+                        onClick={() => runGoogleSyncPassRef.current?.()}
+                        style={{ background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: '#fff', padding: '7px 12px', fontSize: '12px', fontWeight: 700, cursor: googleSyncRunningNow ? 'wait' : 'pointer', opacity: googleSyncRunningNow ? 0.6 : 1 }}
+                      >
+                        {googleSyncRunningNow ? 'Senkronize ediliyor...' : '🔄 Şimdi Senkronize Et'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await (window as any).electron?.googleDisconnect?.();
+                          await refreshGoogleOAuthStatus();
+                        }}
+                        style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '7px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Bağlantıyı Kes
+                      </button>
+                    </>
                   )}
                 </div>
+                {/* İSTEK ("bağlı yazıyor ama hiçbir şey gitmiyor"): son geçişin özeti + varsa
+                    hataların METNİ — artık console'da kaybolmuyor, burada görünüyor. */}
+                {googleSyncStatus && (
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', borderTop: '1px solid var(--border-color)', paddingTop: '8px', marginTop: '2px' }}>
+                    Son senkron: {new Date(googleSyncStatus.lastRunAt).toLocaleTimeString('tr-TR')} —
+                    {' '}{googleSyncStatus.pushed} gönderildi, {googleSyncStatus.deleted} silindi
+                    {googleSyncStatus.errors.length > 0 && (
+                      <div style={{ marginTop: '4px', color: '#ef4444', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        {googleSyncStatus.errors.slice(0, 5).map((e, i) => <div key={i}>⚠️ {e}</div>)}
+                        {googleSyncStatus.errors.length > 5 && <div>...ve {googleSyncStatus.errors.length - 5} hata daha</div>}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
