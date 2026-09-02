@@ -1258,6 +1258,18 @@ export default function CalendarView({
       const startMs = new Date(`${task.dueDate}T00:00:00`).setHours(t.startHour, t.startMin, 0, 0);
       const endMs = new Date(`${task.dueDate}T00:00:00`).setHours(t.endHour, t.endMin, 0, 0);
 
+      // İSTEK (kullanıcı: "5dk kala hatırlatıcı çalışmıyor" — teşhis için): bugün, yaklaşan
+      // (20dk içinde başlayacak/bitecek) her görev için konsola KENDİ etiketiyle ([Hatırlatıcı])
+      // tek satırlık bir iz düşülür — hem bu efeğin gerçekten TİKLEDİĞİNİ hem hesaplanan
+      // dakika farkını görünür kılar, DevTools konsolunda "Hatırlatıcı" diye aratılabilir.
+      if (task.dueDate === format(new Date(nowMs), 'yyyy-MM-dd')) {
+        const minsToStart = Math.round((startMs - nowMs) / 60000);
+        const minsToEnd = Math.round((endMs - nowMs) / 60000);
+        if ((minsToStart > -2 && minsToStart <= 20) || (minsToEnd > -2 && minsToEnd <= 20)) {
+          console.log(`[Hatırlatıcı] "${task.content}" — başlangıca ${minsToStart}dk, bitişe ${minsToEnd}dk`);
+        }
+      }
+
       ([['start', startMs], ['end', endMs]] as const).forEach(([edge, edgeMs]) => {
         const diff = edgeMs - nowMs;
         if (diff <= 0) return;

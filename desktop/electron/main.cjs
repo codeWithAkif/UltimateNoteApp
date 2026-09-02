@@ -54,7 +54,14 @@ function createWindow() {
       nodeIntegration: false, // Security best practice
       contextIsolation: true, // Security best practice
       webviewTag: true, // Enable webview tag
-      webSecurity: false // Allow loading local files and custom protocols without CORS blocks
+      webSecurity: false, // Allow loading local files and custom protocols without CORS blocks
+      // İSTEK (kullanıcı: "5dk kala hatırlatıcı çalışmıyor" — pencere arka plandayken/simge
+      // durumundayken test edildi): Chromium, ARKA PLANDAKİ/görünür olmayan pencerelerde
+      // setInterval/setTimeout'u güç tasarrufu için ciddi şekilde YAVAŞLATIR (throttling) —
+      // CalendarView.tsx'teki 30sn'lik "now" sayacı bu yüzden dakikalarca gecikebilir/hiç
+      // tetiklenmeyebilirdi. Hatırlatıcının TAM DA amacı "pencere arka plandayken bile uyar"
+      // olduğundan, bu pencere için bu kısıtlama tamamen KAPATILIYOR.
+      backgroundThrottling: false
     },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     backgroundColor: '#121214',
