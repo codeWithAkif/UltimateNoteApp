@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, Menu, shell, safeStorage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -8,6 +8,8 @@ protocol.registerSchemesAsPrivileged([
 const fs = require('fs');
 const os = require('os');
 const { exec } = require('child_process');
+const crypto = require('crypto');
+const http = require('http');
 
 let mainWindow;
 let originalBounds = null;
@@ -773,6 +775,224 @@ ipcMain.handle('focus-and-flash-window', () => {
   mainWindow.focus();
   mainWindow.flashFrame(true);
   return { success: true };
+});
+
+// ============ GOOGLE CALENDAR — İKİ YÖNLÜ SENKRON (İSTEK: "burda olanları da oraya
+// aktarabilir miyim") ============
+// Mevcut Google entegrasyonu (CalendarView.tsx'teki iCal linki) SALT-OKUNUR bir "feed" —
+// Google'a yazma izni vermiyor. Buradan Google'a PUSH etmek için gerçek OAuth2 + Calendar
+// API'si gerekiyor. Kullanıcının kendi Google Cloud projesindeki Client ID/Secret'ı burada
+// (uygulamanın kendi diskinde, safeStorage ile İŞLETİM SİSTEMİ anahtar zinciriyle şifrelenmiş
+// olarak) saklanır — KOD İÇİNE GÖMÜLMEZ, repo PUBLIC olduğu için asla git'e commit edilmez.
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+
+function googleConfigPath() {
+  return path.join(app.getPath('userData'), 'google-calendar-auth.enc');
+}
+
+function readGoogleConfig() {
+  try {
+    if (!fs.existsSync(googleConfigPath()) || !safeStorage.isEncryptionAvailable()) return null;
+    const buf = fs.readFileSync(googleConfigPath());
+    return JSON.parse(safeStorage.decryptString(buf));
+  } catch (e) {
+    console.error('Google Calendar ayarları okunamadı:', e);
+    return null;
+  }
+}
+
+function writeGoogleConfig(data) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Bu sistemde şifreli depolama kullanılamıyor.');
+  fs.writeFileSync(googleConfigPath(), safeStorage.encryptString(JSON.stringify(data)));
+}
+
+const base64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+ipcMain.handle('google-set-credentials', (event, { clientId, clientSecret }) => {
+  writeGoogleConfig({ ...(readGoogleConfig() || {}), clientId, clientSecret });
+  return { success: true };
+});
+
+ipcMain.handle('google-auth-status', () => {
+  const cfg = readGoogleConfig();
+  return {
+    hasCredentials: !!(cfg && cfg.clientId && cfg.clientSecret),
+    isConnected: !!(cfg && cfg.refreshToken)
+  };
+});
+
+ipcMain.handle('google-disconnect', () => {
+  const cfg = readGoogleConfig() || {};
+  delete cfg.refreshToken;
+  delete cfg.accessToken;
+  delete cfg.tokenExpiry;
+  writeGoogleConfig(cfg);
+  return { success: true };
+});
+
+// Standart "installed app" OAuth akışı (PKCE ile): tarayıcıda izin ekranı açılır, kullanıcı
+// onaylayınca Google, 127.0.0.1'deki (dinamik port) GEÇİCİ yerel sunucumuza yönlendirir — bu
+// "Desktop app" istemci tipi için Google'ın önerdiği, sabit bir redirect URI KAYDETMEYİ
+// gerektirmeyen resmi yöntemdir.
+ipcMain.handle('google-auth-start', async () => {
+  const cfg = readGoogleConfig();
+  if (!cfg || !cfg.clientId || !cfg.clientSecret) {
+    return { success: false, error: 'Önce Client ID / Client Secret girilmeli.' };
+  }
+  const codeVerifier = base64url(crypto.randomBytes(32));
+  const codeChallenge = base64url(crypto.createHash('sha256').update(codeVerifier).digest());
+
+  return new Promise((resolve) => {
+    let port = 0;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve(result);
+    };
+    const server = http.createServer(async (req, res) => {
+      try {
+        const url = new URL(req.url, `http://127.0.0.1:${port}`);
+        const code = url.searchParams.get('code');
+        const errParam = url.searchParams.get('error');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        if (errParam || !code) {
+          res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Bağlantı iptal edildi.</h2><p>Bu sekmeyi kapatıp uygulamaya dönebilirsin.</p></body></html>');
+          server.close();
+          finish({ success: false, error: errParam || 'Kod alınamadı' });
+          return;
+        }
+        res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>✅ Google Calendar bağlandı!</h2><p>Bu sekmeyi kapatıp uygulamaya dönebilirsin.</p></body></html>');
+        server.close();
+
+        const redirectUri = `http://127.0.0.1:${port}`;
+        const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: cfg.clientId,
+            client_secret: cfg.clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: 'authorization_code',
+            code_verifier: codeVerifier
+          })
+        });
+        const tokenJson = await tokenRes.json();
+        if (!tokenRes.ok) {
+          finish({ success: false, error: tokenJson.error_description || tokenJson.error || 'Token alınamadı' });
+          return;
+        }
+        writeGoogleConfig({
+          ...cfg,
+          refreshToken: tokenJson.refresh_token || cfg.refreshToken,
+          accessToken: tokenJson.access_token,
+          tokenExpiry: Date.now() + tokenJson.expires_in * 1000
+        });
+        finish({ success: true });
+      } catch (e) {
+        finish({ success: false, error: e.message });
+      }
+    });
+    server.listen(0, '127.0.0.1', () => {
+      port = server.address().port;
+      const redirectUri = `http://127.0.0.1:${port}`;
+      const authUrl = `${GOOGLE_AUTH_URL}?${new URLSearchParams({
+        client_id: cfg.clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: GOOGLE_SCOPE,
+        access_type: 'offline',
+        prompt: 'consent',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256'
+      })}`;
+      shell.openExternal(authUrl);
+    });
+    const timeoutId = setTimeout(() => {
+      try { server.close(); } catch {}
+      finish({ success: false, error: 'Zaman aşımı — izin ekranı 2 dakika içinde tamamlanmadı.' });
+    }, 120000);
+  });
+});
+
+// Erişim token'ı süresi dolmuşsa (veya bitmeye yakınsa) refresh_token ile sessizce yeniler —
+// her API çağrısından önce bu çağrılır, çağıran taraf token yönetimiyle hiç uğraşmaz.
+async function getValidGoogleAccessToken() {
+  const cfg = readGoogleConfig();
+  if (!cfg || !cfg.refreshToken) return null;
+  if (cfg.accessToken && cfg.tokenExpiry && Date.now() < cfg.tokenExpiry - 60000) {
+    return cfg.accessToken;
+  }
+  const res = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      refresh_token: cfg.refreshToken,
+      grant_type: 'refresh_token'
+    })
+  });
+  const json = await res.json();
+  if (!res.ok) {
+    console.error('Google token yenilenemedi:', json);
+    return null;
+  }
+  writeGoogleConfig({ ...cfg, accessToken: json.access_token, tokenExpiry: Date.now() + json.expires_in * 1000 });
+  return json.access_token;
+}
+
+// Bir görevi Google Calendar'a YAZAR — eventId verilmemişse YENİ etkinlik oluşturur (id'sini
+// döner, çağıran taraf bunu notta [gcal:id] etiketi olarak saklar); verilmişse GÜNCELLER. Google
+// tarafında etkinlik elle silinmişse (404) sessizce yeniden oluşturur.
+ipcMain.handle('google-calendar-push-event', async (event, { eventId, summary, description, startISO, endISO }) => {
+  const token = await getValidGoogleAccessToken();
+  if (!token) return { success: false, error: 'Google Calendar\'a bağlı değil.' };
+  const body = { summary, description, start: { dateTime: startISO }, end: { dateTime: endISO } };
+  const baseUrl = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+  const url = eventId ? `${baseUrl}/${eventId}` : baseUrl;
+  try {
+    const res = await fetch(url, {
+      method: eventId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body)
+    });
+    const json = await res.json();
+    if (res.ok) return { success: true, eventId: json.id };
+    if (res.status === 404 && eventId) {
+      const retryRes = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      const retryJson = await retryRes.json();
+      if (retryRes.ok) return { success: true, eventId: retryJson.id };
+      return { success: false, error: retryJson.error?.message || 'Bilinmeyen hata' };
+    }
+    return { success: false, error: json.error?.message || 'Bilinmeyen hata' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('google-calendar-delete-event', async (event, { eventId }) => {
+  const token = await getValidGoogleAccessToken();
+  if (!token) return { success: false, error: 'Google Calendar\'a bağlı değil.' };
+  try {
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok || res.status === 404 || res.status === 410) return { success: true };
+    const json = await res.json().catch(() => ({}));
+    return { success: false, error: json.error?.message || 'Silinemedi' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 ipcMain.handle('restart-and-install', () => {

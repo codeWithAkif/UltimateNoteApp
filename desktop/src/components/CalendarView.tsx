@@ -741,6 +741,25 @@ export default function CalendarView({
   const [googleActive, setGoogleActive] = useState(false);
   const [outlookActive, setOutlookActive] = useState(false);
 
+  // İSTEK (kullanıcı: "burda olanları da Google'a aktarabilir miyim"): yukarıdaki iCal linki
+  // SALT-OKUNUR bir "pull" — Google'a YAZMAK için ayrı, gerçek bir OAuth2 bağlantısı gerekiyor
+  // (bkz. electron/main.cjs'teki google-auth-* IPC kanalları). Client ID/Secret KULLANICININ
+  // KENDİ Google Cloud projesine ait — sadece yerelde (safeStorage ile şifreli) saklanır, koda
+  // GÖMÜLMEZ (repo public).
+  const [googleOAuthStatus, setGoogleOAuthStatus] = useState<{ hasCredentials: boolean; isConnected: boolean }>({ hasCredentials: false, isConnected: false });
+  const [googleClientIdInput, setGoogleClientIdInput] = useState('');
+  const [googleClientSecretInput, setGoogleClientSecretInput] = useState('');
+  const [googleConnecting, setGoogleConnecting] = useState(false);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+
+  const refreshGoogleOAuthStatus = async () => {
+    const status = await (window as any).electron?.googleAuthStatus?.();
+    if (status) setGoogleOAuthStatus(status);
+  };
+  useEffect(() => {
+    if (isSyncModalOpen) refreshGoogleOAuthStatus();
+  }, [isSyncModalOpen]);
+
   useEffect(() => {
     if (isSyncModalOpen) {
       setGoogleInput(calendarUrls.google);
@@ -1244,6 +1263,72 @@ export default function CalendarView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now]);
 
+  // İSTEK ("burda olanları da Google'a aktarabilir miyim"): OTOMATİK PUSH senkronu —
+  // planlı (due+plannedtime taşıyan, dış/geçmiş-izi olmayan) her görev, içeriği/tarihi
+  // değiştikçe arkaplanda Google Calendar'a yazılır. Hangi Google etkinliğine denk geldiği
+  // [gcal:id], son gönderilen içeriğin özeti [gcalh:hash] etiketiyle SATIRIN KENDİSİNDE
+  // saklanır — böylece değişmemiş bir görev her not taramasında GEREKSİZ YERE tekrar
+  // gönderilmez (hash eşleşiyorsa atlanır). Basit bir string hash yeterli, kriptografik
+  // olması gerekmiyor (sadece "değişti mi" tespiti için).
+  const simpleHash = (s: string): string => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return Math.abs(h).toString(36);
+  };
+  const googleSyncInFlightRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (embedded || !googleOAuthStatus.isConnected) return;
+    const timer = setTimeout(async () => {
+      for (const task of tasks) {
+        if (task.isExternal || task.isSessionOccurrence || !task.dueDate || !task.timeSlot) continue;
+        if (googleSyncInFlightRef.current.has(task.id)) continue;
+
+        const rawLine0 = (await readNoteContent(task.filePath).catch(() => '')).split('\n')[task.lineIdx] || '';
+        const existingIdMatch = rawLine0.match(/\[gcal:([^\]]+)\]/);
+        const existingHashMatch = rawLine0.match(/\[gcalh:([^\]]+)\]/);
+        const fingerprint = simpleHash(`${task.content}|${task.dueDate}|${task.timeSlot}`);
+        if (existingIdMatch && existingHashMatch && existingHashMatch[1] === fingerprint) continue; // değişmemiş
+
+        const t = parseTime(task.timeSlot);
+        if (!t) continue;
+        const startDate = new Date(`${task.dueDate}T00:00:00`);
+        startDate.setHours(t.startHour, t.startMin, 0, 0);
+        const endDate = new Date(`${task.dueDate}T00:00:00`);
+        endDate.setHours(t.endHour, t.endMin, 0, 0);
+
+        googleSyncInFlightRef.current.add(task.id);
+        try {
+          const result = await (window as any).electron?.googleCalendarPushEvent?.({
+            eventId: existingIdMatch ? existingIdMatch[1] : undefined,
+            summary: task.content,
+            description: 'Ultimate NoteFactory üzerinden senkronize edildi.',
+            startISO: startDate.toISOString(),
+            endISO: endDate.toISOString()
+          });
+          if (result?.success && result.eventId) {
+            const fileContent = await readNoteContent(task.filePath);
+            const lines = fileContent.split('\n');
+            if (task.lineIdx >= 0 && task.lineIdx < lines.length) {
+              let newLine = lines[task.lineIdx]
+                .replace(/\s*\[gcal:[^\]]+\]/gi, '')
+                .replace(/\s*\[gcalh:[^\]]+\]/gi, '');
+              newLine += ` [gcal:${result.eventId}] [gcalh:${fingerprint}]`;
+              lines[task.lineIdx] = newLine;
+              await onSaveNote(task.filePath, lines.join('\n'));
+            }
+          }
+        } catch (err) {
+          console.error('Google Calendar\'a gönderilemedi:', err);
+        } finally {
+          googleSyncInFlightRef.current.delete(task.id);
+        }
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, 3000); // notlar sık sık (her tuş vuruşunda) kaydedilebildiği için 3sn'lik bir "sakinleşme" beklemesi
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, googleOAuthStatus.isConnected, embedded]);
+
   const handleMouseEnterCard = (e: React.MouseEvent<HTMLDivElement>, task: WorkspaceTask) => {
     if (!task.subtasks || task.subtasks.length === 0) return;
     if (popoverTimeoutRef.current) {
@@ -1478,6 +1563,10 @@ export default function CalendarView({
               // kartlarında ayrıca render edilir, başlıkta ham etiket görünmesin.
               .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\[hours:[\d.]+\]/gi, '')
+              // Google Calendar push-senkronu izleme etiketleri (bkz. googleSyncInFlightRef
+              // efekti) — başlıkta ham etiket olarak görünmesin.
+              .replace(/\[gcal:[^\]]+\]/gi, '')
+              .replace(/\[gcalh:[^\]]+\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 
@@ -6080,6 +6169,92 @@ export default function CalendarView({
                 
                 <div>
                   <strong>Outlook:</strong> Outlook Web &gt; Ayarlar &gt; Takvim &gt; Paylaşılan Takvimler &gt; Takvim yayınla &gt; <strong>"ICS linkini"</strong> kopyalayıp buraya yapıştırın.
+                </div>
+              </div>
+
+              {/* İSTEK ("burda olanları da Google'a aktarabilir miyim"): OTOMATİK, tek yönlü
+                  (yerelden Google'a) PUSH bağlantısı — yukarıdaki iCal linki sadece Google'ı
+                  buraya OKUR, bu bölüm buradaki görevleri Google'a YAZAR. */}
+              <div style={{
+                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
+                borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px'
+              }}>
+                <div style={{ fontWeight: 'bold', color: '#e2e8f0', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  📤 Google Calendar'a Aktar (yerelden Google'a)
+                  {googleOAuthStatus.isConnected && (
+                    <span style={{ fontSize: '10px', fontWeight: 600, color: '#4caf50', background: 'rgba(76,175,80,0.12)', padding: '1px 7px', borderRadius: '8px' }}>Bağlı</span>
+                  )}
+                </div>
+                <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Google Cloud Console'da oluşturduğun OAuth Client ID/Secret'ı gir — sadece bu
+                  cihazda şifreli saklanır. Bağlandıktan sonra takvimdeki planlı görevlerin
+                  otomatik olarak Google Calendar'a yazılır (değiştikçe güncellenir). Not: yerelden
+                  silme/planı-kaldırma şu an Google tarafına yansımıyor, orada elle silmen gerekir.
+                </div>
+                {!googleOAuthStatus.isConnected && (
+                  <>
+                    <input
+                      type="text"
+                      value={googleClientIdInput}
+                      onChange={(e) => setGoogleClientIdInput(e.target.value)}
+                      placeholder="Client ID (....apps.googleusercontent.com)"
+                      style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', padding: '6px 8px', fontSize: '11.5px', outline: 'none' }}
+                    />
+                    <input
+                      type="password"
+                      value={googleClientSecretInput}
+                      onChange={(e) => setGoogleClientSecretInput(e.target.value)}
+                      placeholder="Client Secret (GOCSPX-...)"
+                      style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-primary)', padding: '6px 8px', fontSize: '11.5px', outline: 'none' }}
+                    />
+                  </>
+                )}
+                {googleAuthError && (
+                  <div style={{ fontSize: '11px', color: '#ef4444' }}>⚠️ {googleAuthError}</div>
+                )}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {!googleOAuthStatus.isConnected ? (
+                    <button
+                      type="button"
+                      disabled={googleConnecting || !googleClientIdInput.trim() || !googleClientSecretInput.trim()}
+                      onClick={async () => {
+                        setGoogleAuthError(null);
+                        setGoogleConnecting(true);
+                        try {
+                          await (window as any).electron?.googleSetCredentials?.(googleClientIdInput.trim(), googleClientSecretInput.trim());
+                          const result = await (window as any).electron?.googleAuthStart?.();
+                          if (result?.success) {
+                            await refreshGoogleOAuthStatus();
+                          } else {
+                            setGoogleAuthError(result?.error || 'Bağlantı kurulamadı.');
+                          }
+                        } catch (err: any) {
+                          setGoogleAuthError(err?.message || 'Bağlantı kurulamadı.');
+                        } finally {
+                          setGoogleConnecting(false);
+                        }
+                      }}
+                      style={{
+                        background: 'var(--accent-color)', border: 'none', borderRadius: '6px', color: '#fff',
+                        padding: '7px 12px', fontSize: '12px', fontWeight: 700,
+                        cursor: googleConnecting ? 'wait' : 'pointer',
+                        opacity: (!googleClientIdInput.trim() || !googleClientSecretInput.trim()) ? 0.5 : 1
+                      }}
+                    >
+                      {googleConnecting ? 'Tarayıcıda izin bekleniyor...' : '🔗 Google Calendar\'a Bağlan'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await (window as any).electron?.googleDisconnect?.();
+                        await refreshGoogleOAuthStatus();
+                      }}
+                      style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '7px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      Bağlantıyı Kes
+                    </button>
+                  )}
                 </div>
               </div>
 

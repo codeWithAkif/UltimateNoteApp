@@ -23,6 +23,12 @@ contextBridge.exposeInMainWorld('electron', {
   restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   focusAndFlashWindow: () => ipcRenderer.invoke('focus-and-flash-window'),
+  googleSetCredentials: (clientId, clientSecret) => ipcRenderer.invoke('google-set-credentials', { clientId, clientSecret }),
+  googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
+  googleAuthStart: () => ipcRenderer.invoke('google-auth-start'),
+  googleDisconnect: () => ipcRenderer.invoke('google-disconnect'),
+  googleCalendarPushEvent: (payload) => ipcRenderer.invoke('google-calendar-push-event', payload),
+  googleCalendarDeleteEvent: (eventId) => ipcRenderer.invoke('google-calendar-delete-event', { eventId }),
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);
