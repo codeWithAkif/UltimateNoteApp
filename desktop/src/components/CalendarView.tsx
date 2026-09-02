@@ -715,6 +715,10 @@ export default function CalendarView({
 
   // External Calendar Sync States
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  // İSTEK (kullanıcı: "ayarlar aşağı doğru uzadı bişey görünmüyor, daha userfriendly tasarım
+  // istiyorum tablı olabilir"): modal içeriği (dış takvim okuma + Google'a yazma + namaz
+  // vakitleri) tek bir uzun sütunda ekran dışına taşıyordu — artık 3 ayrı sekmeye bölündü.
+  const [syncModalTab, setSyncModalTab] = useState<'external' | 'google' | 'prayer'>('external');
   const [connectedCalendars, setConnectedCalendars] = useState<{ google: boolean; outlook: boolean }>(() => {
     try {
       const saved = localStorage.getItem('connected_calendars');
@@ -3615,11 +3619,39 @@ export default function CalendarView({
             borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)'
           }}>
             <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>🕌</span>
-            {prayerTimes.map(p => (
-              <span key={p.key} style={{ fontFamily: 'monospace' }}>
-                {p.label} <strong style={{ color: 'var(--text-secondary)' }}>{p.time}</strong>
-              </span>
-            ))}
+            {prayerTimes.map(p => {
+              const [ph, pm] = p.time.split(':').map(Number);
+              const isNext = !isNaN(ph) && (() => {
+                const t = new Date(); t.setHours(ph, pm, 0, 0);
+                return t.getTime() > now.getTime();
+              })();
+              return (
+                <span key={p.key} style={{ fontFamily: 'monospace', ...(isNext ? { color: '#06b6d4', fontWeight: 700 } : {}) }}>
+                  {p.label} <strong style={{ color: isNext ? '#06b6d4' : 'var(--text-secondary)' }}>{p.time}</strong>
+                </span>
+              );
+            })}
+            {/* İSTEK ("diğer vakte kalan zaman geri saysın"): mevcut, saniyede güncellenen
+                TaskCountdown bileşeni yeniden kullanılıyor — sıradaki (henüz geçmemiş) ilk
+                vakte kalan süreyi canlı gösterir. Bugünün tüm vakitleri geçtiyse (Yatsı'dan
+                sonra) yarının İmsak'ı elimizde olmadığından hiçbir şey göstermiyoruz. */}
+            {(() => {
+              const next = prayerTimes.find(p => {
+                const [ph, pm] = p.time.split(':').map(Number);
+                if (isNaN(ph)) return false;
+                const t = new Date(); t.setHours(ph, pm, 0, 0);
+                return t.getTime() > now.getTime();
+              });
+              if (!next) return null;
+              const [nh, nm] = next.time.split(':').map(Number);
+              const deadline = new Date(); deadline.setHours(nh, nm, 0, 0);
+              return (
+                <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>{next.label}'a:</span>
+                  <TaskCountdown deadline={deadline} size="compact" />
+                </span>
+              );
+            })()}
           </div>
         )}
 
@@ -6375,22 +6407,24 @@ export default function CalendarView({
           }}
           onClick={() => setIsSyncModalOpen(false)}
         >
-          <div 
+          <div
             style={{
-              width: '420px',
+              width: '440px',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
               background: 'var(--bg-secondary)',
               border: '1px solid var(--border-color)',
               borderRadius: '12px',
-              padding: '24px',
               boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
               color: '#fff',
               fontFamily: 'sans-serif'
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 'bold' }}>🗓️ Dış Takvimleri Bağla (iCal)</h3>
-              <button 
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px 24px 12px' }}>
+              <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 'bold' }}>🗓️ Takvim Bağlantıları</h3>
+              <button
                 onClick={() => setIsSyncModalOpen(false)}
                 style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '18px' }}
               >
@@ -6398,8 +6432,32 @@ export default function CalendarView({
               </button>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              
+            {/* Sekmeler — İSTEK: uzun tek sütun yerine 3 ayrı, kısa sekme. */}
+            <div style={{ display: 'flex', gap: '4px', padding: '0 24px 14px', borderBottom: '1px solid var(--border-color)' }}>
+              {([
+                { id: 'external' as const, label: '📥 Oku' },
+                { id: 'google' as const, label: '📤 Google\'a Yaz' },
+                { id: 'prayer' as const, label: '🕌 Namaz' }
+              ]).map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSyncModalTab(tab.id)}
+                  style={{
+                    flex: 1, padding: '7px 8px', borderRadius: '7px 7px 0 0', border: 'none',
+                    borderBottom: syncModalTab === tab.id ? '2px solid var(--accent-color)' : '2px solid transparent',
+                    background: syncModalTab === tab.id ? 'rgba(255,255,255,0.06)' : 'transparent',
+                    color: syncModalTab === tab.id ? '#fff' : 'var(--text-muted)',
+                    fontSize: '12px', fontWeight: 700, cursor: 'pointer'
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px 24px 24px', overflowY: 'auto' }}>
+              {syncModalTab === 'external' && (<>
               {/* Google iCal URL Input */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -6526,7 +6584,9 @@ export default function CalendarView({
                   <strong>Outlook:</strong> Outlook Web &gt; Ayarlar &gt; Takvim &gt; Paylaşılan Takvimler &gt; Takvim yayınla &gt; <strong>"ICS linkini"</strong> kopyalayıp buraya yapıştırın.
                 </div>
               </div>
+              </>)}
 
+              {syncModalTab === 'google' && (<>
               {/* İSTEK ("burda olanları da Google'a aktarabilir miyim"): OTOMATİK, tek yönlü
                   (yerelden Google'a) PUSH bağlantısı — yukarıdaki iCal linki sadece Google'ı
                   buraya OKUR, bu bölüm buradaki görevleri Google'a YAZAR. */}
@@ -6636,7 +6696,9 @@ export default function CalendarView({
                   </div>
                 )}
               </div>
+              </>)}
 
+              {syncModalTab === 'prayer' && (<>
               {/* İSTEK ("namaz vakitlerini almak ve takvimimde işaretlemek istiyorum ... task
                   gibi bişey olsun istemiyorum, sadece haber almak istiyorum"): şehir/ülke
                   girilince vakitler Diyanet yöntemiyle çekilir, Takvim'de şerit+işaretçi olarak
@@ -6699,12 +6761,14 @@ export default function CalendarView({
                   </div>
                 )}
               </div>
+              </>)}
 
               {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                   İSTEK: bazı dış takvim etkinlikleri (ör. günlük toplantılar) takvimi kalabalıklaştırıyor —
                   kullanıcı bir etkinliğe tıklayıp "Gizle" diyerek başlığa göre kalıcı olarak gizleyebiliyor
-                  (bkz. hideExternalEventTitle). Burada gizlenenleri görüp geri getirebiliyor. */}
-              {hiddenExternalTitles.length > 0 && (
+                  (bkz. hideExternalEventTitle). Burada gizlenenleri görüp geri getirebiliyor —
+                  "Oku" sekmesine ait (dış takvim okuma özelliğiyle ilgili). */}
+              {syncModalTab === 'external' && hiddenExternalTitles.length > 0 && (
                 <div style={{
                   background: 'rgba(255,255,255,0.02)',
                   border: '1px solid rgba(255,255,255,0.05)',
