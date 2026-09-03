@@ -557,8 +557,6 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       dailyCapacity = FULL_DAY_HOURS * (plannerDedication / 100);
     }
 
-    const totalAvailableHours = usedDays.length * dailyCapacity;
-
     const pad = (n: number) => String(n).padStart(2, '0');
     const hourToTime = (h: number) => {
       const hh = Math.floor(h);
@@ -566,52 +564,89 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
       return mm === 60 ? `${pad(hh + 1)}:00` : `${pad(hh)}:${pad(mm)}`;
     };
 
-    // İSTEK (kullanıcı geri bildirimi: "neden 9-17 ve 17-18 gibi ikiye ayırmış anlamadım"):
-    // ÖNCEDEN bir görevin gün içindeki kalan (küçük) boşluğuna bir SONRAKİ görev sığdırılmaya
-    // çalışılıyordu — bu da her görevi 1sa/7sa gibi anlamsız parçalara bölüp bir sonraki güne
-    // taşırıyordu. Artık her alt görev KENDİ gününde, günün BAŞINDAN (09:00) başlar; bir
-    // görev günün tamamını doldurmasa bile kalan boşluk bir SONRAKİ görev tarafından
-    // kullanılmaz — sıradaki görev her zaman yeni bir günde başlar.
-    // İSTEK 2 (subtask'lar artık KALICI, TEK satır — "planlama ayrı olsun"): her alt görev
-    // TAM OLARAK bir ana [due:]/[plannedtime:] çiftine sahip olur, ki alt görev listesiyle
-    // hep bire-bir eşleşsin.
-    // İSTEK 3 (kullanıcı: "gerçek bir ayrım istiyorum, öğle arasını boş bırak, taskı ikiye
-    // ayır, istersem her birini ayrı kaydırırım" + "üstteki parçayı tamamlandı işaretleyince
-    // alttaki de tamamlandı oluyor, böyle olmamalı"): öğle kotasını (3sa sabah) aşan bir görev
-    // GERÇEKTEN iki AYRI satıra (iki bağımsız checkbox) bölünür — bkz. handleApplyPlanner'daki
-    // afternoonSplit kullanımı. İLK deneme (tek satır + [plan:] kartı) aynı checkbox'ı
-    // paylaştığı için biri tamamlanınca ikisi de tamamlanmış görünüyordu.
+    // İSTEK (kullanıcı geri bildirimi: "yarım saatlik iş planlamak istiyorum, iki güne
+    // yaymaya çalışıyor"): ÖNCEKİ sürüm her alt görevi KENDİ gününde, günün BAŞINDAN
+    // başlatıyordu — küçük (0.2sa/0.3sa gibi) alt görevler için bu, her biri için TAM BİR GÜN
+    // harcamak anlamına geliyordu. Artık alt görevler GÜNÜN KAPASİTESİ doluncaya kadar AYNI
+    // GÜNE ardışık olarak paketlenir (running-fill) — bir görev günün kalanına sığmıyorsa
+    // SONRAKİ güne geçilir. Öğle kotasını aşan (tek bir alt görevin KENDİSİ öğleyi aşan)
+    // durum hâlâ GERÇEKTEN iki ayrı satıra bölünür (bkz. handleApplyPlanner'daki
+    // afternoonSplit) — ama artık bu, günün HANGİ noktasında başlarsa başlasın (09:00'dan
+    // değil, o ana kadar paketlenmiş diğer görevlerin bıraktığı yerden) doğru hesaplanıyor.
+    // İSTEK 2 (kullanıcı: "bugün sabah 9'a task koymaya çalışıyor ki koyamaz, saat şuan 13"):
+    // BAŞLANGIÇ günü BUGÜNSE, o günün dolgusu 09:00'dan değil, ŞU ANKİ gerçek saatten
+    // (15dk'ya yuvarlanmış) başlar — geçmişe görev konulamaz. Bugünün mesai saati zaten
+    // bittiyse (18:00 sonrası) bugün tamamen atlanır.
     const MORNING_CAPACITY = LUNCH_START_HOUR - DAY_START_HOUR;
-    const placements: PlannerPlacement[] = plannerSubtasks
-      .map((sub, idx) => {
-        if (idx >= usedDays.length) return null;
-        const hours = Math.max(0.25, sub.hours || 0);
-        const dateStr = format(usedDays[idx]);
-        if (hours <= MORNING_CAPACITY) {
-          return {
-            subtaskId: sub.id,
-            label: sub.name,
-            dateStr,
-            startTime: hourToTime(DAY_START_HOUR),
-            endTime: hourToTime(DAY_START_HOUR + hours)
-          };
-        }
-        const afternoonHours = hours - MORNING_CAPACITY;
-        const afternoonEnd = LUNCH_END_HOUR + afternoonHours;
-        return {
+    const offsetToTimeStr = (offsetHours: number) => hourToTime(hourOffsetToClockTime(offsetHours));
+
+    // Bugünün "şu ana kadar dolu" ofseti — hourOffsetToClockTime'ın TERSİ. now, öğleden
+    // önceyse doğrudan gündüz-başından fark; öğle arasındaysa (12-13) sabah kotasında
+    // bekletilir (öğle bitince devam edilir gibi); öğleden sonraysa sabah kotası + o andan
+    // beri geçen gerçek çalışma saati.
+    const nowDate = new Date();
+    const nowHourFrac = nowDate.getHours() + nowDate.getMinutes() / 60;
+    let nowOffsetToday = 0;
+    if (nowHourFrac <= DAY_START_HOUR) nowOffsetToday = 0;
+    else if (nowHourFrac < LUNCH_START_HOUR) nowOffsetToday = nowHourFrac - DAY_START_HOUR;
+    else if (nowHourFrac < LUNCH_END_HOUR) nowOffsetToday = MORNING_CAPACITY;
+    else nowOffsetToday = MORNING_CAPACITY + (nowHourFrac - LUNCH_END_HOUR);
+    nowOffsetToday = Math.ceil(nowOffsetToday * 4) / 4; // en yakın 15dk'ya yuvarla (yukarı)
+
+    let dayIdx = 0;
+    const startsToday = usedDays.length > 0 && format(usedDays[0]) === todayStr;
+    let usedInDay = startsToday ? Math.min(dailyCapacity, nowOffsetToday) : 0;
+    // Bugünün mesaisi zaten tamamen bittiyse bugünü atla.
+    if (usedInDay >= dailyCapacity && startsToday) {
+      dayIdx = 1;
+      usedInDay = 0;
+    }
+    // "Kullanılabilir" toplam, bugünün ZATEN GEÇMİŞ olan kısmını (yukarıdaki nowOffsetToday
+    // dolgusu) düşer — aksi halde bugünün elde olmayan saatleri de kapasiteye dahil sayılıp
+    // "sığıyor" yanlış hesaplanabilirdi.
+    const totalAvailableHours = usedDays.length * dailyCapacity - (startsToday ? Math.min(dailyCapacity, nowOffsetToday) : 0);
+
+    const placements: PlannerPlacement[] = [];
+    for (const sub of plannerSubtasks) {
+      const hours = Math.max(0.25, sub.hours || 0);
+      // Bugünkü (veya herhangi bir günün) kalan kapasitesine sığmıyorsa VE gün zaten
+      // kısmen doluysa (bomboş bir güne bile sığmayacak kadar büyükse zorunlu kalır) yeni
+      // güne geç.
+      while (dayIdx < usedDays.length && usedInDay > 0 && usedInDay + hours > dailyCapacity) {
+        dayIdx++;
+        usedInDay = 0;
+      }
+      if (dayIdx >= usedDays.length) break; // sığmıyor — shortfall'a yansıyacak
+
+      const dateStr = format(usedDays[dayIdx]);
+      const startOffset = usedInDay;
+      const endOffset = usedInDay + hours;
+
+      if (startOffset < MORNING_CAPACITY && endOffset > MORNING_CAPACITY) {
+        // Bu alt görevin KENDİSİ öğle kotasını aşıyor — GERÇEKTEN iki ayrı satıra bölünür.
+        placements.push({
           subtaskId: sub.id,
           label: sub.name,
           dateStr,
-          startTime: hourToTime(DAY_START_HOUR),
-          endTime: hourToTime(LUNCH_START_HOUR),
+          startTime: offsetToTimeStr(startOffset),
+          endTime: offsetToTimeStr(MORNING_CAPACITY),
           afternoonSplit: {
-            hours: afternoonHours,
-            startTime: hourToTime(LUNCH_END_HOUR),
-            endTime: hourToTime(afternoonEnd)
+            hours: endOffset - MORNING_CAPACITY,
+            startTime: offsetToTimeStr(MORNING_CAPACITY),
+            endTime: offsetToTimeStr(endOffset)
           }
-        };
-      })
-      .filter((p): p is PlannerPlacement => p !== null);
+        });
+      } else {
+        placements.push({
+          subtaskId: sub.id,
+          label: sub.name,
+          dateStr,
+          startTime: offsetToTimeStr(startOffset),
+          endTime: offsetToTimeStr(endOffset)
+        });
+      }
+      usedInDay = endOffset;
+    }
 
     const fits = placements.length > 0 && plannerSubtasks.every(s => placements.some(p => p.subtaskId === s.id)) && totalRequiredHours <= totalAvailableHours;
 
