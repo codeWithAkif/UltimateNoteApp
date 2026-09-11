@@ -430,6 +430,124 @@ const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankCo
   );
 };
 
+// İSTEK (kullanıcı: "hareketlerin gösterimini yapan gifler olsa yanında iyi olur"): gerçek
+// fitness sitelerinden GIF çekmek telif/hotlink riski taşıdığından (Hunter Sistemi'nin
+// görselliği için daha önce verilen kararla AYNI ilke — bkz. dosya başındaki GÖRSELLİK NOTU),
+// bunun yerine ORİJİNAL, döngüsel çubuk-adam animasyonları çiziliyor. Her egzersiz GRUBU
+// (`ExerciseKey`) için TEK bir temsili hareket var — aynı gruptaki 4 varyant (örn. Şınav/
+// Elmas Şınav/Geniş Şınav/Eğik Şınav) aynı hareket ailesinden olduğu için aynı animasyonu
+// paylaşıyor. Saf CSS keyframe döngüsü, harici asset/ağ isteği yok.
+const ExerciseMotion: React.FC<{ exerciseKey: ExerciseKey; color: string; size?: number }> = ({ exerciseKey, color, size = 40 }) => {
+  const strokeStyle: React.CSSProperties = { fill: 'none', stroke: color, strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  const parts: Record<ExerciseKey, React.ReactNode> = {
+    pushups: (
+      <>
+        <g className="hm-pushup-body">
+          <circle cx="8" cy="18" r="4" fill={color} />
+          <path style={strokeStyle} d="M12 20 L40 26" />
+        </g>
+        <path style={strokeStyle} d="M20 22 L20 36" />
+        <path style={strokeStyle} d="M36 26 L36 36" />
+      </>
+    ),
+    situps: (
+      <>
+        <path style={strokeStyle} d="M27 34 L41 34" />
+        <path style={strokeStyle} d="M27 34 L20 40 M27 34 L34 40" />
+        <g className="hm-situp-body">
+          <circle cx="27" cy="14" r="4" fill={color} />
+          <path style={strokeStyle} d="M27 18 L27 34" />
+        </g>
+      </>
+    ),
+    squats: (
+      <>
+        <g className="hm-squat-body">
+          <circle cx="27" cy="10" r="4" fill={color} />
+          <path style={strokeStyle} d="M27 14 L27 26" />
+          <path style={strokeStyle} d="M20 18 L27 20 L34 18" />
+        </g>
+        <path style={strokeStyle} d="M27 26 L20 40 M27 26 L34 40" />
+      </>
+    ),
+    dumbbell: (
+      <>
+        <circle cx="27" cy="8" r="4" fill={color} />
+        <path style={strokeStyle} d="M27 12 L27 30" />
+        <path style={strokeStyle} d="M27 30 L20 40 M27 30 L34 40" />
+        <path style={strokeStyle} d="M27 16 L36 26" />
+        <g className="hm-curl-forearm">
+          <path style={strokeStyle} d="M36 26 L36 34" />
+          <circle cx="36" cy="35" r="2" fill={color} />
+        </g>
+      </>
+    ),
+    back: (
+      <>
+        <circle cx="14" cy="16" r="4" fill={color} />
+        <path style={strokeStyle} d="M17 18 L38 26" />
+        <path style={strokeStyle} d="M38 26 L44 36 M38 26 L34 38" />
+        <g className="hm-row-arm">
+          <path style={strokeStyle} d="M24 21 L14 28" />
+          <circle cx="14" cy="28" r="2" fill={color} />
+        </g>
+      </>
+    ),
+    shoulders: (
+      <>
+        <circle cx="27" cy="10" r="4" fill={color} />
+        <path style={strokeStyle} d="M27 14 L27 30" />
+        <path style={strokeStyle} d="M27 30 L20 40 M27 30 L34 40" />
+        <g className="hm-press-arm-l"><path style={strokeStyle} d="M22 16 L14 24" /><circle cx="14" cy="24" r="2" fill={color} /></g>
+        <g className="hm-press-arm-r"><path style={strokeStyle} d="M32 16 L40 24" /><circle cx="40" cy="24" r="2" fill={color} /></g>
+      </>
+    ),
+    cardio: (
+      <>
+        <circle cx="27" cy="10" r="4" fill={color} />
+        <path style={strokeStyle} d="M27 14 L27 32" />
+        <g className="hm-jack-arm-l"><path style={strokeStyle} d="M22 16 L12 22" /></g>
+        <g className="hm-jack-arm-r"><path style={strokeStyle} d="M32 16 L42 22" /></g>
+        <g className="hm-jack-leg-l"><path style={strokeStyle} d="M27 32 L18 42" /></g>
+        <g className="hm-jack-leg-r"><path style={strokeStyle} d="M27 32 L36 42" /></g>
+      </>
+    )
+  };
+  return (
+    <svg width={size} height={size * (44 / 54)} viewBox="0 0 54 44" style={{ overflow: 'visible', flexShrink: 0 }}>
+      {parts[exerciseKey]}
+    </svg>
+  );
+};
+
+// Yukarıdaki hareketlerin CSS keyframe döngüleri — tek seferlik, sınıf adına göre çalışır
+// (aynı egzersiz aynı anda birden fazla gösterilse bile — örn. squats slot 0 ve 1 — sorun
+// olmaz, kurallar idempotent).
+const EXERCISE_MOTION_STYLE = `
+  .hm-pushup-body{ animation: hmPushup 1.3s ease-in-out infinite; }
+  @keyframes hmPushup { 0%,100%{ transform: translateY(0);} 50%{ transform: translateY(6px);} }
+  .hm-situp-body{ transform-origin: 27px 34px; animation: hmSitup 1.3s ease-in-out infinite alternate; }
+  @keyframes hmSitup { 0%{ transform: rotate(-18deg);} 100%{ transform: rotate(-68deg);} }
+  .hm-squat-body{ animation: hmSquat 1.3s ease-in-out infinite; }
+  @keyframes hmSquat { 0%,100%{ transform: translateY(0);} 50%{ transform: translateY(7px);} }
+  .hm-curl-forearm{ transform-origin: 36px 26px; animation: hmCurl 1.1s ease-in-out infinite alternate; }
+  @keyframes hmCurl { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(-110deg);} }
+  .hm-row-arm{ animation: hmRow 1.1s ease-in-out infinite alternate; }
+  @keyframes hmRow { 0%{ transform: translateX(0);} 100%{ transform: translateX(-10px);} }
+  .hm-press-arm-l{ transform-origin: 22px 16px; animation: hmPressL 1.2s ease-in-out infinite alternate; }
+  .hm-press-arm-r{ transform-origin: 32px 16px; animation: hmPressR 1.2s ease-in-out infinite alternate; }
+  @keyframes hmPressL { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(35deg);} }
+  @keyframes hmPressR { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(-35deg);} }
+  .hm-jack-arm-l{ transform-origin: 22px 16px; animation: hmJackArmL 0.9s ease-in-out infinite alternate; }
+  .hm-jack-arm-r{ transform-origin: 32px 16px; animation: hmJackArmR 0.9s ease-in-out infinite alternate; }
+  .hm-jack-leg-l{ transform-origin: 27px 32px; animation: hmJackLegL 0.9s ease-in-out infinite alternate; }
+  .hm-jack-leg-r{ transform-origin: 27px 32px; animation: hmJackLegR 0.9s ease-in-out infinite alternate; }
+  @keyframes hmJackArmL { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(50deg);} }
+  @keyframes hmJackArmR { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(-50deg);} }
+  @keyframes hmJackLegL { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(-22deg);} }
+  @keyframes hmJackLegR { 0%{ transform: rotate(0deg);} 100%{ transform: rotate(22deg);} }
+`;
+
 interface HunterViewProps {
   fileContents: Record<string, string>;
   readNoteContent: (path: string) => Promise<string>;
@@ -661,6 +779,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '20px', background: 'radial-gradient(circle at 50% 0%, #0f1b2e 0%, #05070d 60%)', color: '#e2e8f0' }} className="custom-scroll">
+      <style>{EXERCISE_MOTION_STYLE}</style>
       <div style={{ maxWidth: '720px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '18px' }}>
 
         {/* Başlık */}
@@ -790,6 +909,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                           display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 800,
                           color: '#64748b', fontFamily: 'monospace', flexShrink: 0
                         }}>{row.step}</span>
+                        <ExerciseMotion exerciseKey={q.key} color={done ? rankColor : '#64748b'} size={34} />
                         <span style={{ flex: 1, fontSize: '12.5px', fontWeight: done ? 700 : 500, textDecoration: done ? 'line-through' : 'none', color: done ? '#94a3b8' : '#e2e8f0' }}>{q.label}</span>
                         <span style={{ fontSize: '11.5px', fontFamily: 'monospace', color: rankColor, fontWeight: 700 }}>{q.sets}×{q.reps}</span>
                       </div>
