@@ -278,29 +278,41 @@ const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankCo
   const rankIdx = RANK_ORDER.indexOf(rank); // 0 (E) .. 5 (S)
   const t = rankIdx / (RANK_ORDER.length - 1); // 0..1 evrim oranı
 
-  // İSTEK (kullanıcı: gerçek bir anatomik kas haritası referansı paylaşıp "daha çok böyle
-  // olsun" dedi) — soyut/blok kapsüller yerine kas gruplarının kendi anatomik biçimine
-  // yakın, AYRI ayrı şekiller: iki loblu pektoral, ayrı deltoid kapak, pazı+ön kol ayrımı,
-  // yan oblik şeritli six-pack, ayrı quad+baldır. Renk mantığı AYNI kalıyor: her bölge o
-  // günkü egzersiz tamamlanınca dolup parlıyor (rank rengi), tamamlanmamışsa soluk gri.
-  const shoulderW = 32 + 16 * t;      // omuz genişliği
-  const waistW = 16 - 3 * t;          // karın yarı genişliği (V-taper)
-  const armRx = 8 + 4.5 * t;          // pazı kalınlığı
-  const neckW = 7 + 1.5 * t;
+  // BUG DÜZELTMESİ (kullanıcı geri bildirimi: gönderdiği anatomik referansla karşılaştırınca
+  // "şu benzerliğe bakar mısınız" — önceki versiyon birbirine BAĞLI OLMAYAN, boşluklu/havada
+  // asılı parçalardan (ayrı omuz noktaları, gövdeye değmeyen kollar, bacaklarla birleşmeyen
+  // karın) oluşuyordu, bu yüzden "robot parçaları" gibi görünüyordu. KÖK SEBEP: hiçbir zaman
+  // tek parça, SÜREKLİ bir vücut siluetinin ÇİZİLMEMİŞ olmasıydı. Çözüm: önce nötr renkte,
+  // TEK PARÇA süreklilik sağlayan bir "temel siluet" (gövde + 2 kol + 2 bacak, kollar/
+  // bacaklar gövdeye birkaç piksel binerek) çiziliyor — bu her zaman TAM bir insan şekli
+  // garanti eder. Kas grubu renkleri bu temel siluetin ÜZERİNE, onun sınırları içinde kalan
+  // daha küçük bölgeler olarak ekleniyor (referans görseldeki gibi: nötr ten + üzerinde
+  // renkli kas bölgeleri) — artık hiçbir parça boşlukta asılı durmuyor.
+  const shoulderW = 26 + 14 * t;      // omuz genişliği (gövde temel siluet)
+  const torsoWaistW = 13 + 2 * t;     // bel genişliği (gövde temel siluet, dar kısım)
+  const hipW = 16 + 3 * t;            // kalça genişliği (gövde temel siluet, alt taban)
+  const armR = 7 + 3.5 * t;           // kol temel siluet kalınlığı (omuzda)
+  const wristR = 3.5 + 1 * t;
+  const legR = 8 + 2 * t;             // bacak temel siluet kalınlığı (kalçada)
+  const ankleR = 4.5 + 1 * t;
+  const neckW = 6 + 1.2 * t;
   const absRows = 3 + Math.round(2 * t); // 3..5 satır six-pack
-  const showTraps = t >= 0.35;
-  const showDeltCaps = t >= 0.35;
   const showDefinitionLines = t >= 0.55;
   const showAura = rankIdx === RANK_ORDER.length - 1; // sadece S-Rank
 
-  const absTop = 96, absBottom = 136;
+  const shoulderY = 44, waistY = 94, hipY = 136, wristY = 126, ankleY = 222;
+  const armCx = { l: 75 - shoulderW - armR + 6, r: 75 + shoulderW + armR - 6 }; // 6px gövdeye biniyor
+  const legCx = { l: 75 - hipW * 0.5, r: 75 + hipW * 0.5 };
+  const legTopY = hipY - 4; // 4px gövdeye biniyor
+
+  const absTop = 90, absBottom = 128;
   const rowH = (absBottom - absTop) / absRows;
-  const pecOffset = 9 + 3 * t;   // sternum'dan pektoral merkezine mesafe
-  const pecRx = 13 + 4.5 * t;
-  const pecRy = 16 + 3.5 * t;
-  const pecCy = 62;
-  const armCx = { l: 75 - shoulderW - armRx + 5, r: 75 + shoulderW + armRx - 5 };
-  const legOuter = 75 - waistW - 2, legInner = 75 - 2, legW = 16 + 2 * t;
+  const pecOffset = 8 + 2 * t, pecRx = 11 + 3 * t, pecRy = 13 + 3 * t, pecCy = 58;
+
+  const neutralFill = 'rgba(148,163,184,0.07)', neutralStroke = 'rgba(148,163,184,0.3)';
+  const torsoPath = `M${75 - shoulderW} ${shoulderY} Q75 36 ${75 + shoulderW} ${shoulderY} L${75 + torsoWaistW} ${waistY} L${75 + hipW} ${hipY} Q75 144 ${75 - hipW} ${hipY} L${75 - torsoWaistW} ${waistY} Z`;
+  const armPath = (cx: number) => `M${cx - armR} ${shoulderY - 2} Q${cx - armR - 2} ${(shoulderY + wristY) / 2} ${cx - wristR} ${wristY} L${cx + wristR} ${wristY} Q${cx + armR + 2} ${(shoulderY + wristY) / 2} ${cx + armR} ${shoulderY - 2} Z`;
+  const legPath = (cx: number) => `M${cx - legR} ${legTopY} Q${cx - legR - 1} ${(legTopY + ankleY) / 2} ${cx - ankleR} ${ankleY} L${cx + ankleR} ${ankleY} Q${cx + legR + 1} ${(legTopY + ankleY) / 2} ${cx + legR} ${legTopY} Z`;
 
   return (
     <svg width="150" height="260" viewBox="0 0 150 260">
@@ -319,78 +331,68 @@ const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankCo
         <ellipse cx="75" cy="130" rx="68" ry="122" fill="none" stroke={rankColor} strokeWidth="1.2" opacity="0.35" filter="url(#auraGlow)" />
       )}
 
-      {/* Trapez (üst sırt kası) — Sırt günü tamamlandığında dolup parlıyor */}
-      {showTraps && (
-        <path
-          d={`M${75 - neckW - 5} 40 L${75 - shoulderW + 7} 48 L${75 - neckW} 45 Z M${75 + neckW + 5} 40 L${75 + shoulderW - 7} 48 L${75 + neckW} 45 Z`}
-          fill={fillFor('back')} stroke={strokeFor('back')} strokeWidth="0.8" opacity="0.9" style={glow('back')}
-        />
-      )}
+      {/* ADIM 1 — TEMEL SİLUET: her zaman tam, tek parça gibi görünen bir insan şekli (gövde +
+          2 kol + 2 bacak, birkaç piksel binerek birleşiyor). Duruma göre DEĞİL, her zaman aynı
+          nötr tonda — böylece hiçbir egzersiz tamamlanmasa bile vücut asla "eksik/parçalı"
+          görünmez, referans görseldeki ten rengi tabanına karşılık gelir. */}
+      <path d={armPath(armCx.l)} fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <path d={armPath(armCx.r)} fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <path d={legPath(legCx.l)} fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <path d={legPath(legCx.r)} fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <path d={torsoPath} fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <circle cx="75" cy="20" r="13" fill={neutralFill} stroke={neutralStroke} strokeWidth="1.3" />
+      <rect x={75 - neckW} y="31" width={neckW * 2} height="10" fill={neutralFill} stroke={neutralStroke} strokeWidth="1" />
 
-      {/* Baş + boyun */}
-      <circle cx="75" cy="20" r="13" fill="rgba(148,163,184,0.1)" stroke="rgba(148,163,184,0.4)" strokeWidth="1.5" />
-      <rect x={75 - neckW} y="31" width={neckW * 2} height="10" fill="rgba(148,163,184,0.1)" stroke="rgba(148,163,184,0.3)" strokeWidth="1" />
+      {/* ADIM 2 — KAS GRUBU BÖLGELERİ: temel siluetin İÇİNDE kalan, o günkü egzersiz
+          tamamlanınca dolup parlayan renkli bölgeler (referans görseldeki gibi nötr taban
+          üzerine binen renkli kas haritası). */}
 
-      {/* Omuz kapağı (deltoid) — Omuz günü tamamlandığında dolup parlıyor, ayrı yuvarlak bir kütle */}
-      {showDeltCaps && (
-        <>
-          <ellipse cx={75 - shoulderW + 4} cy="46" rx={7 + 3 * t} ry={9 + 3.5 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" style={glow('shoulders')} />
-          <ellipse cx={75 + shoulderW - 4} cy="46" rx={7 + 3 * t} ry={9 + 3.5 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" style={glow('shoulders')} />
-        </>
-      )}
+      {/* Trapez (sırt) — boyun/omuz kavşağında, her zaman görünür, rank ile büyür */}
+      <path
+        d={`M${75 - neckW - 3} 38 L${75 - shoulderW + 6} ${shoulderY + 3} L${75 - neckW} ${shoulderY - 3} Z M${75 + neckW + 3} 38 L${75 + shoulderW - 6} ${shoulderY + 3} L${75 + neckW} ${shoulderY - 3} Z`}
+        fill={fillFor('back')} stroke={strokeFor('back')} strokeWidth="0.8" opacity="0.9" style={glow('back')}
+      />
 
-      {/* Göğüs (chest) — İKİ AYRI pektoral lob (anatomik referansa uygun), tek blok değil */}
-      <ellipse cx={75 - pecOffset} cy={pecCy} rx={pecRx} ry={pecRy} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.5" style={glow('chest')} transform={`rotate(-14 ${75 - pecOffset} ${pecCy})`} />
-      <ellipse cx={75 + pecOffset} cy={pecCy} rx={pecRx} ry={pecRy} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.5" style={glow('chest')} transform={`rotate(14 ${75 + pecOffset} ${pecCy})`} />
-      {showDefinitionLines && (
-        <line x1="75" y1="48" x2="75" y2="90" stroke="rgba(2,6,23,0.45)" strokeWidth="2" />
-      )}
+      {/* Deltoid (omuz) — gövde ile kolun tam kavşağında, her iki temel siluete de biniyor */}
+      <ellipse cx={75 - shoulderW + 3} cy={shoulderY + 3} rx={5 + 2.5 * t} ry={7 + 2.5 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" style={glow('shoulders')} />
+      <ellipse cx={75 + shoulderW - 3} cy={shoulderY + 3} rx={5 + 2.5 * t} ry={7 + 2.5 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" style={glow('shoulders')} />
 
-      {/* Karın (abs) — orta six-pack grid + yan oblikler (aynı grup rengi, daha soluk) */}
-      <rect x={75 - waistW - 6} y={absTop + 2} width="6" height={absBottom - absTop - 6} rx="3" fill={fillFor('abs')} opacity="0.55" stroke={strokeFor('abs')} strokeWidth="1" />
-      <rect x={75 + waistW} y={absTop + 2} width="6" height={absBottom - absTop - 6} rx="3" fill={fillFor('abs')} opacity="0.55" stroke={strokeFor('abs')} strokeWidth="1" />
-      <rect x={75 - waistW} y={absTop} width={waistW * 2} height={absBottom - absTop} rx="6" fill={fillFor('abs')} stroke={strokeFor('abs')} strokeWidth="1.5" style={glow('abs')} />
+      {/* Göğüs (chest) — iki pektoral lob, gövde siluetinin içinde */}
+      <ellipse cx={75 - pecOffset} cy={pecCy} rx={pecRx} ry={pecRy} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.3" style={glow('chest')} transform={`rotate(-12 ${75 - pecOffset} ${pecCy})`} />
+      <ellipse cx={75 + pecOffset} cy={pecCy} rx={pecRx} ry={pecRy} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.3" style={glow('chest')} transform={`rotate(12 ${75 + pecOffset} ${pecCy})`} />
+      {showDefinitionLines && <line x1="75" y1="48" x2="75" y2="84" stroke="rgba(2,6,23,0.4)" strokeWidth="1.6" />}
+
+      {/* Karın (abs) — six-pack grid + yan oblikler, gövde siluetinin içinde */}
+      <rect x={75 - torsoWaistW + 1} y={absTop + 2} width="5" height={absBottom - absTop - 6} rx="2.5" fill={fillFor('abs')} opacity="0.5" stroke={strokeFor('abs')} strokeWidth="0.8" />
+      <rect x={75 + torsoWaistW - 6} y={absTop + 2} width="5" height={absBottom - absTop - 6} rx="2.5" fill={fillFor('abs')} opacity="0.5" stroke={strokeFor('abs')} strokeWidth="0.8" />
+      <rect x={75 - torsoWaistW + 4} y={absTop} width={(torsoWaistW - 4) * 2} height={absBottom - absTop} rx="5" fill={fillFor('abs')} stroke={strokeFor('abs')} strokeWidth="1.3" style={glow('abs')} />
       {showDefinitionLines && Array.from({ length: absRows - 1 }).map((_, i) => (
-        <line key={i} x1={75 - waistW + 3} y1={absTop + rowH * (i + 1)} x2={75 + waistW - 3} y2={absTop + rowH * (i + 1)} stroke="rgba(2,6,23,0.4)" strokeWidth="1.3" />
+        <line key={i} x1={75 - torsoWaistW + 7} y1={absTop + rowH * (i + 1)} x2={75 + torsoWaistW - 7} y2={absTop + rowH * (i + 1)} stroke="rgba(2,6,23,0.35)" strokeWidth="1.1" />
       ))}
-      {showDefinitionLines && (
-        <line x1="75" y1={absTop + 2} x2="75" y2={absBottom - 2} stroke="rgba(2,6,23,0.4)" strokeWidth="1.3" />
-      )}
+      {showDefinitionLines && <line x1="75" y1={absTop + 2} x2="75" y2={absBottom - 2} stroke="rgba(2,6,23,0.35)" strokeWidth="1.1" />}
 
-      {/* Kollar (arms) — pazı (bicep) ayrı, ön kol (forearm) ayrı ve daha ince/soluk devam ediyor */}
-      <ellipse cx={armCx.l} cy="62" rx={armRx} ry={18 + 3.5 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
-      <ellipse cx={armCx.r} cy="62" rx={armRx} ry={18 + 3.5 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
-      {showDefinitionLines && (
-        <>
-          <path d={`M${armCx.l - 3} 52 Q${armCx.l} 45 ${armCx.l + 3} 52`} fill="none" stroke="rgba(2,6,23,0.4)" strokeWidth="1.2" />
-          <path d={`M${armCx.r - 3} 52 Q${armCx.r} 45 ${armCx.r + 3} 52`} fill="none" stroke="rgba(2,6,23,0.4)" strokeWidth="1.2" />
-        </>
-      )}
-      <path d={`M${armCx.l - armRx + 1} 78 L${armCx.l - armRx * 0.6} 122 Q${armCx.l} 128 ${armCx.l + armRx * 0.6} 122 L${armCx.l + armRx - 1} 78 Z`} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.75" />
-      <path d={`M${armCx.r - armRx + 1} 78 L${armCx.r - armRx * 0.6} 122 Q${armCx.r} 128 ${armCx.r + armRx * 0.6} 122 L${armCx.r + armRx - 1} 78 Z`} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.75" />
+      {/* Kollar (arms) — pazı (bicep) üstte, ön kol (forearm) altta, ikisi de kol siluetinin içinde */}
+      <ellipse cx={armCx.l} cy={shoulderY + 17} rx={armR - 1} ry={13 + 2.5 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.3" style={glow('arms')} />
+      <ellipse cx={armCx.r} cy={shoulderY + 17} rx={armR - 1} ry={13 + 2.5 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.3" style={glow('arms')} />
+      <path d={`M${armCx.l - armR + 2} ${shoulderY + 34} L${armCx.l - wristR - 1} ${wristY - 4} L${armCx.l + wristR + 1} ${wristY - 4} L${armCx.l + armR - 2} ${shoulderY + 34} Z`} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.1" opacity="0.8" />
+      <path d={`M${armCx.r - armR + 2} ${shoulderY + 34} L${armCx.r - wristR - 1} ${wristY - 4} L${armCx.r + wristR + 1} ${wristY - 4} L${armCx.r + armR - 2} ${shoulderY + 34} Z`} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.1" opacity="0.8" />
 
-      {/* Bacaklar (legs) — quad (üst, geniş teardrop) + baldır (alt, daha dar) ayrı şekiller */}
-      <path d={`M${legOuter - legW + 2} 138 Q${legOuter - legW} 168 ${legOuter - legW / 2} 186 L${legOuter} 186 Q${legOuter + 3} 158 ${legOuter} 138 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
-      <path d={`M${legInner} 138 Q${legInner - 3} 158 ${legInner} 186 L${legInner + legW / 2} 186 Q${legInner + legW} 168 ${legInner + legW - 2} 138 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
-      <path d={`M${legOuter - legW + 4} 188 Q${legOuter - legW + 2} 210 ${legOuter - legW / 2 + 1} 222 L${legOuter - 1} 222 Q${legOuter + 1} 205 ${legOuter - 2} 188 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.3" opacity="0.8" />
-      <path d={`M${legInner + 2} 188 Q${legInner} 205 ${legInner + 3} 222 L${legInner + legW / 2 - 1} 222 Q${legInner + legW - 2} 210 ${legInner + legW - 4} 188 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.3" opacity="0.8" />
-      {showDefinitionLines && (
-        <>
-          <line x1={legOuter - legW / 2} y1="148" x2={legOuter - legW / 2} y2="180" stroke="rgba(2,6,23,0.3)" strokeWidth="1" />
-          <line x1={legInner + legW / 2} y1="148" x2={legInner + legW / 2} y2="180" stroke="rgba(2,6,23,0.3)" strokeWidth="1" />
-        </>
-      )}
+      {/* Bacaklar (legs) — quad (üst) + baldır (alt), ikisi de bacak siluetinin içinde */}
+      <path d={`M${legCx.l - legR + 1} ${legTopY + 3} L${legCx.l - legR * 0.55} 178 L${legCx.l + legR * 0.55} 178 L${legCx.l + legR - 1} ${legTopY + 3} Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.3" style={glow('legs')} />
+      <path d={`M${legCx.r - legR + 1} ${legTopY + 3} L${legCx.r - legR * 0.55} 178 L${legCx.r + legR * 0.55} 178 L${legCx.r + legR - 1} ${legTopY + 3} Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.3" style={glow('legs')} />
+      <path d={`M${legCx.l - legR * 0.5} 182 L${legCx.l - ankleR - 1} 218 L${legCx.l + ankleR + 1} 218 L${legCx.l + legR * 0.5} 182 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.1" opacity="0.8" />
+      <path d={`M${legCx.r - legR * 0.5} 182 L${legCx.r - ankleR - 1} 218 L${legCx.r + ankleR + 1} 218 L${legCx.r + legR * 0.5} 182 Z`} fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.1" opacity="0.8" />
 
-      {/* Kardiyo/kondisyon rozeti — vücudun ÜSTÜNE binmeyen, sağ üst köşede ayrı bir yıldırım
-          rozeti (kardiyo için anatomik bir bölge olmadığından, HUD-tarzı bir ikon tercih edildi) */}
-      <g transform="translate(126, 14)">
-        <circle r="12" fill={status.cardio ? `${rankColor}22` : 'rgba(148,163,184,0.06)'} stroke={strokeFor('cardio')} strokeWidth="1.2" style={glow('cardio')} />
-        <path d="M2 -7 L-4 1 L0 1 L-2 8 L5 -1 L1 -1 Z" fill={fillFor('cardio')} />
+      {/* Kardiyo/kondisyon rozeti — kardiyo için anatomik bir bölge olmadığından, vücudun
+          dışında sağ üst köşede ayrı bir HUD ikonu (göğse binmiyor) */}
+      <g transform="translate(128, 14)">
+        <circle r="11" fill={status.cardio ? `${rankColor}22` : 'rgba(148,163,184,0.06)'} stroke={strokeFor('cardio')} strokeWidth="1.1" style={glow('cardio')} />
+        <path d="M2 -6 L-3.5 1 L0 1 L-1.5 7 L4.5 -1 L1 -1 Z" fill={fillFor('cardio')} />
       </g>
 
-      {/* S-Rank omuz zırhı rozeti */}
+      {/* S-Rank rozeti */}
       {showAura && (
-        <text x="75" y="50" textAnchor="middle" fontSize="9" fontWeight="800" fill={rankColor} fontFamily="monospace" opacity="0.9">S</text>
+        <text x="75" y="46" textAnchor="middle" fontSize="8" fontWeight="800" fill={rankColor} fontFamily="monospace" opacity="0.9">S</text>
       )}
     </svg>
   );
