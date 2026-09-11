@@ -56,8 +56,14 @@ type MuscleGroup = 'chest' | 'abs' | 'legs' | 'arms' | 'back' | 'shoulders' | 'c
 // değil, her hareket için ayrı ayrı işaretlenen set sayısı), (3) Sırt + Omuz + Kardiyo
 // gruplarının eklenmesi. Her egzersiz artık `sets`/`reps`/`setsDone` taşıyor; tamamlanma
 // setsDone >= sets olduğunda gerçekleşiyor (bkz. isQuestDone).
-interface DailyQuestItem { key: ExerciseKey; label: string; group: MuscleGroup; sets: number; reps: number; setsDone: number; }
+// İSTEK (kullanıcı: "bir günde sadece iki antreman mı var az mı çok mu... gerçek spor
+// salonlarında bir seansta nasıl olur" — konuşma sonrası karar: kas grubu başına 1 yerine 2
+// hareket, gerçek bir salon seansına daha yakın hacim için): aynı `key` (kas grubu slotu)
+// için havuzdan İKİ farklı varyant seçiliyor, `slot` (0/1) bu ikisini birbirinden ayırt ediyor
+// (aksi halde ikisi de aynı `key`'i paylaştığı için set kaydetme/geri alma birbirine karışırdı).
+interface DailyQuestItem { key: ExerciseKey; slot: number; label: string; group: MuscleGroup; sets: number; reps: number; setsDone: number; }
 const isQuestDone = (q: DailyQuestItem) => q.setsDone >= q.sets;
+const questItemId = (q: DailyQuestItem) => `${q.key}-${q.slot}`;
 
 interface HunterState {
   rank: Rank;
@@ -150,13 +156,19 @@ const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string): DailyQ
   const dIdx = dayOfYear(new Date(`${dateStr}T00:00:00`));
   const sets = SETS_BY_RANK[rank];
   const split = splitDayForDate(dateStr);
-  return split.keys.map(key => {
+  const items: DailyQuestItem[] = [];
+  split.keys.forEach(key => {
     const meta = EXERCISE_META.find(m => m.key === key)!;
     const pool = EXERCISE_POOL[key];
-    const variant = pool[dIdx % pool.length];
-    const reps = Math.max(1, Math.round(REPS_BASE[key][rank] * mult));
-    return { key, label: variant, group: meta.group, sets, reps, setsDone: 0 };
+    const repCount = Math.max(1, Math.round(REPS_BASE[key][rank] * mult));
+    // Kas grubu başına HAVUZDAN 2 FARKLI varyant (slot 0 ve 1) — pool 4 elemanlı olduğundan
+    // 2 kaydırma her zaman farklı bir varyant garanti eder, tek harekete sıkışmaz.
+    [0, 1].forEach(slot => {
+      const variant = pool[(dIdx + slot * 2) % pool.length];
+      items.push({ key, slot, label: variant, group: meta.group, sets, reps: repCount, setsDone: 0 });
+    });
   });
+  return items;
 };
 
 // ============================================================================
@@ -202,18 +214,22 @@ function parseHunterState(content: string): HunterState {
       // görünen kısmından değil).
       // İSTEK (kullanıcı: "set ve tekrar de artırırsan" — set×tekrar modeline geçiş):
       // `target` tek toplam sayı yerine `sets`/`reps`/`setsDone` üçlüsüne ayrıldı.
-      const m = line.match(/\[key:(\w+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]\s*\[setsDone:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
+      // İSTEK (kullanıcı: "bir günde sadece iki antreman mı var" — kas grubu başına 2 hareket):
+      // aynı `key` artık İKİ satırda tekrarlanabildiği için `slot` (0/1) eklendi, ikisini
+      // ayırt etmek için — yoksa set kaydetme ikisini birden etkilerdi.
+      const m = line.match(/\[key:(\w+)\]\s*\[slot:(\d+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]\s*\[setsDone:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
       const checkedMatch = line.match(/^\s*[*\-]\s+\[([ xX])\]/);
       if (m && checkedMatch) {
         const meta = EXERCISE_META.find(e => e.key === m[1]);
-        const sets = parseInt(m[2], 10);
+        const sets = parseInt(m[3], 10);
         quest.push({
-          label: m[6].trim() || (meta ? meta.label : m[1]),
+          label: m[7].trim() || (meta ? meta.label : m[1]),
           key: m[1] as ExerciseKey,
+          slot: parseInt(m[2], 10),
           sets,
-          reps: parseInt(m[3], 10),
-          setsDone: Math.min(parseInt(m[4], 10), sets),
-          group: m[5] as MuscleGroup
+          reps: parseInt(m[4], 10),
+          setsDone: Math.min(parseInt(m[5], 10), sets),
+          group: m[6] as MuscleGroup
         });
       }
     });
@@ -246,7 +262,7 @@ function serializeHunterState(s: HunterState): string {
   // Satırın görünen metni SADECE bilgi amaçlı (kullanıcı notu ham olarak açarsa okunabilir
   // olsun diye) — geri okunurken KULLANILMIYOR (bkz. parseHunterState'teki uyarı), bu yüzden
   // burada güvenle sabit/temiz kalabilir, her kaydette büyümez.
-  const questLines = s.quest.map(q => `- [${isQuestDone(q) ? 'x' : ' '}] ${q.label} — ${q.sets}x${q.reps} (${q.setsDone}/${q.sets} set) [key:${q.key}] [sets:${q.sets}] [reps:${q.reps}] [setsDone:${q.setsDone}] [group:${q.group}] [variant:${q.label}]`).join('\n');
+  const questLines = s.quest.map(q => `- [${isQuestDone(q) ? 'x' : ' '}] ${q.label} — ${q.sets}x${q.reps} (${q.setsDone}/${q.sets} set) [key:${q.key}] [slot:${q.slot}] [sets:${q.sets}] [reps:${q.reps}] [setsDone:${q.setsDone}] [group:${q.group}] [variant:${q.label}]`).join('\n');
   const splitName = s.lastDate ? splitDayForDate(s.lastDate).name : '';
   const questSection = `\n## Günlük Görev — ${s.lastDate} — ${splitName}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
   const historyLines = s.history.slice(0, 60).map(h => `- ${h.date}: ${h.text} [xpDelta:${h.xpDelta}]`).join('\n');
@@ -488,11 +504,11 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
   // her SET ayrı ayrı kaydediliyor. `logSet` bir set daha işler (setsDone+1, sets'i aşmaz);
   // `undoSet` yanlışlıkla ileri gidilirse geri alır (sadece gün henüz kapanmadıysa — kapandıktan
   // sonra XP/streak zaten işlendiği için geri almak karmaşık bir tersine işlem gerektirir).
-  const logSet = async (key: ExerciseKey) => {
+  const logSet = async (id: string) => {
     if (busy || needsRollover) return;
     setBusy(true);
     try {
-      const updatedQuest = state.quest.map(q => q.key === key && q.setsDone < q.sets ? { ...q, setsDone: q.setsDone + 1 } : q);
+      const updatedQuest = state.quest.map(q => questItemId(q) === id && q.setsDone < q.sets ? { ...q, setsDone: q.setsDone + 1 } : q);
       const allDone = updatedQuest.length > 0 && updatedQuest.every(isQuestDone);
       const justCompleted = allDone && state.lastStatus !== 'completed';
 
@@ -533,11 +549,11 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
   };
 
-  const undoSet = async (key: ExerciseKey) => {
+  const undoSet = async (id: string) => {
     if (busy || needsRollover || state.lastStatus === 'completed') return;
     setBusy(true);
     try {
-      const updatedQuest = state.quest.map(q => q.key === key && q.setsDone > 0 ? { ...q, setsDone: q.setsDone - 1 } : q);
+      const updatedQuest = state.quest.map(q => questItemId(q) === id && q.setsDone > 0 ? { ...q, setsDone: q.setsDone - 1 } : q);
       await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, quest: updatedQuest }));
     } finally {
       setBusy(false);
@@ -760,7 +776,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                   const done = isQuestDone(q);
                   return (
                     <div
-                      key={q.key}
+                      key={questItemId(q)}
                       style={{
                         display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px 12px', borderRadius: '8px',
                         background: done ? `${rankColor}1a` : 'rgba(255,255,255,0.03)',
@@ -791,12 +807,12 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                         <div style={{ flex: 1 }} />
                         {q.setsDone > 0 && state.lastStatus !== 'completed' && (
                           <button
-                            type="button" disabled={busy} onClick={() => undoSet(q.key)} title="Son seti geri al"
+                            type="button" disabled={busy} onClick={() => undoSet(questItemId(q))} title="Son seti geri al"
                             style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#94a3b8', fontSize: '11px', padding: '5px 7px', cursor: busy ? 'wait' : 'pointer' }}
                           >↺</button>
                         )}
                         <button
-                          type="button" disabled={busy || done} onClick={() => logSet(q.key)}
+                          type="button" disabled={busy || done} onClick={() => logSet(questItemId(q))}
                           style={{
                             background: done ? 'rgba(34,197,94,0.15)' : rankColor, border: 'none', borderRadius: '6px',
                             color: done ? '#22c55e' : '#0a0a0a', fontSize: '11px', fontWeight: 800, padding: '5px 10px',
