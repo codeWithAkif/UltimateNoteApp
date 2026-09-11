@@ -129,6 +129,22 @@ const SPLIT_DAYS: { name: string; keys: ExerciseKey[] }[] = [
 ];
 const splitDayForDate = (dateStr: string) => SPLIT_DAYS[dayOfYear(new Date(`${dateStr}T00:00:00`)) % SPLIT_DAYS.length];
 
+// İSTEK (kullanıcı: Huawei Watch GT6'da "Güç / Fonksiyonel Antrenman / CrossFit" modları var,
+// "her antremanın yanına yazar mısın ve bir antrenman planı çıkartırsan daha etkili olur...
+// bir program gibi olsa"): her egzersiz hangi saat moduyla takip edilmeli, buna göre etiketleniyor
+// VE günün görev listesi bu moda göre GRUPLANIP art arda bir "program" haline getiriliyor —
+// böylece kullanıcı saatte modu BİR KERE seçip o bloğu bitirene kadar mod değiştirmeden devam
+// edebiliyor (Güç → Fonksiyonel → CrossFit sırasıyla: ağır/bileşik hareketler tazeyken, kardiyo
+// finişer en sona).
+type WatchMode = 'Güç' | 'Fonksiyonel' | 'CrossFit';
+const WATCH_MODE: Record<ExerciseKey, WatchMode> = {
+  pushups: 'Güç', dumbbell: 'Güç', shoulders: 'Güç', squats: 'Güç',
+  back: 'Fonksiyonel', situps: 'Fonksiyonel',
+  cardio: 'CrossFit'
+};
+const WATCH_MODE_ICON: Record<WatchMode, string> = { 'Güç': '⚡', 'Fonksiyonel': '🧩', 'CrossFit': '🔥' };
+const WATCH_MODE_ORDER: WatchMode[] = ['Güç', 'Fonksiyonel', 'CrossFit'];
+
 const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string): DailyQuestItem[] => {
   const mult = PENALTY_MULTIPLIERS[Math.min(penaltyLevel, PENALTY_MULTIPLIERS.length - 1)];
   const dIdx = dayOfYear(new Date(`${dateStr}T00:00:00`));
@@ -572,6 +588,21 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
   const progressPercent = state.quest.length > 0 ? Math.round((completedCount / state.quest.length) * 100) : 0;
   const todaySplit = state.lastDate ? splitDayForDate(state.lastDate) : SPLIT_DAYS[0];
 
+  // Günün görevini saat moduna göre GRUPLAYIP sıralı bir "program" haline getiriyor (Güç →
+  // Fonksiyonel → CrossFit) — her blok başında hangi saat modunun seçileceği yazıyor, blok
+  // içindeki adımlar numaralandırılıyor.
+  const programRows = useMemo(() => {
+    const rows: ({ type: 'header'; mode: WatchMode } | { type: 'item'; q: DailyQuestItem; step: number })[] = [];
+    let step = 0;
+    WATCH_MODE_ORDER.forEach(mode => {
+      const items = state.quest.filter(q => WATCH_MODE[q.key] === mode);
+      if (items.length === 0) return;
+      rows.push({ type: 'header', mode });
+      items.forEach(q => { step++; rows.push({ type: 'item', q, step }); });
+    });
+    return rows;
+  }, [state.quest]);
+
   // İSTEK (kullanıcı: "günlük haftalık tutuyor musun, grafikler olacak mı gidişatı takip
   // için"): geçmiş kaydından (zaten var olan `history`) GÜNE göre XP toplamı ve başarı/
   // kaçırma durumu çıkarılır — ayrı bir istatistik deposu icat edilmiyor, her şey aynı
@@ -710,7 +741,22 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                 <div style={{ width: '100%', height: '5px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
                   <div style={{ width: `${progressPercent}%`, height: '100%', background: rankColor, transition: 'width 0.4s ease' }} />
                 </div>
-                {state.quest.map(q => {
+                {programRows.map((row, idx) => {
+                  if (row.type === 'header') {
+                    return (
+                      <div key={`h-${row.mode}`} style={{
+                        display: 'flex', alignItems: 'center', gap: '6px', marginTop: idx > 0 ? '4px' : 0,
+                        padding: '6px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)',
+                        border: '1px dashed rgba(255,255,255,0.15)'
+                      }}>
+                        <span style={{ fontSize: '12px' }}>{WATCH_MODE_ICON[row.mode]}</span>
+                        <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#94a3b8', fontFamily: 'monospace', letterSpacing: '0.3px' }}>
+                          SAATTE "{row.mode.toUpperCase()}" MODUNU SEÇ
+                        </span>
+                      </div>
+                    );
+                  }
+                  const q = row.q;
                   const done = isQuestDone(q);
                   return (
                     <div
@@ -723,6 +769,11 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{
+                          width: '18px', height: '18px', borderRadius: '50%', background: 'rgba(255,255,255,0.06)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 800,
+                          color: '#64748b', fontFamily: 'monospace', flexShrink: 0
+                        }}>{row.step}</span>
                         <span style={{ flex: 1, fontSize: '12.5px', fontWeight: done ? 700 : 500, textDecoration: done ? 'line-through' : 'none', color: done ? '#94a3b8' : '#e2e8f0' }}>{q.label}</span>
                         <span style={{ fontSize: '11.5px', fontFamily: 'monospace', color: rankColor, fontWeight: 700 }}>{q.sets}×{q.reps}</span>
                       </div>
