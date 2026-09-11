@@ -40,17 +40,6 @@ const RANK_TITLE: Record<Rank, string> = {
   S: 'S-Rank Hunter'
 };
 
-// Rank'e göre GÜNLÜK görev hedefleri (tekrar sayısı) — kullanıcı isterse sonradan
-// ayarlanabilir hale getirilir, şimdilik makul bir ilerleme eğrisi.
-const BASE_QUEST: Record<Rank, { pushups: number; situps: number; squats: number; dumbbell: number }> = {
-  E: { pushups: 20, situps: 20, squats: 20, dumbbell: 15 },
-  D: { pushups: 40, situps: 40, squats: 40, dumbbell: 25 },
-  C: { pushups: 60, situps: 60, squats: 60, dumbbell: 35 },
-  B: { pushups: 80, situps: 80, squats: 80, dumbbell: 45 },
-  A: { pushups: 100, situps: 100, squats: 100, dumbbell: 60 },
-  S: { pushups: 150, situps: 150, squats: 150, dumbbell: 80 }
-};
-
 const XP_REWARD = 50;
 const XP_MISS_PENALTY = 30;
 const XP_PENALTY_FAIL = 50;
@@ -58,7 +47,18 @@ const XP_PENALTY_FAIL = 50;
 // 3x'te tavan yapar (sonsuz zorlaşmasın diye) — bir tanesini bitirince 1x'e (normale) döner.
 const PENALTY_MULTIPLIERS = [1, 1.5, 2, 2.5, 3];
 
-interface DailyQuestItem { key: 'pushups' | 'situps' | 'squats' | 'dumbbell'; label: string; group: 'chest' | 'abs' | 'legs' | 'arms'; target: number; done: boolean; }
+type ExerciseKey = 'pushups' | 'situps' | 'squats' | 'dumbbell' | 'back' | 'shoulders' | 'cardio';
+type MuscleGroup = 'chest' | 'abs' | 'legs' | 'arms' | 'back' | 'shoulders' | 'cardio';
+
+// İSTEK (kullanıcı: "gerçek spor eğitimi gibi çeşitlilik ve set/tekrar istiyorum, önce
+// konuşalım"): konuşma sonucu netleşen 3 karar — (1) gün bazlı SPLIT (her gün aynı 4 grup
+// değil, Push/Pull&Core/Leg/Full-Body dönüşümlü), (2) SET x TEKRAR modeli (tek toplam sayı
+// değil, her hareket için ayrı ayrı işaretlenen set sayısı), (3) Sırt + Omuz + Kardiyo
+// gruplarının eklenmesi. Her egzersiz artık `sets`/`reps`/`setsDone` taşıyor; tamamlanma
+// setsDone >= sets olduğunda gerçekleşiyor (bkz. isQuestDone).
+interface DailyQuestItem { key: ExerciseKey; label: string; group: MuscleGroup; sets: number; reps: number; setsDone: number; }
+const isQuestDone = (q: DailyQuestItem) => q.setsDone >= q.sets;
+
 interface HunterState {
   rank: Rank;
   xp: number;
@@ -72,11 +72,14 @@ interface HunterState {
   shadows: string[]; // 7 günlük seri kilometre taşlarında kazanılan "gölgeler"
 }
 
-const EXERCISE_META: { key: DailyQuestItem['key']; label: string; group: DailyQuestItem['group'] }[] = [
+const EXERCISE_META: { key: ExerciseKey; label: string; group: MuscleGroup }[] = [
   { key: 'pushups', label: 'Şınav', group: 'chest' },
   { key: 'situps', label: 'Mekik', group: 'abs' },
   { key: 'squats', label: 'Squat', group: 'legs' },
-  { key: 'dumbbell', label: 'Dambıl Hareketi (2x5kg)', group: 'arms' }
+  { key: 'dumbbell', label: 'Dambıl Curl', group: 'arms' },
+  { key: 'back', label: 'Süperman', group: 'back' },
+  { key: 'shoulders', label: 'Dambıl Shoulder Press', group: 'shoulders' },
+  { key: 'cardio', label: 'Jumping Jack', group: 'cardio' }
 ];
 
 const SHADOW_NAMES = ['Igris', 'Iron', 'Tank', 'Beru', 'Greed', 'Tusk', 'Kaisel', 'Bellion'];
@@ -88,29 +91,55 @@ const dayOfYear = (d = new Date()) => {
   return Math.floor((d.getTime() - start.getTime()) / 86400000);
 };
 
-// İSTEK (kullanıcı: "çeşitlilik kattın mı") — her slot (şınav/mekik/squat/dambıl) için sabit
-// TEK bir hareket yerine küçük bir HAVUZ tanımlanır; gün değiştikçe (dayOfYear'a göre,
-// deterministik — aynı gün her zaman aynı seçimi verir) havuzdan sırayla bir tanesi seçilir.
-// Böylece hafta boyunca aynı kas grubu çalışılır ama tekdüzelik olmaz.
-const EXERCISE_POOL: Record<DailyQuestItem['key'], string[]> = {
+// Her slot için küçük bir HAVUZ — gün değiştikçe (dayOfYear'a göre, deterministik) havuzdan
+// sırayla bir tanesi seçilir. Böylece aynı kas grubu çalışılır ama hareket tekdüze kalmaz.
+const EXERCISE_POOL: Record<ExerciseKey, string[]> = {
   pushups: ['Şınav', 'Elmas Şınav', 'Geniş Şınav', 'Eğik Şınav'],
   situps: ['Mekik', 'Bisiklet Mekik', 'Plank (sn)', 'V-Up'],
   squats: ['Squat', 'Jump Squat', 'Lunge (bacak başına)', 'Bulgar Squat'],
-  dumbbell: ['Dambıl Curl', 'Dambıl Shoulder Press', 'Dambıl Row', 'Dambıl Lateral Raise']
+  dumbbell: ['Dambıl Curl', 'Konsantrasyon Curl', 'Triceps Extension', 'Çekiç Curl'],
+  back: ['Süperman', 'Dambıl Eğik Kürek (Row)', 'Ters Kelebek (Reverse Fly)', 'Kar Meleği (Snow Angel)'],
+  shoulders: ['Dambıl Shoulder Press', 'Yana Açma (Lateral Raise)', 'Öne Açma (Front Raise)', 'Pike Push-up'],
+  cardio: ['Jumping Jack', 'Mountain Climber', 'Burpee', 'Yüksek Diz (High Knees)']
 };
 
-const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string) => {
-  const base = BASE_QUEST[rank];
+// Rank'e göre set sayısı — gerçek antrenman mantığı: rank yükseldikçe hacim (set sayısı)
+// da artıyor, sadece tekrar sayısı değil.
+const SETS_BY_RANK: Record<Rank, number> = { E: 2, D: 3, C: 3, B: 4, A: 4, S: 5 };
+
+// Rank'e göre SET BAŞINA tekrar hedefi (kaçırma/Penalty çarpanı buna uygulanır).
+const REPS_BASE: Record<ExerciseKey, Record<Rank, number>> = {
+  pushups: { E: 8, D: 10, C: 12, B: 14, A: 16, S: 20 },
+  situps: { E: 10, D: 12, C: 15, B: 18, A: 20, S: 25 },
+  squats: { E: 12, D: 15, C: 18, B: 20, A: 25, S: 30 },
+  dumbbell: { E: 8, D: 10, C: 12, B: 14, A: 16, S: 20 },
+  back: { E: 8, D: 10, C: 12, B: 14, A: 16, S: 20 },
+  shoulders: { E: 8, D: 10, C: 12, B: 14, A: 16, S: 18 },
+  cardio: { E: 15, D: 20, C: 25, B: 30, A: 35, S: 45 }
+};
+
+// İSTEK (kullanıcı: "sadece düz şınav mekik hep aynı gruba hitap etmez mi" — konuşma sonrası
+// karar: gün bazlı split): her gün AYNI 4 grup yerine, 4 günlük dönüşümlü bir program —
+// kas toparlanma süresine (48 saat) saygılı, gerçek spor salonu mantığına yakın.
+const SPLIT_DAYS: { name: string; keys: ExerciseKey[] }[] = [
+  { name: 'Push Günü — Göğüs · Omuz · Kol', keys: ['pushups', 'shoulders', 'dumbbell'] },
+  { name: 'Pull & Core Günü — Sırt · Karın', keys: ['back', 'situps'] },
+  { name: 'Bacak Günü — Bacak · Kondisyon', keys: ['squats', 'cardio'] },
+  { name: 'Full-Body & Kondisyon Günü', keys: ['pushups', 'squats', 'situps', 'cardio'] }
+];
+const splitDayForDate = (dateStr: string) => SPLIT_DAYS[dayOfYear(new Date(`${dateStr}T00:00:00`)) % SPLIT_DAYS.length];
+
+const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string): DailyQuestItem[] => {
   const mult = PENALTY_MULTIPLIERS[Math.min(penaltyLevel, PENALTY_MULTIPLIERS.length - 1)];
   const dIdx = dayOfYear(new Date(`${dateStr}T00:00:00`));
-  return EXERCISE_META.map(m => {
-    const pool = EXERCISE_POOL[m.key];
+  const sets = SETS_BY_RANK[rank];
+  const split = splitDayForDate(dateStr);
+  return split.keys.map(key => {
+    const meta = EXERCISE_META.find(m => m.key === key)!;
+    const pool = EXERCISE_POOL[key];
     const variant = pool[dIdx % pool.length];
-    return {
-      key: m.key, label: variant, group: m.group,
-      target: Math.round((base as any)[m.key] * mult),
-      done: false
-    };
+    const reps = Math.max(1, Math.round(REPS_BASE[key][rank] * mult));
+    return { key, label: variant, group: meta.group, sets, reps, setsDone: 0 };
   });
 };
 
@@ -155,16 +184,20 @@ function parseHunterState(content: string): HunterState {
       // DEĞİL, ayrı ve TEK amaçlı bir [variant:...] etiketinden okunur (yukarıdaki "serbest
       // metni asla geri okuma" kuralı hâlâ geçerli — variant SADECE bu tag'den gelir, satırın
       // görünen kısmından değil).
-      const m = line.match(/\[key:(\w+)\]\s*\[target:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
+      // İSTEK (kullanıcı: "set ve tekrar de artırırsan" — set×tekrar modeline geçiş):
+      // `target` tek toplam sayı yerine `sets`/`reps`/`setsDone` üçlüsüne ayrıldı.
+      const m = line.match(/\[key:(\w+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]\s*\[setsDone:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
       const checkedMatch = line.match(/^\s*[*\-]\s+\[([ xX])\]/);
       if (m && checkedMatch) {
         const meta = EXERCISE_META.find(e => e.key === m[1]);
+        const sets = parseInt(m[2], 10);
         quest.push({
-          done: checkedMatch[1].toLowerCase() === 'x',
-          label: m[4].trim() || (meta ? meta.label : m[1]),
-          key: m[1] as DailyQuestItem['key'],
-          target: parseInt(m[2], 10),
-          group: m[3] as DailyQuestItem['group']
+          label: m[6].trim() || (meta ? meta.label : m[1]),
+          key: m[1] as ExerciseKey,
+          sets,
+          reps: parseInt(m[3], 10),
+          setsDone: Math.min(parseInt(m[4], 10), sets),
+          group: m[5] as MuscleGroup
         });
       }
     });
@@ -197,8 +230,9 @@ function serializeHunterState(s: HunterState): string {
   // Satırın görünen metni SADECE bilgi amaçlı (kullanıcı notu ham olarak açarsa okunabilir
   // olsun diye) — geri okunurken KULLANILMIYOR (bkz. parseHunterState'teki uyarı), bu yüzden
   // burada güvenle sabit/temiz kalabilir, her kaydette büyümez.
-  const questLines = s.quest.map(q => `- [${q.done ? 'x' : ' '}] ${q.label} [key:${q.key}] [target:${q.target}] [group:${q.group}] [variant:${q.label}]`).join('\n');
-  const questSection = `\n## Günlük Görev — ${s.lastDate}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
+  const questLines = s.quest.map(q => `- [${isQuestDone(q) ? 'x' : ' '}] ${q.label} — ${q.sets}x${q.reps} (${q.setsDone}/${q.sets} set) [key:${q.key}] [sets:${q.sets}] [reps:${q.reps}] [setsDone:${q.setsDone}] [group:${q.group}] [variant:${q.label}]`).join('\n');
+  const splitName = s.lastDate ? splitDayForDate(s.lastDate).name : '';
+  const questSection = `\n## Günlük Görev — ${s.lastDate} — ${splitName}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
   const historyLines = s.history.slice(0, 60).map(h => `- ${h.date}: ${h.text} [xpDelta:${h.xpDelta}]`).join('\n');
   const historySection = `\n## Geçmiş\n${historyLines}\n`;
   const shadowLines = s.shadows.map(sh => `- ${sh}`).join('\n');
@@ -236,11 +270,10 @@ const RankHexagon: React.FC<{ rank: Rank; size?: number }> = ({ rank, size = 96 
 // (E→S) vücut kademeli olarak daha kaslı/karmaşık bir siluete evriliyor: omuzlar
 // genişliyor, bel daralıyor (V-taper), abs satırları artıyor, biceps/trap/damar
 // detay çizgileri ekleniyor, S-Rank'te aura + omuz zırhı beliriyor.
-const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], boolean>; rankColor: string; rank: Rank }> = ({ status, rankColor, rank }) => {
-  const fillFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.12)';
-  const strokeFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.4)';
-  const lineFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.35)';
-  const glow = (group: DailyQuestItem['group']) => status[group] ? { filter: 'url(#bodyGlow)' } : {};
+const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankColor: string; rank: Rank }> = ({ status, rankColor, rank }) => {
+  const fillFor = (group: MuscleGroup) => status[group] ? rankColor : 'rgba(148,163,184,0.12)';
+  const strokeFor = (group: MuscleGroup) => status[group] ? rankColor : 'rgba(148,163,184,0.4)';
+  const glow = (group: MuscleGroup) => status[group] ? { filter: 'url(#bodyGlow)' } : {};
 
   const rankIdx = RANK_ORDER.indexOf(rank); // 0 (E) .. 5 (S)
   const t = rankIdx / (RANK_ORDER.length - 1); // 0..1 evrim oranı
@@ -276,11 +309,11 @@ const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], bool
         <ellipse cx="75" cy="130" rx="68" ry="122" fill="none" stroke={rankColor} strokeWidth="1.2" opacity="0.35" filter="url(#auraGlow)" />
       )}
 
-      {/* Trapez (üst sırt/boyun kası) — orta-üst rank'ten itibaren görünür */}
+      {/* Trapez (üst sırt kası) — Sırt günü tamamlandığında dolup parlıyor, orta rank'ten itibaren görünür */}
       {showTraps && (
         <path
           d={`M${75 - neckW - 6} 40 L${75 - shoulderW + 6} 50 L${75 - neckW} 46 Z M${75 + neckW + 6} 40 L${75 + shoulderW - 6} 50 L${75 + neckW} 46 Z`}
-          fill={lineFor('chest')} opacity="0.55"
+          fill={fillFor('back')} stroke={strokeFor('back')} strokeWidth="0.8" opacity="0.85" style={glow('back')}
         />
       )}
 
@@ -289,11 +322,11 @@ const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], bool
       {/* Boyun */}
       <rect x={75 - neckW} y="36" width={neckW * 2} height="10" fill="rgba(148,163,184,0.1)" />
 
-      {/* Omuz kapağı (deltoid) — orta rank'ten itibaren ayrı bir vurgu */}
+      {/* Omuz kapağı (deltoid) — Omuz günü tamamlandığında dolup parlıyor, orta rank'ten itibaren ayrı bir vurgu */}
       {showDeltCaps && (
         <>
-          <circle cx={75 - shoulderW + 6} cy="52" r={6 + 3 * t} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1" opacity="0.9" style={glow('chest')} />
-          <circle cx={75 + shoulderW - 6} cy="52" r={6 + 3 * t} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1" opacity="0.9" style={glow('chest')} />
+          <circle cx={75 - shoulderW + 6} cy="52" r={6 + 3 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" opacity="0.9" style={glow('shoulders')} />
+          <circle cx={75 + shoulderW - 6} cy="52" r={6 + 3 * t} fill={fillFor('shoulders')} stroke={strokeFor('shoulders')} strokeWidth="1" opacity="0.9" style={glow('shoulders')} />
         </>
       )}
 
@@ -336,6 +369,13 @@ const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], bool
           <line x1={75 + waistW - 8} y1="145" x2={75 + waistW - 8} y2="210" stroke="rgba(2,6,23,0.35)" strokeWidth="1" />
         </>
       )}
+
+      {/* Kardiyo/kondisyon rozeti — göğüs üzerinde küçük bir yıldırım ikonu, kardiyo
+          tamamlandığında dolup parlıyor (kardiyo için ayrı bir kas bölgesi olmadığından). */}
+      <path
+        d="M76 58 L69 74 L75 74 L72 90 L83 70 L76 70 Z"
+        fill={fillFor('cardio')} stroke={strokeFor('cardio')} strokeWidth="1" opacity="0.95" style={glow('cardio')}
+      />
 
       {/* S-Rank omuz zırhı rozeti */}
       {showAura && (
@@ -415,12 +455,16 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
   };
 
-  const toggleExercise = async (key: DailyQuestItem['key']) => {
+  // İSTEK (kullanıcı: "set×tekrar" modeli — konuşma sonrası karar): tek bir checkbox yerine
+  // her SET ayrı ayrı kaydediliyor. `logSet` bir set daha işler (setsDone+1, sets'i aşmaz);
+  // `undoSet` yanlışlıkla ileri gidilirse geri alır (sadece gün henüz kapanmadıysa — kapandıktan
+  // sonra XP/streak zaten işlendiği için geri almak karmaşık bir tersine işlem gerektirir).
+  const logSet = async (key: ExerciseKey) => {
     if (busy || needsRollover) return;
     setBusy(true);
     try {
-      const updatedQuest = state.quest.map(q => q.key === key ? { ...q, done: !q.done } : q);
-      const allDone = updatedQuest.length > 0 && updatedQuest.every(q => q.done);
+      const updatedQuest = state.quest.map(q => q.key === key && q.setsDone < q.sets ? { ...q, setsDone: q.setsDone + 1 } : q);
+      const allDone = updatedQuest.length > 0 && updatedQuest.every(isQuestDone);
       const justCompleted = allDone && state.lastStatus !== 'completed';
 
       let newXp = state.xp;
@@ -460,14 +504,28 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
   };
 
+  const undoSet = async (key: ExerciseKey) => {
+    if (busy || needsRollover || state.lastStatus === 'completed') return;
+    setBusy(true);
+    try {
+      const updatedQuest = state.quest.map(q => q.key === key && q.setsDone > 0 ? { ...q, setsDone: q.setsDone - 1 } : q);
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, quest: updatedQuest }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const enterDungeon = () => {
     setDungeonDone({});
     setDungeonMode(true);
   };
 
+  // Yükselme Zindanı: tüm 7 egzersizden oluşan tek oturuşluk bir gauntlet — günlük split'ten
+  // BAĞIMSIZ (o gün hangi split olursa olsun tüm gruplar test edilir), normal set×tekrar
+  // hacminin ~3 katı toplam tekrar hedefiyle.
   const dungeonTargets = useMemo(() => {
-    const base = BASE_QUEST[state.rank];
-    return EXERCISE_META.map(m => ({ ...m, target: Math.round((base as any)[m.key] * 3) }));
+    const sets = SETS_BY_RANK[state.rank];
+    return EXERCISE_META.map(m => ({ ...m, target: Math.round(REPS_BASE[m.key][state.rank] * sets * 3) }));
   }, [state.rank]);
 
   const finishDungeon = async () => {
@@ -494,11 +552,12 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
   };
 
-  const groupStatus: Record<DailyQuestItem['group'], boolean> = { chest: false, abs: false, legs: false, arms: false };
-  state.quest.forEach(q => { if (q.done) groupStatus[q.group] = true; });
+  const groupStatus: Record<MuscleGroup, boolean> = { chest: false, abs: false, legs: false, arms: false, back: false, shoulders: false, cardio: false };
+  state.quest.forEach(q => { if (isQuestDone(q)) groupStatus[q.group] = true; });
   const rankColor = RANK_COLOR[state.rank];
-  const completedCount = state.quest.filter(q => q.done).length;
+  const completedCount = state.quest.filter(isQuestDone).length;
   const progressPercent = state.quest.length > 0 ? Math.round((completedCount / state.quest.length) * 100) : 0;
+  const todaySplit = state.lastDate ? splitDayForDate(state.lastDate) : SPLIT_DAYS[0];
 
   // İSTEK (kullanıcı: "günlük haftalık tutuyor musun, grafikler olacak mı gidişatı takip
   // için"): geçmiş kaydından (zaten var olan `history`) GÜNE göre XP toplamı ve başarı/
@@ -634,24 +693,58 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                   </span>
                   {state.lastStatus === 'completed' && <span style={{ fontSize: '10.5px', color: '#22c55e', fontWeight: 700 }}>✅ Bugün bitti</span>}
                 </div>
+                <div style={{ fontSize: '10.5px', color: rankColor, fontFamily: 'monospace', fontWeight: 700 }}>📅 {todaySplit.name}</div>
                 <div style={{ width: '100%', height: '5px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
                   <div style={{ width: `${progressPercent}%`, height: '100%', background: rankColor, transition: 'width 0.4s ease' }} />
                 </div>
-                {state.quest.map(q => (
-                  <label
-                    key={q.key}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '8px', cursor: busy ? 'wait' : 'pointer',
-                      background: q.done ? `${rankColor}1a` : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${q.done ? rankColor : 'rgba(255,255,255,0.08)'}`,
-                      opacity: busy ? 0.6 : 1
-                    }}
-                  >
-                    <input type="checkbox" checked={q.done} disabled={busy} onChange={() => toggleExercise(q.key)} style={{ width: '16px', height: '16px', accentColor: rankColor }} />
-                    <span style={{ flex: 1, fontSize: '12.5px', fontWeight: q.done ? 700 : 500, textDecoration: q.done ? 'line-through' : 'none', color: q.done ? '#94a3b8' : '#e2e8f0' }}>{q.label}</span>
-                    <span style={{ fontSize: '12.5px', fontFamily: 'monospace', color: rankColor, fontWeight: 700 }}>{q.target}</span>
-                  </label>
-                ))}
+                {state.quest.map(q => {
+                  const done = isQuestDone(q);
+                  return (
+                    <div
+                      key={q.key}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px 12px', borderRadius: '8px',
+                        background: done ? `${rankColor}1a` : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${done ? rankColor : 'rgba(255,255,255,0.08)'}`,
+                        opacity: busy ? 0.7 : 1
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ flex: 1, fontSize: '12.5px', fontWeight: done ? 700 : 500, textDecoration: done ? 'line-through' : 'none', color: done ? '#94a3b8' : '#e2e8f0' }}>{q.label}</span>
+                        <span style={{ fontSize: '11.5px', fontFamily: 'monospace', color: rankColor, fontWeight: 700 }}>{q.sets}×{q.reps}</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          {Array.from({ length: q.sets }).map((_, i) => (
+                            <div key={i} style={{
+                              width: '11px', height: '11px', borderRadius: '50%',
+                              background: i < q.setsDone ? rankColor : 'transparent',
+                              border: `1.5px solid ${i < q.setsDone ? rankColor : 'rgba(255,255,255,0.25)'}`
+                            }} />
+                          ))}
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>{q.setsDone}/{q.sets} set</span>
+                        <div style={{ flex: 1 }} />
+                        {q.setsDone > 0 && state.lastStatus !== 'completed' && (
+                          <button
+                            type="button" disabled={busy} onClick={() => undoSet(q.key)} title="Son seti geri al"
+                            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#94a3b8', fontSize: '11px', padding: '5px 7px', cursor: busy ? 'wait' : 'pointer' }}
+                          >↺</button>
+                        )}
+                        <button
+                          type="button" disabled={busy || done} onClick={() => logSet(q.key)}
+                          style={{
+                            background: done ? 'rgba(34,197,94,0.15)' : rankColor, border: 'none', borderRadius: '6px',
+                            color: done ? '#22c55e' : '#0a0a0a', fontSize: '11px', fontWeight: 800, padding: '5px 10px',
+                            cursor: busy || done ? 'default' : 'pointer', fontFamily: 'monospace'
+                          }}
+                        >
+                          {done ? '✓ Bitti' : `Set Tamamla (${q.reps})`}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
                 <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'right', fontFamily: 'monospace' }}>Tamamlarsan +{XP_REWARD} XP</div>
               </div>
             </div>
