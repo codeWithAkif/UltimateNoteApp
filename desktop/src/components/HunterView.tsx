@@ -83,15 +83,35 @@ const SHADOW_NAMES = ['Igris', 'Iron', 'Tank', 'Beru', 'Greed', 'Tusk', 'Kaisel'
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const dayOfYear = (d = new Date()) => {
+  const start = new Date(d.getFullYear(), 0, 0);
+  return Math.floor((d.getTime() - start.getTime()) / 86400000);
+};
 
-const questTargets = (rank: Rank, penaltyLevel: number) => {
+// İSTEK (kullanıcı: "çeşitlilik kattın mı") — her slot (şınav/mekik/squat/dambıl) için sabit
+// TEK bir hareket yerine küçük bir HAVUZ tanımlanır; gün değiştikçe (dayOfYear'a göre,
+// deterministik — aynı gün her zaman aynı seçimi verir) havuzdan sırayla bir tanesi seçilir.
+// Böylece hafta boyunca aynı kas grubu çalışılır ama tekdüzelik olmaz.
+const EXERCISE_POOL: Record<DailyQuestItem['key'], string[]> = {
+  pushups: ['Şınav', 'Elmas Şınav', 'Geniş Şınav', 'Eğik Şınav'],
+  situps: ['Mekik', 'Bisiklet Mekik', 'Plank (sn)', 'V-Up'],
+  squats: ['Squat', 'Jump Squat', 'Lunge (bacak başına)', 'Bulgar Squat'],
+  dumbbell: ['Dambıl Curl', 'Dambıl Shoulder Press', 'Dambıl Row', 'Dambıl Lateral Raise']
+};
+
+const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string) => {
   const base = BASE_QUEST[rank];
   const mult = PENALTY_MULTIPLIERS[Math.min(penaltyLevel, PENALTY_MULTIPLIERS.length - 1)];
-  return EXERCISE_META.map(m => ({
-    key: m.key, label: m.label, group: m.group,
-    target: Math.round((base as any)[m.key] * mult),
-    done: false
-  }));
+  const dIdx = dayOfYear(new Date(`${dateStr}T00:00:00`));
+  return EXERCISE_META.map(m => {
+    const pool = EXERCISE_POOL[m.key];
+    const variant = pool[dIdx % pool.length];
+    return {
+      key: m.key, label: variant, group: m.group,
+      target: Math.round((base as any)[m.key] * mult),
+      done: false
+    };
+  });
 };
 
 // ============================================================================
@@ -130,13 +150,18 @@ function parseHunterState(content: string): HunterState {
       // sebep). `key` zaten hangi sabit egzersiz olduğunu tek başına belirlediği için, etiket
       // METNİ HER ZAMAN EXERCISE_META'dan türetilir — dosyadaki serbest metin tamamen
       // yok sayılır (varsa bile).
-      const m = line.match(/\[key:(\w+)\]\s*\[target:(\d+)\]\s*\[group:(\w+)\]/);
+      // İSTEK (kullanıcı: "çeşitlilik kattın mı"): her slot artık SABİT tek hareket değil,
+      // günlük dönen bir havuzdan seçiliyor — bu yüzden etiket metni artık EXERCISE_META'dan
+      // DEĞİL, ayrı ve TEK amaçlı bir [variant:...] etiketinden okunur (yukarıdaki "serbest
+      // metni asla geri okuma" kuralı hâlâ geçerli — variant SADECE bu tag'den gelir, satırın
+      // görünen kısmından değil).
+      const m = line.match(/\[key:(\w+)\]\s*\[target:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
       const checkedMatch = line.match(/^\s*[*\-]\s+\[([ xX])\]/);
       if (m && checkedMatch) {
         const meta = EXERCISE_META.find(e => e.key === m[1]);
         quest.push({
           done: checkedMatch[1].toLowerCase() === 'x',
-          label: meta ? meta.label : m[1],
+          label: m[4].trim() || (meta ? meta.label : m[1]),
           key: m[1] as DailyQuestItem['key'],
           target: parseInt(m[2], 10),
           group: m[3] as DailyQuestItem['group']
@@ -172,7 +197,7 @@ function serializeHunterState(s: HunterState): string {
   // Satırın görünen metni SADECE bilgi amaçlı (kullanıcı notu ham olarak açarsa okunabilir
   // olsun diye) — geri okunurken KULLANILMIYOR (bkz. parseHunterState'teki uyarı), bu yüzden
   // burada güvenle sabit/temiz kalabilir, her kaydette büyümez.
-  const questLines = s.quest.map(q => `- [${q.done ? 'x' : ' '}] ${q.label} [key:${q.key}] [target:${q.target}] [group:${q.group}]`).join('\n');
+  const questLines = s.quest.map(q => `- [${q.done ? 'x' : ' '}] ${q.label} [key:${q.key}] [target:${q.target}] [group:${q.group}] [variant:${q.label}]`).join('\n');
   const questSection = `\n## Günlük Görev — ${s.lastDate}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
   const historyLines = s.history.slice(0, 60).map(h => `- ${h.date}: ${h.text} [xpDelta:${h.xpDelta}]`).join('\n');
   const historySection = `\n## Geçmiş\n${historyLines}\n`;
@@ -259,7 +284,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       return {
         rank: 'E', xp: 0, penaltyLevel: 0, streak: 0, bestStreak: 0,
         lastDate: todayStr(), lastStatus: 'pending',
-        quest: questTargets('E', 0), history: [], shadows: []
+        quest: questTargets('E', 0, todayStr()), history: [], shadows: []
       };
     }
     const parsed = parseHunterState(rawContent);
@@ -301,7 +326,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         streak: newStreak,
         lastDate: todayStr(),
         lastStatus: 'pending',
-        quest: questTargets(state.rank, newPenaltyLevel),
+        quest: questTargets(state.rank, newPenaltyLevel, todayStr()),
         history: missed ? [historyEntry, ...state.history] : state.history
       };
       await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
@@ -379,7 +404,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         rank: nextRank,
         xp: 0,
         penaltyLevel: 0,
-        quest: questTargets(nextRank, 0),
+        quest: questTargets(nextRank, 0, todayStr()),
         history: [{ date: todayStr(), text: rankedUp ? `🌀 Yükselme Zindanı tamamlandı — ${nextRank}-Rank'e terfi!` : '🏆 Zaten en üst rank\'tesin', xpDelta: 0 }, ...state.history]
       };
       await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
@@ -394,6 +419,46 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
   const rankColor = RANK_COLOR[state.rank];
   const completedCount = state.quest.filter(q => q.done).length;
   const progressPercent = state.quest.length > 0 ? Math.round((completedCount / state.quest.length) * 100) : 0;
+
+  // İSTEK (kullanıcı: "günlük haftalık tutuyor musun, grafikler olacak mı gidişatı takip
+  // için"): geçmiş kaydından (zaten var olan `history`) GÜNE göre XP toplamı ve başarı/
+  // kaçırma durumu çıkarılır — ayrı bir istatistik deposu icat edilmiyor, her şey aynı
+  // Sistem/Hunter.md'den türetiliyor (uygulamanın geri kalanının felsefesiyle tutarlı).
+  const dailyAgg = useMemo(() => {
+    const map = new Map<string, { xp: number; success: boolean; fail: boolean }>();
+    state.history.forEach(h => {
+      const cur = map.get(h.date) || { xp: 0, success: false, fail: false };
+      cur.xp += h.xpDelta;
+      if (h.text.includes('✅') || h.text.includes('🔥')) cur.success = true;
+      if (h.text.includes('❌') || h.text.includes('⚠️')) cur.fail = true;
+      map.set(h.date, cur);
+    });
+    return map;
+  }, [state.history]);
+
+  const last7Days = useMemo(() => {
+    const days: { date: string; label: string; xp: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const ds = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      days.push({ date: ds, label: 'PSÇPCCP'[d.getDay() === 0 ? 6 : d.getDay() - 1], xp: dailyAgg.get(ds)?.xp ?? 0 });
+    }
+    return days;
+  }, [dailyAgg]);
+  const maxWeekXp = Math.max(50, ...last7Days.map(d => Math.abs(d.xp)));
+
+  const last30Days = useMemo(() => {
+    const days: { date: string; status: 'success' | 'fail' | 'none' }[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const ds = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const agg = dailyAgg.get(ds);
+      days.push({ date: ds, status: agg?.success ? 'success' : agg?.fail ? 'fail' : 'none' });
+    }
+    return days;
+  }, [dailyAgg]);
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '20px', background: 'radial-gradient(circle at 50% 0%, #0f1b2e 0%, #05070d 60%)', color: '#e2e8f0' }} className="custom-scroll">
@@ -528,6 +593,44 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
             )}
           </>
         )}
+
+        {/* İSTEK ("günlük haftalık tutuyor musun, grafikler olacak mı gidişatı takip için"):
+            haftalık XP grafiği + 30 günlük tutarlılık haritası (GitHub katkı grafiği stili) —
+            ikisi de mevcut `history` kaydından türetilir, ekstra bir depolama yok. */}
+        <div style={{ padding: '16px', borderRadius: '14px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div>
+            <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#64748b', fontFamily: 'monospace', marginBottom: '10px', letterSpacing: '0.5px' }}>📊 HAFTALIK XP</div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '70px' }}>
+              {last7Days.map(d => {
+                const heightPct = Math.max(4, Math.round((Math.abs(d.xp) / maxWeekXp) * 100));
+                const barColor = d.xp > 0 ? '#22c55e' : d.xp < 0 ? '#ef4444' : 'rgba(255,255,255,0.12)';
+                return (
+                  <div key={d.date} title={`${d.date}: ${d.xp >= 0 ? '+' : ''}${d.xp} XP`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', height: '100%', justifyContent: 'flex-end' }}>
+                    <span style={{ fontSize: '9px', color: '#64748b', fontFamily: 'monospace' }}>{d.xp !== 0 ? (d.xp > 0 ? `+${d.xp}` : d.xp) : ''}</span>
+                    <div style={{ width: '100%', height: `${heightPct}%`, minHeight: '3px', borderRadius: '3px', background: barColor, transition: 'height 0.3s ease' }} />
+                    <span style={{ fontSize: '9.5px', color: '#94a3b8', fontFamily: 'monospace' }}>{d.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#64748b', fontFamily: 'monospace', marginBottom: '10px', letterSpacing: '0.5px' }}>🗓️ SON 30 GÜN</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+              {last30Days.map(d => (
+                <div
+                  key={d.date}
+                  title={`${d.date}: ${d.status === 'success' ? 'Tamamlandı' : d.status === 'fail' ? 'Kaçırıldı' : 'Kayıt yok'}`}
+                  style={{
+                    width: '16px', height: '16px', borderRadius: '4px',
+                    background: d.status === 'success' ? '#22c55e' : d.status === 'fail' ? '#ef4444' : 'rgba(255,255,255,0.06)',
+                    border: d.status === 'none' ? '1px solid rgba(255,255,255,0.08)' : 'none'
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
 
         {/* Gölge Ordusu */}
         {state.shadows.length > 0 && (
