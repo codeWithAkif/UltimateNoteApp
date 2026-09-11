@@ -31,6 +31,7 @@ import LibraryView from './components/LibraryView';
 import EforView from './components/EforView';
 import DashboardView from './components/DashboardView';
 import CityBuilderView from './components/CityBuilderView';
+import HunterView from './components/HunterView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
@@ -60,7 +61,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -2771,6 +2772,11 @@ export default function App() {
     { id: 'library', label: 'Kütüphane', icon: Library },
     { id: 'finance', label: 'Finans', icon: Wallet },
     { id: 'efor', label: 'Efor', icon: Timer },
+    // İSTEK (kullanıcı: "Solo Leveling temalı bir fitness/görev modülü" — telefondan da
+    // kullanılacak): Hunter Sistemi, diğer sekmeler gibi App.tsx'in ortak not
+    // okuma/yazma altyapısını (fileContents/readNoteContent/onSaveNote) kullandığından
+    // Electron VE Capacitor'da (telefon) otomatik olarak aynı şekilde çalışır.
+    { id: 'hunter', label: 'Hunter Sistemi', icon: Swords },
   ];
   const titlebarToolItems = [
     { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
@@ -7654,6 +7660,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <AdventureView
               punctuality={punctuality}
               fileContents={fileContents}
+            />
+          )}
+
+          {activeTab === 'hunter' && (
+            <HunterView
+              fileContents={fileContents}
+              readNoteContent={handleReadNoteContent}
+              onSaveNote={handleSaveNote}
             />
           )}
 
