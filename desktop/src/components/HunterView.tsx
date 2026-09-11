@@ -122,14 +122,24 @@ function parseHunterState(content: string): HunterState {
   if (questSectionMatch) {
     const lines = questSectionMatch[1].split('\n');
     lines.forEach(line => {
-      const m = line.match(/^\s*[*\-]\s+\[([ xX])\]\s+(.*?)\s*\[key:(\w+)\]\s*\[target:(\d+)\]\s*\[group:(\w+)\]/);
-      if (m) {
+      // BUG DÜZELTMESİ (kullanıcı geri bildirimi: "neden sürekli 20 tekrar yazmış" — etiket
+      // her kaydetmede bir tane daha "— 20 tekrar" ekleyip büyüyordu): SERBEST METNİ (satırın
+      // görünen kısmını) ASLA "label" olarak GERİ OKUMUYORUZ artık — aynı satırda hem
+      // görüntülenen metni hem de o metni üreten veriyi tutmak, her kaydette birbirinin
+      // üstüne binen bir döngü yaratıyordu (İş Planla'daki isim ikilenmesi hatasıyla AYNI kök
+      // sebep). `key` zaten hangi sabit egzersiz olduğunu tek başına belirlediği için, etiket
+      // METNİ HER ZAMAN EXERCISE_META'dan türetilir — dosyadaki serbest metin tamamen
+      // yok sayılır (varsa bile).
+      const m = line.match(/\[key:(\w+)\]\s*\[target:(\d+)\]\s*\[group:(\w+)\]/);
+      const checkedMatch = line.match(/^\s*[*\-]\s+\[([ xX])\]/);
+      if (m && checkedMatch) {
+        const meta = EXERCISE_META.find(e => e.key === m[1]);
         quest.push({
-          done: m[1].toLowerCase() === 'x',
-          label: m[2].trim(),
-          key: m[3] as DailyQuestItem['key'],
-          target: parseInt(m[4], 10),
-          group: m[5] as DailyQuestItem['group']
+          done: checkedMatch[1].toLowerCase() === 'x',
+          label: meta ? meta.label : m[1],
+          key: m[1] as DailyQuestItem['key'],
+          target: parseInt(m[2], 10),
+          group: m[3] as DailyQuestItem['group']
         });
       }
     });
@@ -159,7 +169,10 @@ function parseHunterState(content: string): HunterState {
 
 function serializeHunterState(s: HunterState): string {
   const header = `# Hunter Sistemi\n\n[rank:${s.rank}] [xp:${s.xp}] [penaltyLevel:${s.penaltyLevel}] [streak:${s.streak}] [bestStreak:${s.bestStreak}] [lastDate:${s.lastDate}] [lastStatus:${s.lastStatus}]\n`;
-  const questLines = s.quest.map(q => `- [${q.done ? 'x' : ' '}] ${q.label} — ${q.target} tekrar [key:${q.key}] [target:${q.target}] [group:${q.group}]`).join('\n');
+  // Satırın görünen metni SADECE bilgi amaçlı (kullanıcı notu ham olarak açarsa okunabilir
+  // olsun diye) — geri okunurken KULLANILMIYOR (bkz. parseHunterState'teki uyarı), bu yüzden
+  // burada güvenle sabit/temiz kalabilir, her kaydette büyümez.
+  const questLines = s.quest.map(q => `- [${q.done ? 'x' : ' '}] ${q.label} [key:${q.key}] [target:${q.target}] [group:${q.group}]`).join('\n');
   const questSection = `\n## Günlük Görev — ${s.lastDate}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
   const historyLines = s.history.slice(0, 60).map(h => `- ${h.date}: ${h.text} [xpDelta:${h.xpDelta}]`).join('\n');
   const historySection = `\n## Geçmiş\n${historyLines}\n`;
