@@ -231,12 +231,34 @@ const RankHexagon: React.FC<{ rank: Rank; size?: number }> = ({ rank, size = 96 
   );
 };
 
-// Önden basit hunter silüeti — kas grupları ayrı path'ler, tamamlanan egzersize göre
-// parlıyor (done=true → dolu+glow, pending → sadece ince kontur).
-const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], boolean>; rankColor: string }> = ({ status, rankColor }) => {
+// Önden hunter silüeti — kas grupları ayrı path'ler, tamamlanan egzersize göre
+// parlıyor (done=true → dolu+glow, pending → sadece ince kontur). Rank yükseldikçe
+// (E→S) vücut kademeli olarak daha kaslı/karmaşık bir siluete evriliyor: omuzlar
+// genişliyor, bel daralıyor (V-taper), abs satırları artıyor, biceps/trap/damar
+// detay çizgileri ekleniyor, S-Rank'te aura + omuz zırhı beliriyor.
+const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], boolean>; rankColor: string; rank: Rank }> = ({ status, rankColor, rank }) => {
   const fillFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.12)';
   const strokeFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.4)';
+  const lineFor = (group: DailyQuestItem['group']) => status[group] ? rankColor : 'rgba(148,163,184,0.35)';
   const glow = (group: DailyQuestItem['group']) => status[group] ? { filter: 'url(#bodyGlow)' } : {};
+
+  const rankIdx = RANK_ORDER.indexOf(rank); // 0 (E) .. 5 (S)
+  const t = rankIdx / (RANK_ORDER.length - 1); // 0..1 evrim oranı
+
+  // Rank'e göre ölçekler: E-Rank'te ince/sade, S-Rank'te geniş omuz + dar bel + detaylı kas hatları.
+  const shoulderW = 30 + 18 * t;      // göğüs yarı genişliği
+  const waistW = 17 - 3.5 * t;        // karın yarı genişliği (V-taper)
+  const armRx = 9 + 5.5 * t;          // pazı kalınlığı
+  const neckW = 7 + 2 * t;
+  const absRows = 3 + Math.round(2 * t); // 3..5 satır six-pack
+  const showTraps = t >= 0.35;
+  const showDeltCaps = t >= 0.35;
+  const showDefinitionLines = t >= 0.6;
+  const showAura = rankIdx === RANK_ORDER.length - 1; // sadece S-Rank
+
+  const absTop = 90, absBottom = 138;
+  const rowH = (absBottom - absTop) / absRows;
+
   return (
     <svg width="150" height="260" viewBox="0 0 150 260">
       <defs>
@@ -244,23 +266,81 @@ const MuscleBodyDiagram: React.FC<{ status: Record<DailyQuestItem['group'], bool
           <feGaussianBlur stdDeviation="3" result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
+        <filter id="auraGlow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="6" result="b2" />
+          <feMerge><feMergeNode in="b2" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
       </defs>
+
+      {showAura && (
+        <ellipse cx="75" cy="130" rx="68" ry="122" fill="none" stroke={rankColor} strokeWidth="1.2" opacity="0.35" filter="url(#auraGlow)" />
+      )}
+
+      {/* Trapez (üst sırt/boyun kası) — orta-üst rank'ten itibaren görünür */}
+      {showTraps && (
+        <path
+          d={`M${75 - neckW - 6} 40 L${75 - shoulderW + 6} 50 L${75 - neckW} 46 Z M${75 + neckW + 6} 40 L${75 + shoulderW - 6} 50 L${75 + neckW} 46 Z`}
+          fill={lineFor('chest')} opacity="0.55"
+        />
+      )}
+
       {/* Baş */}
       <circle cx="75" cy="22" r="16" fill="rgba(148,163,184,0.1)" stroke="rgba(148,163,184,0.4)" strokeWidth="1.5" />
       {/* Boyun */}
-      <rect x="68" y="36" width="14" height="10" fill="rgba(148,163,184,0.1)" />
-      {/* Göğüs (chest) */}
-      <path d="M45 48 Q75 38 105 48 L100 88 Q75 96 50 88 Z" fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.5" style={glow('chest')} />
-      {/* Karın (abs) */}
-      <rect x="58" y="90" width="34" height="46" rx="6" fill={fillFor('abs')} stroke={strokeFor('abs')} strokeWidth="1.5" style={glow('abs')} />
-      {/* Kollar (arms) — iki taraf */}
-      <ellipse cx="35" cy="70" rx="10" ry="28" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
-      <ellipse cx="115" cy="70" rx="10" ry="28" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
-      <rect x="27" y="96" width="16" height="24" rx="6" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.85" />
-      <rect x="107" y="96" width="16" height="24" rx="6" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.85" />
-      {/* Bacaklar (legs) */}
-      <rect x="56" y="138" width="17" height="80" rx="7" fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
-      <rect x="77" y="138" width="17" height="80" rx="7" fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
+      <rect x={75 - neckW} y="36" width={neckW * 2} height="10" fill="rgba(148,163,184,0.1)" />
+
+      {/* Omuz kapağı (deltoid) — orta rank'ten itibaren ayrı bir vurgu */}
+      {showDeltCaps && (
+        <>
+          <circle cx={75 - shoulderW + 6} cy="52" r={6 + 3 * t} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1" opacity="0.9" style={glow('chest')} />
+          <circle cx={75 + shoulderW - 6} cy="52" r={6 + 3 * t} fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1" opacity="0.9" style={glow('chest')} />
+        </>
+      )}
+
+      {/* Göğüs (chest) — rank arttıkça daha geniş, orta hat (pec ayrımı) belirginleşiyor */}
+      <path
+        d={`M${75 - shoulderW} 48 Q75 ${40 - 4 * t} ${75 + shoulderW} 48 L${75 + waistW + 6} 88 Q75 96 ${75 - waistW - 6} 88 Z`}
+        fill={fillFor('chest')} stroke={strokeFor('chest')} strokeWidth="1.5" style={glow('chest')}
+      />
+      {showDefinitionLines && (
+        <line x1="75" y1="50" x2="75" y2="86" stroke="rgba(2,6,23,0.45)" strokeWidth="2" />
+      )}
+
+      {/* Karın (abs) — rank arttıkça satır sayısı (six-pack derinliği) artıyor */}
+      <rect x={75 - waistW} y={absTop} width={waistW * 2} height={absBottom - absTop} rx="6" fill={fillFor('abs')} stroke={strokeFor('abs')} strokeWidth="1.5" style={glow('abs')} />
+      {showDefinitionLines && Array.from({ length: absRows - 1 }).map((_, i) => (
+        <line key={i} x1={75 - waistW + 3} y1={absTop + rowH * (i + 1)} x2={75 + waistW - 3} y2={absTop + rowH * (i + 1)} stroke="rgba(2,6,23,0.4)" strokeWidth="1.3" />
+      ))}
+      {showDefinitionLines && (
+        <line x1="75" y1={absTop + 2} x2="75" y2={absBottom - 2} stroke="rgba(2,6,23,0.4)" strokeWidth="1.3" />
+      )}
+
+      {/* Kollar (arms) — pazı kalınlığı rank ile büyüyor, üst rank'te bicep peak eğrisi */}
+      <ellipse cx={75 - shoulderW - armRx + 4} cy="70" rx={armRx} ry={26 + 4 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
+      <ellipse cx={75 + shoulderW + armRx - 4} cy="70" rx={armRx} ry={26 + 4 * t} fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.5" style={glow('arms')} />
+      {showDefinitionLines && (
+        <>
+          <path d={`M${75 - shoulderW - armRx + 4 - 3} 58 Q${75 - shoulderW - armRx + 4} 50 ${75 - shoulderW - armRx + 4 + 3} 58`} fill="none" stroke="rgba(2,6,23,0.4)" strokeWidth="1.2" />
+          <path d={`M${75 + shoulderW + armRx - 4 - 3} 58 Q${75 + shoulderW + armRx - 4} 50 ${75 + shoulderW + armRx - 4 + 3} 58`} fill="none" stroke="rgba(2,6,23,0.4)" strokeWidth="1.2" />
+        </>
+      )}
+      <rect x={75 - shoulderW - armRx + 4 - 8} y="96" width="16" height={22 + 3 * t} rx="6" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.85" />
+      <rect x={75 + shoulderW + armRx - 4 - 8} y="96" width="16" height={22 + 3 * t} rx="6" fill={fillFor('arms')} stroke={strokeFor('arms')} strokeWidth="1.2" opacity="0.85" />
+
+      {/* Bacaklar (legs) — rank arttıkça hafifçe kalınlaşıyor, üst rank'te quad çizgisi */}
+      <rect x={75 - waistW - 1} y="138" width={17 + 2 * t} height="80" rx="7" fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
+      <rect x={75 + waistW - 16 + 1} y="138" width={17 + 2 * t} height="80" rx="7" fill={fillFor('legs')} stroke={strokeFor('legs')} strokeWidth="1.5" style={glow('legs')} />
+      {showDefinitionLines && (
+        <>
+          <line x1={75 - waistW + 6} y1="145" x2={75 - waistW + 6} y2="210" stroke="rgba(2,6,23,0.35)" strokeWidth="1" />
+          <line x1={75 + waistW - 8} y1="145" x2={75 + waistW - 8} y2="210" stroke="rgba(2,6,23,0.35)" strokeWidth="1" />
+        </>
+      )}
+
+      {/* S-Rank omuz zırhı rozeti */}
+      {showAura && (
+        <text x="75" y="54" textAnchor="middle" fontSize="9" fontWeight="800" fill={rankColor} fontFamily="monospace" opacity="0.9">S</text>
+      )}
     </svg>
   );
 };
@@ -543,7 +623,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
             {/* Kas grubu diyagramı + günlük görev listesi yan yana */}
             <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', padding: '16px', borderRadius: '14px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                <MuscleBodyDiagram status={groupStatus} rankColor={rankColor} />
+                <MuscleBodyDiagram status={groupStatus} rankColor={rankColor} rank={state.rank} />
                 <div style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>{completedCount}/{state.quest.length} TAMAMLANDI</div>
               </div>
 
