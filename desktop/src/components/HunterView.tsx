@@ -49,6 +49,10 @@ const PENALTY_MULTIPLIERS = [1, 1.5, 2, 2.5, 3];
 
 type ExerciseKey = 'pushups' | 'situps' | 'squats' | 'dumbbell' | 'back' | 'shoulders' | 'cardio';
 type MuscleGroup = 'chest' | 'abs' | 'legs' | 'arms' | 'back' | 'shoulders' | 'cardio';
+const MUSCLE_GROUP_LABEL: Record<MuscleGroup, string> = {
+  chest: 'Göğüs', abs: 'Karın', legs: 'Bacak', arms: 'Kol', back: 'Sırt', shoulders: 'Omuz', cardio: 'Kardiyo'
+};
+const ALL_MUSCLE_GROUPS: MuscleGroup[] = ['chest', 'abs', 'legs', 'arms', 'back', 'shoulders', 'cardio'];
 
 // İSTEK (kullanıcı: "gerçek spor eğitimi gibi çeşitlilik ve set/tekrar istiyorum, önce
 // konuşalım"): konuşma sonucu netleşen 3 karar — (1) gün bazlı SPLIT (her gün aynı 4 grup
@@ -61,9 +65,31 @@ type MuscleGroup = 'chest' | 'abs' | 'legs' | 'arms' | 'back' | 'shoulders' | 'c
 // hareket, gerçek bir salon seansına daha yakın hacim için): aynı `key` (kas grubu slotu)
 // için havuzdan İKİ farklı varyant seçiliyor, `slot` (0/1) bu ikisini birbirinden ayırt ediyor
 // (aksi halde ikisi de aynı `key`'i paylaştığı için set kaydetme/geri alma birbirine karışırdı).
-interface DailyQuestItem { key: ExerciseKey; slot: number; label: string; group: MuscleGroup; sets: number; reps: number; setsDone: number; }
+// İSTEK (kullanıcı: "hunterda kendi kişisel programımı yapabilmek istiyorum. hareket isimleri
+// kaydetme... hangi kas gruplarına etki ettiğini belirtme... sonra program oluşturma"): `key`
+// artık sadece sabit ExerciseKey değil, kullanıcının kendi egzersizinin id'si de olabilir
+// (string) — ve bir hareket birden fazla kas grubunu birden etkileyebildiği için `group` tekil
+// yerine `groups` (dizi) oldu.
+interface DailyQuestItem { key: string; slot: number; label: string; groups: MuscleGroup[]; sets: number; reps: number; setsDone: number; }
 const isQuestDone = (q: DailyQuestItem) => q.setsDone >= q.sets;
 const questItemId = (q: DailyQuestItem) => `${q.key}-${q.slot}`;
+
+// Kullanıcının kendi kaydettiği egzersiz — isim + hangi kas gruplarını hedeflediği.
+interface CustomExercise { id: string; name: string; groups: MuscleGroup[]; }
+// Haftalık programdaki tek bir satır: hangi egzersiz, kaç set, kaç tekrar.
+interface WeeklyProgramEntry { exerciseId: string; sets: number; reps: number; }
+const WEEKDAYS = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'] as const;
+type Weekday = typeof WEEKDAYS[number];
+type WeeklyProgram = Record<Weekday, WeeklyProgramEntry[]>;
+const emptyWeeklyProgram = (): WeeklyProgram => ({
+  Pazartesi: [], Salı: [], Çarşamba: [], Perşembe: [], Cuma: [], Cumartesi: [], Pazar: []
+});
+const weekdayForDate = (dateStr: string): Weekday => {
+  const jsDay = new Date(`${dateStr}T00:00:00`).getDay(); // 0=Pazar..6=Cumartesi
+  return WEEKDAYS[(jsDay + 6) % 7]; // Pazartesi=0 olacak şekilde kaydır
+};
+
+type ProgramMode = 'auto' | 'custom';
 
 interface HunterState {
   rank: Rank;
@@ -76,6 +102,9 @@ interface HunterState {
   quest: DailyQuestItem[];
   history: { date: string; text: string; xpDelta: number }[];
   shadows: string[]; // 7 günlük seri kilometre taşlarında kazanılan "gölgeler"
+  programMode: ProgramMode; // 'auto' = rank sistemi otomatik üretir, 'custom' = kullanıcının kendi programı
+  customExercises: CustomExercise[];
+  weeklyProgram: WeeklyProgram;
 }
 
 const EXERCISE_META: { key: ExerciseKey; label: string; group: MuscleGroup }[] = [
@@ -165,10 +194,42 @@ const questTargets = (rank: Rank, penaltyLevel: number, dateStr: string): DailyQ
     // 2 kaydırma her zaman farklı bir varyant garanti eder, tek harekete sıkışmaz.
     [0, 1].forEach(slot => {
       const variant = pool[(dIdx + slot * 2) % pool.length];
-      items.push({ key, slot, label: variant, group: meta.group, sets, reps: repCount, setsDone: 0 });
+      items.push({ key, slot, label: variant, groups: [meta.group], sets, reps: repCount, setsDone: 0 });
     });
   });
   return items;
+};
+
+// İSTEK (kullanıcı: "kendi kişisel programımı yapabilmek istiyorum"): `programMode==='custom'`
+// olduğunda günlük görev artık rank sisteminden DEĞİL, kullanıcının o gün (haftanın günü) için
+// kurduğu kendi programından üretiliyor — hiçbir hareket girilmemiş bir gün otomatik "dinlenme
+// günü" sayılır (boş quest listesi).
+const buildDailyQuest = (opts: {
+  programMode: ProgramMode; rank: Rank; penaltyLevel: number; dateStr: string;
+  customExercises: CustomExercise[]; weeklyProgram: WeeklyProgram;
+}): DailyQuestItem[] => {
+  if (opts.programMode === 'custom') {
+    const weekday = weekdayForDate(opts.dateStr);
+    const entries = opts.weeklyProgram[weekday] || [];
+    const items: DailyQuestItem[] = [];
+    entries.forEach((entry, i) => {
+      const ex = opts.customExercises.find(e => e.id === entry.exerciseId);
+      if (!ex) return; // silinmiş bir egzersize referans kalmışsa sessizce atla
+      items.push({ key: entry.exerciseId, slot: i, label: ex.name, groups: ex.groups, sets: entry.sets, reps: entry.reps, setsDone: 0 });
+    });
+    return items;
+  }
+  return questTargets(opts.rank, opts.penaltyLevel, opts.dateStr);
+};
+
+// Bir görev maddesinin saatte hangi modla takip edilmesi gerektiğini belirler — sabit
+// egzersizler için WATCH_MODE tablosundan, kullanıcının kendi egzersizleri için ise hedeflediği
+// kas gruplarından (kardiyo varsa CrossFit, sırt/karın varsa Fonksiyonel, aksi halde Güç).
+const watchModeFor = (q: DailyQuestItem): WatchMode => {
+  if (q.key in WATCH_MODE) return WATCH_MODE[q.key as ExerciseKey];
+  if (q.groups.includes('cardio')) return 'CrossFit';
+  if (q.groups.some(g => g === 'back' || g === 'abs')) return 'Fonksiyonel';
+  return 'Güç';
 };
 
 // ============================================================================
@@ -184,6 +245,7 @@ function parseHunterState(content: string): HunterState {
   const bestStreakMatch = content.match(/\[bestStreak:(\d+)\]/i);
   const lastDateMatch = content.match(/\[lastDate:(\d{4}-\d{2}-\d{2})\]/i);
   const lastStatusMatch = content.match(/\[lastStatus:(pending|completed)\]/i);
+  const programModeMatch = content.match(/\[programMode:(auto|custom)\]/i);
 
   const rank = (rankMatch ? rankMatch[1].toUpperCase() : 'E') as Rank;
   const xp = xpMatch ? parseInt(xpMatch[1], 10) : 0;
@@ -192,6 +254,7 @@ function parseHunterState(content: string): HunterState {
   const bestStreak = bestStreakMatch ? parseInt(bestStreakMatch[1], 10) : 0;
   const lastDate = lastDateMatch ? lastDateMatch[1] : '';
   const lastStatus = (lastStatusMatch ? lastStatusMatch[1] : 'pending') as 'pending' | 'completed';
+  const programMode = (programModeMatch ? programModeMatch[1].toLowerCase() : 'auto') as ProgramMode;
 
   // Günlük görev checklist'i
   const quest: DailyQuestItem[] = [];
@@ -217,21 +280,56 @@ function parseHunterState(content: string): HunterState {
       // İSTEK (kullanıcı: "bir günde sadece iki antreman mı var" — kas grubu başına 2 hareket):
       // aynı `key` artık İKİ satırda tekrarlanabildiği için `slot` (0/1) eklendi, ikisini
       // ayırt etmek için — yoksa set kaydetme ikisini birden etkilerdi.
-      const m = line.match(/\[key:(\w+)\]\s*\[slot:(\d+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]\s*\[setsDone:(\d+)\]\s*\[group:(\w+)\]\s*\[variant:([^\]]*)\]/);
+      // İSTEK (kullanıcı: "hangi kas gruplarına etki ettiğini belirtme" — özel egzersizler birden
+      // fazla grubu birden hedefleyebiliyor): `[group:X]` tekil etiketi `[groups:X,Y,Z]` (virgülle
+      // ayrılmış liste) oldu; `key` artık sabit ExerciseKey union'ına kısıtlı değil (özel
+      // egzersiz id'si de olabilir), bu yüzden `\w+` yerine `[^\]]+` (köşeli parantez içinde her şey).
+      const m = line.match(/\[key:([^\]]+)\]\s*\[slot:(\d+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]\s*\[setsDone:(\d+)\]\s*\[groups:([^\]]*)\]\s*\[variant:([^\]]*)\]/);
       const checkedMatch = line.match(/^\s*[*\-]\s+\[([ xX])\]/);
       if (m && checkedMatch) {
         const meta = EXERCISE_META.find(e => e.key === m[1]);
         const sets = parseInt(m[3], 10);
         quest.push({
           label: m[7].trim() || (meta ? meta.label : m[1]),
-          key: m[1] as ExerciseKey,
+          key: m[1],
           slot: parseInt(m[2], 10),
           sets,
           reps: parseInt(m[4], 10),
           setsDone: Math.min(parseInt(m[5], 10), sets),
-          group: m[6] as MuscleGroup
+          groups: m[6].split(',').map(g => g.trim()).filter(Boolean) as MuscleGroup[]
         });
       }
+    });
+  }
+
+  // Egzersiz Kütüphanem — kullanıcının kendi kaydettiği hareketler (isim + hedeflediği kas
+  // grupları), haftalık programda bunlara referans verilir.
+  const customExercises: CustomExercise[] = [];
+  const libSectionMatch = content.match(/## Egzersiz Kütüphanem\n([\s\S]*?)(?=\n##|\n?$)/);
+  if (libSectionMatch) {
+    libSectionMatch[1].split('\n').forEach(line => {
+      const m = line.match(/^\s*-\s+(.+?)\s*\[groups:([^\]]*)\]\s*\[exid:([^\]]+)\]/);
+      if (m) customExercises.push({ id: m[3].trim(), name: m[1].trim(), groups: m[2].split(',').map(g => g.trim()).filter(Boolean) as MuscleGroup[] });
+    });
+  }
+
+  // Haftalık Program — her gün başlığı altında (## Haftalık Program > ### <Gün>) o günün
+  // hareket/set/tekrar listesi; başlık altında hiç satır yoksa o gün dinlenme günüdür.
+  const weeklyProgram: WeeklyProgram = emptyWeeklyProgram();
+  const programSectionMatch = content.match(/## Haftalık Program\n([\s\S]*?)(?=\n## [^#]|\n?$)/);
+  if (programSectionMatch) {
+    const dayBlocks = programSectionMatch[1].split(/\n(?=### )/);
+    dayBlocks.forEach(block => {
+      const dayMatch = block.match(/^### (.+)$/m);
+      if (!dayMatch) return;
+      const dayName = dayMatch[1].trim() as Weekday;
+      if (!WEEKDAYS.includes(dayName)) return;
+      const entries: WeeklyProgramEntry[] = [];
+      block.split('\n').forEach(line => {
+        const m = line.match(/\[exid:([^\]]+)\]\s*\[sets:(\d+)\]\s*\[reps:(\d+)\]/);
+        if (m) entries.push({ exerciseId: m[1].trim(), sets: parseInt(m[2], 10), reps: parseInt(m[3], 10) });
+      });
+      weeklyProgram[dayName] = entries;
     });
   }
 
@@ -254,22 +352,38 @@ function parseHunterState(content: string): HunterState {
     });
   }
 
-  return { rank, xp, penaltyLevel, streak, bestStreak, lastDate, lastStatus, quest, history, shadows };
+  return { rank, xp, penaltyLevel, streak, bestStreak, lastDate, lastStatus, quest, history, shadows, programMode, customExercises, weeklyProgram };
 }
 
 function serializeHunterState(s: HunterState): string {
-  const header = `# Hunter Sistemi\n\n[rank:${s.rank}] [xp:${s.xp}] [penaltyLevel:${s.penaltyLevel}] [streak:${s.streak}] [bestStreak:${s.bestStreak}] [lastDate:${s.lastDate}] [lastStatus:${s.lastStatus}]\n`;
+  const header = `# Hunter Sistemi\n\n[rank:${s.rank}] [xp:${s.xp}] [penaltyLevel:${s.penaltyLevel}] [streak:${s.streak}] [bestStreak:${s.bestStreak}] [lastDate:${s.lastDate}] [lastStatus:${s.lastStatus}] [programMode:${s.programMode}]\n`;
   // Satırın görünen metni SADECE bilgi amaçlı (kullanıcı notu ham olarak açarsa okunabilir
   // olsun diye) — geri okunurken KULLANILMIYOR (bkz. parseHunterState'teki uyarı), bu yüzden
   // burada güvenle sabit/temiz kalabilir, her kaydette büyümez.
-  const questLines = s.quest.map(q => `- [${isQuestDone(q) ? 'x' : ' '}] ${q.label} — ${q.sets}x${q.reps} (${q.setsDone}/${q.sets} set) [key:${q.key}] [slot:${q.slot}] [sets:${q.sets}] [reps:${q.reps}] [setsDone:${q.setsDone}] [group:${q.group}] [variant:${q.label}]`).join('\n');
-  const splitName = s.lastDate ? splitDayForDate(s.lastDate).name : '';
-  const questSection = `\n## Günlük Görev — ${s.lastDate} — ${splitName}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
+  const questLines = s.quest.map(q => `- [${isQuestDone(q) ? 'x' : ' '}] ${q.label} — ${q.sets}x${q.reps} (${q.setsDone}/${q.sets} set) [key:${q.key}] [slot:${q.slot}] [sets:${q.sets}] [reps:${q.reps}] [setsDone:${q.setsDone}] [groups:${q.groups.join(',')}] [variant:${q.label}]`).join('\n');
+  const dayLabel = s.lastDate
+    ? (s.programMode === 'custom' ? weekdayForDate(s.lastDate) : splitDayForDate(s.lastDate).name)
+    : '';
+  const restDay = s.programMode === 'custom' && s.quest.length === 0;
+  const questSection = `\n## Günlük Görev — ${s.lastDate} — ${dayLabel}${restDay ? ' 🛌 Dinlenme Günü' : ''}${s.penaltyLevel > 0 ? ' ⚠️ PENALTY QUEST' : ''}\n${questLines}\n`;
   const historyLines = s.history.slice(0, 60).map(h => `- ${h.date}: ${h.text} [xpDelta:${h.xpDelta}]`).join('\n');
   const historySection = `\n## Geçmiş\n${historyLines}\n`;
   const shadowLines = s.shadows.map(sh => `- ${sh}`).join('\n');
   const shadowSection = `\n## Gölge Ordusu\n${shadowLines}\n`;
-  return header + questSection + historySection + shadowSection;
+  const libLines = s.customExercises.map(e => `- ${e.name} [groups:${e.groups.join(',')}] [exid:${e.id}]`).join('\n');
+  const libSection = `\n## Egzersiz Kütüphanem\n${libLines}\n`;
+  const programBlocks = WEEKDAYS.map(day => {
+    const entries = s.weeklyProgram[day] || [];
+    const lines = entries.length > 0
+      ? entries.map(e => {
+          const ex = s.customExercises.find(x => x.id === e.exerciseId);
+          return `- ${ex ? ex.name : '(silinmiş egzersiz)'} — ${e.sets}x${e.reps} [exid:${e.exerciseId}] [sets:${e.sets}] [reps:${e.reps}]`;
+        }).join('\n')
+      : '(dinlenme günü)';
+    return `### ${day}\n${lines}`;
+  }).join('\n');
+  const programSection = `\n## Haftalık Program\n${programBlocks}\n`;
+  return header + questSection + historySection + shadowSection + libSection + programSection;
 }
 
 // ============================================================================
@@ -441,6 +555,14 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
   const [dungeonDone, setDungeonDone] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
+  // İSTEK (kullanıcı: "kendi kişisel programımı yapabilmek istiyorum") — programı düzenleme
+  // paneli için UI-only state (kaydedilen veri değil, sadece hangi ekranın açık olduğu).
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorTab, setEditorTab] = useState<'exercises' | 'schedule'>('exercises');
+  const [newExName, setNewExName] = useState('');
+  const [newExGroups, setNewExGroups] = useState<MuscleGroup[]>([]);
+  const [dayAddForm, setDayAddForm] = useState<Record<string, { exerciseId: string; sets: number; reps: number }>>({});
+
   const rawContent = fileContents[HUNTER_NOTE_PATH];
 
   // İlk kez açılıyorsa (not hiç yoksa) taze bir E-Rank başlangıç state'i.
@@ -449,12 +571,19 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       return {
         rank: 'E', xp: 0, penaltyLevel: 0, streak: 0, bestStreak: 0,
         lastDate: todayStr(), lastStatus: 'pending',
-        quest: questTargets('E', 0, todayStr()), history: [], shadows: []
+        quest: questTargets('E', 0, todayStr()), history: [], shadows: [],
+        programMode: 'auto', customExercises: [], weeklyProgram: emptyWeeklyProgram()
       };
     }
     const parsed = parseHunterState(rawContent);
     return parsed;
   }, [rawContent]);
+
+  // Kullanıcının kendi programında bir gün için hiç hareket eklenmemişse (dinlenme günü) o gün
+  // otomatik "completed" sayılır — aksi halde ertesi gün rollover onu "kaçırılmış görev" olarak
+  // cezalandırırdı, ama dinlenme günü kaçırılmış bir görev değildir.
+  const dayStatusFor = (quest: DailyQuestItem[], programMode: ProgramMode): 'pending' | 'completed' =>
+    (programMode === 'custom' && quest.length === 0) ? 'completed' : 'pending';
 
   // Gün geçişi kontrolü: not dosyasındaki lastDate bugünden eskiyse, dünün görevi
   // tamamlanmamışsa (lastStatus hâlâ 'pending') CEZA uygulanır + Penalty Zone kademesi
@@ -484,14 +613,18 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       // (completed durumu zaten checkbox handler'ında işlendi, burada tekrar XP verilmez —
       // sadece hiç dokunulmadıysa/miss ise işlenir.)
 
+      const newQuest = buildDailyQuest({
+        programMode: state.programMode, rank: state.rank, penaltyLevel: newPenaltyLevel, dateStr: todayStr(),
+        customExercises: state.customExercises, weeklyProgram: state.weeklyProgram
+      });
       const newState: HunterState = {
         ...state,
         xp: newXp,
         penaltyLevel: newPenaltyLevel,
         streak: newStreak,
         lastDate: todayStr(),
-        lastStatus: 'pending',
-        quest: questTargets(state.rank, newPenaltyLevel, todayStr()),
+        lastStatus: dayStatusFor(newQuest, state.programMode),
+        quest: newQuest,
         history: missed ? [historyEntry, ...state.history] : state.history
       };
       await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
@@ -582,12 +715,17 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       const currentIdx = RANK_ORDER.indexOf(state.rank);
       const nextRank = RANK_ORDER[Math.min(currentIdx + 1, RANK_ORDER.length - 1)];
       const rankedUp = currentIdx < RANK_ORDER.length - 1;
+      const newQuest = buildDailyQuest({
+        programMode: state.programMode, rank: nextRank, penaltyLevel: 0, dateStr: todayStr(),
+        customExercises: state.customExercises, weeklyProgram: state.weeklyProgram
+      });
       const newState: HunterState = {
         ...state,
         rank: nextRank,
         xp: 0,
         penaltyLevel: 0,
-        quest: questTargets(nextRank, 0, todayStr()),
+        quest: newQuest,
+        lastStatus: dayStatusFor(newQuest, state.programMode),
         history: [{ date: todayStr(), text: rankedUp ? `🌀 Yükselme Zindanı tamamlandı — ${nextRank}-Rank'e terfi!` : '🏆 Zaten en üst rank\'tesin', xpDelta: 0 }, ...state.history]
       };
       await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
@@ -597,12 +735,113 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
   };
 
+  // ============================================================================
+  // KENDİ PROGRAMIM — egzersiz kütüphanesi + haftalık program düzenleme
+  // ============================================================================
+
+  // Otomatik/Kendi Programım modu arasında geçiş — geçiş anında BUGÜNÜN görevi yeni moda göre
+  // yeniden üretilir (deliberate bir aksiyon olduğu için ilerlemenin sıfırlanması kabul edilir).
+  const switchProgramMode = async (mode: ProgramMode) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const dateStr = state.lastDate || todayStr();
+      const newQuest = buildDailyQuest({
+        programMode: mode, rank: state.rank, penaltyLevel: state.penaltyLevel, dateStr,
+        customExercises: state.customExercises, weeklyProgram: state.weeklyProgram
+      });
+      const newState: HunterState = {
+        ...state, programMode: mode, lastDate: dateStr, quest: newQuest,
+        lastStatus: dayStatusFor(newQuest, mode)
+      };
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Programdan (kütüphane/haftalık program) BUGÜNÜN görevini elle yeniden üretir — kütüphane/
+  // program düzenlemeleri otomatik olarak bugünün görevini bozmasın diye, kullanıcı bu butona
+  // basana kadar mevcut ilerleme korunur.
+  const refreshTodayFromProgram = async () => {
+    if (busy || state.programMode !== 'custom') return;
+    setBusy(true);
+    try {
+      const dateStr = state.lastDate || todayStr();
+      const newQuest = buildDailyQuest({
+        programMode: 'custom', rank: state.rank, penaltyLevel: state.penaltyLevel, dateStr,
+        customExercises: state.customExercises, weeklyProgram: state.weeklyProgram
+      });
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, quest: newQuest, lastStatus: dayStatusFor(newQuest, 'custom') }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addCustomExercise = async () => {
+    const name = newExName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    try {
+      const newExercise: CustomExercise = { id: `ex${Date.now()}`, name, groups: newExGroups };
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, customExercises: [...state.customExercises, newExercise] }));
+      setNewExName('');
+      setNewExGroups([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteCustomExercise = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const newExercises = state.customExercises.filter(e => e.id !== id);
+      const newProgram: WeeklyProgram = { ...state.weeklyProgram };
+      WEEKDAYS.forEach(day => { newProgram[day] = (newProgram[day] || []).filter(e => e.exerciseId !== id); });
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, customExercises: newExercises, weeklyProgram: newProgram }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addEntryToDay = async (day: Weekday) => {
+    if (busy) return;
+    // BUG DÜZELTMESİ: form sadece kullanıcı bir alanı DEĞİŞTİRDİYSE dayAddForm'a yazılıyordu —
+    // varsayılan değerlerle (ilk egzersiz, 2 set, 10 tekrar) hiç dokunmadan "+ Ekle"ye basılırsa
+    // dayAddForm[day] undefined kalıyor ve fonksiyon sessizce hiçbir şey yapmadan çıkıyordu.
+    // Render'daki AYNI varsayılanı burada da kullanmak gerekiyor.
+    const form = dayAddForm[day] || { exerciseId: state.customExercises[0]?.id || '', sets: 2, reps: 10 };
+    if (!form.exerciseId) return;
+    setBusy(true);
+    try {
+      const newProgram: WeeklyProgram = { ...state.weeklyProgram, [day]: [...(state.weeklyProgram[day] || []), { exerciseId: form.exerciseId, sets: form.sets, reps: form.reps }] };
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, weeklyProgram: newProgram }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeEntryFromDay = async (day: Weekday, index: number) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const newProgram: WeeklyProgram = { ...state.weeklyProgram, [day]: (state.weeklyProgram[day] || []).filter((_, i) => i !== index) };
+      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, weeklyProgram: newProgram }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const groupStatus: Record<MuscleGroup, boolean> = { chest: false, abs: false, legs: false, arms: false, back: false, shoulders: false, cardio: false };
-  state.quest.forEach(q => { if (isQuestDone(q)) groupStatus[q.group] = true; });
+  state.quest.forEach(q => { if (isQuestDone(q)) q.groups.forEach(g => { groupStatus[g] = true; }); });
   const rankColor = RANK_COLOR[state.rank];
   const completedCount = state.quest.filter(isQuestDone).length;
   const progressPercent = state.quest.length > 0 ? Math.round((completedCount / state.quest.length) * 100) : 0;
-  const todaySplit = state.lastDate ? splitDayForDate(state.lastDate) : SPLIT_DAYS[0];
+  const isRestDay = state.programMode === 'custom' && state.quest.length === 0;
+  const todayDayLabel = state.programMode === 'custom'
+    ? `${state.lastDate ? weekdayForDate(state.lastDate) : ''} Programı`
+    : (state.lastDate ? splitDayForDate(state.lastDate).name : SPLIT_DAYS[0].name);
 
   // Günün görevini saat moduna göre GRUPLAYIP sıralı bir "program" haline getiriyor (Güç →
   // Fonksiyonel → CrossFit) — her blok başında hangi saat modunun seçileceği yazıyor, blok
@@ -611,7 +850,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     const rows: ({ type: 'header'; mode: WatchMode } | { type: 'item'; q: DailyQuestItem; step: number })[] = [];
     let step = 0;
     WATCH_MODE_ORDER.forEach(mode => {
-      const items = state.quest.filter(q => WATCH_MODE[q.key] === mode);
+      const items = state.quest.filter(q => watchModeFor(q) === mode);
       if (items.length === 0) return;
       rows.push({ type: 'header', mode });
       items.forEach(q => { step++; rows.push({ type: 'item', q, step }); });
@@ -664,10 +903,184 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       <div style={{ maxWidth: '720px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '18px' }}>
 
         {/* Başlık */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: '20px' }}>⚔️</span>
-          <h2 style={{ margin: 0, fontSize: '19px', fontWeight: 800, letterSpacing: '0.5px', fontFamily: 'monospace', color: '#e2e8f0' }}>HUNTER SİSTEMİ</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '20px' }}>⚔️</span>
+            <h2 style={{ margin: 0, fontSize: '19px', fontWeight: 800, letterSpacing: '0.5px', fontFamily: 'monospace', color: '#e2e8f0' }}>HUNTER SİSTEMİ</h2>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.12)' }}>
+              <button
+                type="button" disabled={busy} onClick={() => switchProgramMode('auto')}
+                style={{
+                  padding: '6px 10px', fontSize: '10.5px', fontFamily: 'monospace', fontWeight: 700, border: 'none', cursor: busy ? 'wait' : 'pointer',
+                  background: state.programMode === 'auto' ? rankColor : 'rgba(255,255,255,0.04)',
+                  color: state.programMode === 'auto' ? '#0a0a0a' : '#94a3b8'
+                }}
+              >🤖 Otomatik</button>
+              <button
+                type="button" disabled={busy} onClick={() => switchProgramMode('custom')}
+                style={{
+                  padding: '6px 10px', fontSize: '10.5px', fontFamily: 'monospace', fontWeight: 700, border: 'none', cursor: busy ? 'wait' : 'pointer',
+                  background: state.programMode === 'custom' ? rankColor : 'rgba(255,255,255,0.04)',
+                  color: state.programMode === 'custom' ? '#0a0a0a' : '#94a3b8'
+                }}
+              >📝 Kendi Programım</button>
+            </div>
+            <button
+              type="button" onClick={() => setEditorOpen(o => !o)}
+              style={{
+                padding: '7px 10px', fontSize: '10.5px', fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer', borderRadius: '8px',
+                border: `1px solid ${editorOpen ? rankColor : 'rgba(255,255,255,0.12)'}`,
+                background: editorOpen ? `${rankColor}1a` : 'rgba(255,255,255,0.04)', color: editorOpen ? rankColor : '#94a3b8'
+              }}
+            >🛠 Programımı Düzenle</button>
+          </div>
         </div>
+
+        {editorOpen && (
+          // ============ KENDİ PROGRAMIM DÜZENLEYİCİ ============
+          <div style={{ padding: '18px', borderRadius: '14px', background: 'rgba(15,23,42,0.75)', border: `1px solid ${rankColor}55` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button" onClick={() => setEditorTab('exercises')}
+                  style={{
+                    padding: '7px 12px', fontSize: '11.5px', fontWeight: 800, fontFamily: 'monospace', borderRadius: '8px', cursor: 'pointer',
+                    border: `1px solid ${editorTab === 'exercises' ? rankColor : 'rgba(255,255,255,0.12)'}`,
+                    background: editorTab === 'exercises' ? `${rankColor}1a` : 'transparent', color: editorTab === 'exercises' ? rankColor : '#94a3b8'
+                  }}
+                >📚 Egzersiz Kütüphanem</button>
+                <button
+                  type="button" onClick={() => setEditorTab('schedule')}
+                  style={{
+                    padding: '7px 12px', fontSize: '11.5px', fontWeight: 800, fontFamily: 'monospace', borderRadius: '8px', cursor: 'pointer',
+                    border: `1px solid ${editorTab === 'schedule' ? rankColor : 'rgba(255,255,255,0.12)'}`,
+                    background: editorTab === 'schedule' ? `${rankColor}1a` : 'transparent', color: editorTab === 'schedule' ? rankColor : '#94a3b8'
+                  }}
+                >📅 Haftalık Program</button>
+              </div>
+              <button type="button" onClick={() => setEditorOpen(false)} style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '13px' }}>✕ Kapat</button>
+            </div>
+
+            {editorTab === 'exercises' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {state.customExercises.length === 0 && (
+                  <div style={{ fontSize: '11.5px', color: '#64748b', padding: '10px' }}>Henüz kayıtlı egzersizin yok — aşağıdan ekle.</div>
+                )}
+                {state.customExercises.map(ex => (
+                  <div key={ex.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <span style={{ flex: 1, fontSize: '12.5px', color: '#e2e8f0' }}>{ex.name}</span>
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxWidth: '260px' }}>
+                      {ex.groups.map(g => (
+                        <span key={g} style={{ fontSize: '9.5px', padding: '2px 7px', borderRadius: '10px', background: `${rankColor}1a`, color: rankColor, fontFamily: 'monospace' }}>{MUSCLE_GROUP_LABEL[g]}</span>
+                      ))}
+                      {ex.groups.length === 0 && <span style={{ fontSize: '9.5px', color: '#64748b' }}>grup seçilmedi</span>}
+                    </div>
+                    <button type="button" disabled={busy} onClick={() => deleteCustomExercise(ex.id)} style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: busy ? 'wait' : 'pointer', fontSize: '14px' }}>🗑</button>
+                  </div>
+                ))}
+                <div style={{ marginTop: '6px', padding: '12px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.15)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'monospace' }}>+ YENİ EGZERSİZ EKLE</div>
+                  <input
+                    type="text" value={newExName} onChange={e => setNewExName(e.target.value)} placeholder="Hareket adı (örn. Dambıl ile Kol Geliştirme)"
+                    style={{ padding: '9px 11px', borderRadius: '7px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.25)', color: '#e2e8f0', fontSize: '12px', outline: 'none' }}
+                  />
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {ALL_MUSCLE_GROUPS.map(g => {
+                      const active = newExGroups.includes(g);
+                      return (
+                        <button
+                          key={g} type="button"
+                          onClick={() => setNewExGroups(list => active ? list.filter(x => x !== g) : [...list, g])}
+                          style={{
+                            padding: '6px 10px', borderRadius: '8px', fontSize: '11px', fontFamily: 'monospace', cursor: 'pointer',
+                            border: `1px solid ${active ? rankColor : 'rgba(255,255,255,0.15)'}`,
+                            background: active ? `${rankColor}22` : 'transparent', color: active ? rankColor : '#94a3b8'
+                          }}
+                        >{MUSCLE_GROUP_LABEL[g]}</button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button" disabled={busy || !newExName.trim()} onClick={addCustomExercise}
+                    style={{
+                      alignSelf: 'flex-start', padding: '8px 16px', borderRadius: '8px', border: 'none', fontWeight: 800, fontSize: '12px', fontFamily: 'monospace',
+                      background: newExName.trim() ? rankColor : 'rgba(255,255,255,0.08)', color: newExName.trim() ? '#0a0a0a' : '#64748b',
+                      cursor: busy || !newExName.trim() ? 'not-allowed' : 'pointer'
+                    }}
+                  >Ekle</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {state.customExercises.length === 0 && (
+                  <div style={{ fontSize: '11.5px', color: '#64748b' }}>Önce "📚 Egzersiz Kütüphanem" sekmesinden en az bir hareket ekle.</div>
+                )}
+                {WEEKDAYS.map(day => {
+                  const entries = state.weeklyProgram[day] || [];
+                  const form = dayAddForm[day] || { exerciseId: state.customExercises[0]?.id || '', sets: 2, reps: 10 };
+                  return (
+                    <div key={day} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'monospace' }}>{day}</span>
+                        {entries.length === 0 && <span style={{ fontSize: '10px', color: '#64748b' }}>🛌 Dinlenme Günü</span>}
+                      </div>
+                      {entries.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                          {entries.map((entry, i) => {
+                            const ex = state.customExercises.find(e => e.id === entry.exerciseId);
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11.5px' }}>
+                                <span style={{ flex: 1, color: '#cbd5e1' }}>{ex ? ex.name : '(silinmiş egzersiz)'}</span>
+                                <span style={{ fontFamily: 'monospace', color: rankColor, fontWeight: 700 }}>{entry.sets}×{entry.reps}</span>
+                                <button type="button" disabled={busy} onClick={() => removeEntryFromDay(day, i)} style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: busy ? 'wait' : 'pointer', fontSize: '12px' }}>✕</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {state.customExercises.length > 0 && (
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <select
+                            value={form.exerciseId}
+                            onChange={e => setDayAddForm(f => ({ ...f, [day]: { ...form, exerciseId: e.target.value } }))}
+                            style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.25)', color: '#e2e8f0', fontSize: '11px', flex: 1, minWidth: '140px' }}
+                          >
+                            {state.customExercises.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
+                          </select>
+                          <input
+                            type="number" min={1} value={form.sets}
+                            onChange={e => setDayAddForm(f => ({ ...f, [day]: { ...form, sets: Math.max(1, parseInt(e.target.value, 10) || 1) } }))}
+                            style={{ width: '48px', padding: '6px 6px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.25)', color: '#e2e8f0', fontSize: '11px' }}
+                          />
+                          <span style={{ fontSize: '10px', color: '#64748b' }}>set ×</span>
+                          <input
+                            type="number" min={1} value={form.reps}
+                            onChange={e => setDayAddForm(f => ({ ...f, [day]: { ...form, reps: Math.max(1, parseInt(e.target.value, 10) || 1) } }))}
+                            style={{ width: '48px', padding: '6px 6px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.25)', color: '#e2e8f0', fontSize: '11px' }}
+                          />
+                          <span style={{ fontSize: '10px', color: '#64748b' }}>tekrar</span>
+                          <button
+                            type="button" disabled={busy} onClick={() => addEntryToDay(day)}
+                            style={{ padding: '6px 12px', borderRadius: '6px', border: 'none', background: rankColor, color: '#0a0a0a', fontWeight: 800, fontSize: '10.5px', fontFamily: 'monospace', cursor: busy ? 'wait' : 'pointer' }}
+                          >+ Ekle</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  type="button" disabled={busy} onClick={refreshTodayFromProgram}
+                  style={{
+                    alignSelf: 'flex-start', padding: '9px 16px', borderRadius: '8px', border: `1px solid ${rankColor}`,
+                    background: `${rankColor}1a`, color: rankColor, fontWeight: 800, fontSize: '11.5px', fontFamily: 'monospace', cursor: busy ? 'wait' : 'pointer'
+                  }}
+                >🔄 Bugünün Görevini Programdan Yenile</button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Üst kart: rank hexagon + XP + streak */}
         <div style={{
@@ -753,10 +1166,15 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
                   </span>
                   {state.lastStatus === 'completed' && <span style={{ fontSize: '10.5px', color: '#22c55e', fontWeight: 700 }}>✅ Bugün bitti</span>}
                 </div>
-                <div style={{ fontSize: '10.5px', color: rankColor, fontFamily: 'monospace', fontWeight: 700 }}>📅 {todaySplit.name}</div>
+                <div style={{ fontSize: '10.5px', color: rankColor, fontFamily: 'monospace', fontWeight: 700 }}>📅 {todayDayLabel}</div>
                 <div style={{ width: '100%', height: '5px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
                   <div style={{ width: `${progressPercent}%`, height: '100%', background: rankColor, transition: 'width 0.4s ease' }} />
                 </div>
+                {isRestDay && (
+                  <div style={{ padding: '20px', textAlign: 'center', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.12)', color: '#94a3b8', fontSize: '12.5px' }}>
+                    🛌 Bugün dinlenme günü — programında bu güne hareket eklenmemiş. Kas grupları toparlanıyor.
+                  </div>
+                )}
                 {programRows.map((row, idx) => {
                   if (row.type === 'header') {
                     return (
