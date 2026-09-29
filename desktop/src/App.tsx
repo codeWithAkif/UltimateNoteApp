@@ -32,6 +32,7 @@ import EforView from './components/EforView';
 import DashboardView from './components/DashboardView';
 import CityBuilderView from './components/CityBuilderView';
 import HunterView from './components/HunterView';
+import DiaryView from './components/DiaryView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
@@ -61,7 +62,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen
 } from 'lucide-react';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -2777,6 +2778,10 @@ export default function App() {
     // okuma/yazma altyapısını (fileContents/readNoteContent/onSaveNote) kullandığından
     // Electron VE Capacitor'da (telefon) otomatik olarak aynı şekilde çalışır.
     { id: 'hunter', label: 'Hunter Sistemi', icon: Swords },
+    // İSTEK (kullanıcı: kağıt planner temalı haftalık günlük görünümü — "şöyle bişey eklemeni
+    // istiyorum" + referans ekran görüntüleri): Günlük de aynı ortak not altyapısını kullanır,
+    // her gün Günlükler/YYYY-MM-DD.md altında gerçek bir nota karşılık gelir.
+    { id: 'diary', label: 'Günlük', icon: NotebookPen },
   ];
   const titlebarToolItems = [
     { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
@@ -7668,6 +7673,14 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               fileContents={fileContents}
               readNoteContent={handleReadNoteContent}
               onSaveNote={handleSaveNote}
+            />
+          )}
+
+          {activeTab === 'diary' && (
+            <DiaryView
+              fileContents={fileContents}
+              onSaveNote={handleSaveNote}
+              onOpenNote={(path) => { setActiveTab('notes'); handleSetActiveNotePath(path); }}
             />
           )}
 
