@@ -69,7 +69,126 @@ const hexToRgbString = (hex: string): string => {
   return `${r}, ${g}, ${b}`;
 };
 
+// ============================================================================
+// KİTAPLIK GÖRÜNÜMÜ yardımcıları — İSTEK (kullanıcı: "kütüphane çok kötü durdu okunmuyor...
+// hepsinde kategoriler var, onlara göre ayrım yapılabilir" + gerçek kitaplığının fotoğrafı:
+// bölmeler, dik/yatay istif/yaslanmış kitaplar). Kategori = #kitap dışındaki ilk #etiket.
+// ============================================================================
+const capitalizeTr = (s: string) => s.charAt(0).toLocaleUpperCase('tr') + s.slice(1);
+
+// #kitap dışındaki ilk etiket kitabın kategorisidir; etiket yoksa 'Diğer'.
+const parseCategory = (content: string): string => {
+  for (const m of content.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
+    const tag = m[1].toLocaleLowerCase('tr');
+    if (tag !== 'kitap') return capitalizeTr(tag);
+  }
+  return 'Diğer';
+};
+
+const hslToHex = (h: number, s: number, l: number): string => {
+  s /= 100; l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return `#${[f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+};
+
+const hashStr = (s: string): number => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+};
+// Sabit tohumlu rastgelelik: her kitap her açılışta AYNI biçimde durur.
+const seededRng = (seed: number) => {
+  let a = seed;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const categoryColor = (cat: string): string => cat === 'Diğer' ? '#8a8578' : hslToHex(hashStr(cat) % 360, 48, 52);
+
+// Kitabın rengi: kullanıcı elle renk seçtiyse o, yoksa (varsayılan mor dahil) kategori rengi.
+const bookBaseColor = (meta: BookMeta, cat: string): string =>
+  meta.color.toLowerCase() === DEFAULT_BOOK_COLOR ? categoryColor(cat) : meta.color;
+
+// Rengin hafif sapmış tonu; bazen nötr (krem/koyu) cilt — gerçek bir kitaplık gibi.
+const tintColor = (hex: string, r: () => number): { bg: string; fg: string } => {
+  const roll = r();
+  if (roll < 0.12) return { bg: '#e9e2d0', fg: '#3a352a' };
+  if (roll < 0.2) return { bg: '#2b2b30', fg: '#fff' };
+  const clean = hex.replace('#', '');
+  const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+  const n = parseInt(full.slice(0, 6), 16) || 0;
+  const k = 0.72 + r() * 0.5;
+  const ch = (v: number) => Math.min(255, Math.round(v * k));
+  return { bg: `rgb(${ch(n >> 16)},${ch((n >> 8) & 255)},${ch(n & 255)})`, fg: '#fff' };
+};
+
+interface ShelfBook { title: string; author: string; pct: number; pages: number; color: string; }
+type ShelfItem =
+  | { type: 'up' | 'lean'; b: ShelfBook; bg: string; fg: string; w: number; h: number; deg: number; gap: number }
+  | { type: 'stack'; grp: { b: ShelfBook; bg: string; fg: string; h: number; dx: number }[]; w: number };
+
+const buildShelfItems = (books: ShelfBook[]): ShelfItem[] => {
+  const items: ShelfItem[] = [];
+  for (let i = 0; i < books.length; i++) {
+    const b = books[i];
+    const r = seededRng(hashStr(b.title));
+    const kind = r();
+    const { bg, fg } = tintColor(b.color, r);
+    const h = Math.max(168, Math.min(246, 150 + (b.pages || 240) / 6 + r() * 18));
+    if (kind < 0.2 && i + 1 < books.length) { // yatay istif: 2-3 kitap üst üste
+      const n = Math.min(books.length - i, 2 + (r() < 0.45 ? 1 : 0));
+      const grp = [];
+      for (let k = 0; k < n; k++) {
+        const bk = books[i + k];
+        const rr = seededRng(hashStr(bk.title + 'f'));
+        const t = tintColor(bk.color, rr);
+        grp.push({ b: bk, bg: t.bg, fg: t.fg, h: 24 + Math.round(rr() * 10), dx: Math.round((rr() - 0.5) * 12) });
+      }
+      items.push({ type: 'stack', grp, w: 166 });
+      i += n - 1;
+    } else if (kind < 0.38) { // yaslanmış kitap
+      const deg = 9 + Math.round(r() * 7);
+      items.push({ type: 'lean', b, bg, fg, w: 26 + Math.round(r() * 12), h, deg, gap: Math.round(h * Math.sin(deg * Math.PI / 180) * 0.55) });
+    } else {
+      items.push({ type: 'up', b, bg, fg, w: 24 + Math.round(r() * 20), h, deg: 0, gap: 0 });
+    }
+  }
+  return items;
+};
+
+const packShelfRows = (items: ShelfItem[], cellW: number): ShelfItem[][] => {
+  const rows: ShelfItem[][] = [[]];
+  let used = 0;
+  items.forEach(it => {
+    const w = (it.type === 'lean' ? it.w + it.gap : it.w) + 4;
+    if (used + w > cellW && rows[rows.length - 1].length) { rows.push([]); used = 0; }
+    rows[rows.length - 1].push(it);
+    used += w;
+  });
+  return rows;
+};
+
+type LibraryViewMode = 'shelf' | 'cards' | 'list';
+const LIBRARY_VIEW_KEY = 'library_view_mode';
+
 export default function LibraryView({ notes, scannedContents, onOpenNote, onSaveNote, libraryFolder = 'Kütüphane' }: LibraryViewProps) {
+  const [viewMode, setViewMode] = useState<LibraryViewMode>(() => {
+    try {
+      const v = localStorage.getItem(LIBRARY_VIEW_KEY);
+      return v === 'cards' || v === 'list' || v === 'shelf' ? v : 'shelf';
+    } catch { return 'shelf'; }
+  });
+  const [libSearch, setLibSearch] = useState('');
+  const [libSort, setLibSort] = useState<'name' | 'progress' | 'author'>('name');
+  const [libCat, setLibCat] = useState('Tümü');
+  const [shelfWidth, setShelfWidth] = useState(900);
+  const shelfRef = React.useRef<HTMLDivElement | null>(null);
   const [selectedBookName, setSelectedBookName] = useState<string | null>(null);
   const [selectedChapterPath, setSelectedChapterPath] = useState<string | null>(null);
   const [createModal, setCreateModal] = useState<{ type: 'book' } | { type: 'chapter'; bookTitle: string } | null>(null);
@@ -77,6 +196,18 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
   const [formAuthor, setFormAuthor] = useState('');
   const [formTotalPages, setFormTotalPages] = useState('');
   const [formColor, setFormColor] = useState(BOOK_PALETTE[0]);
+
+  // Kitaplık bölmelerinin genişliği (kaç bölme yan yana, bir rafa kaç kitap sığar) ekrana göre
+  // hesaplanır; pencere boyu değişince yeniden ölçülür.
+  React.useEffect(() => {
+    const el = shelfRef.current;
+    if (!el) return;
+    const measure = () => setShelfWidth(el.clientWidth || 900);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewMode, selectedBookName]);
 
   // #kitap etiketli, DOĞRUDAN {libraryFolder}/ altında (alt klasörde değil) duran notlar —
   // bunlar kitabın KENDİ notu; {libraryFolder}/{KitapAdı}/... altındakiler bölümleridir.
@@ -377,7 +508,31 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
     );
   }
 
-  // ============ KİTAPLIK (RAF) GÖRÜNÜMÜ ============
+  // ============ KİTAPLIK GÖRÜNÜMÜ (kitaplık / kapak kartı / liste) ============
+  const libBooks = bookNotes.map(n => {
+    const content = scannedContents[n.path] || '';
+    const meta = parseBookMeta(n.name, content);
+    const cat = parseCategory(content);
+    const pct = meta.totalPages > 0 ? Math.min(100, Math.round((meta.currentPage / meta.totalPages) * 100)) : 0;
+    return { path: n.path, meta, cat, pct, color: bookBaseColor(meta, cat) };
+  });
+  const catCounts: Record<string, number> = {};
+  libBooks.forEach(b => { catCounts[b.cat] = (catCounts[b.cat] || 0) + 1; });
+  const catList = Object.keys(catCounts).sort((a, b) => a === 'Diğer' ? 1 : b === 'Diğer' ? -1 : a.localeCompare(b, 'tr'));
+  const q = libSearch.toLocaleLowerCase('tr');
+  const shownBooks = libBooks
+    .filter(b => (libCat === 'Tümü' || b.cat === libCat) && `${b.meta.title} ${b.meta.author}`.toLocaleLowerCase('tr').includes(q))
+    .sort((a, b) =>
+      libSort === 'progress' ? (b.pct - a.pct) || a.meta.title.localeCompare(b.meta.title, 'tr')
+      : libSort === 'author' ? (a.meta.author || '~').localeCompare(b.meta.author || '~', 'tr') || a.meta.title.localeCompare(b.meta.title, 'tr')
+      : a.meta.title.localeCompare(b.meta.title, 'tr'));
+  const shelfCols = Math.max(1, Math.min(3, Math.floor(shelfWidth / 400)));
+  const shelfCellW = (shelfWidth - 18 - (shelfCols - 1) * 9) / shelfCols - 16;
+  const changeViewMode = (m: LibraryViewMode) => {
+    setViewMode(m);
+    try { localStorage.setItem(LIBRARY_VIEW_KEY, m); } catch { /* yoksay */ }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-primary)' }}>
       <div style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
@@ -401,70 +556,155 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
         )}
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '32px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
         {bookNotes.length === 0 ? (
           <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', padding: '60px 0' }}>
             Henüz kitap eklenmedi. "Yeni Kitap" ile başla.
           </div>
         ) : (
-          <div
-            className="library-shelf"
-            style={{
-              display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: '14px',
-              padding: '20px 20px 26px 20px', borderBottom: '6px solid rgba(140,110,80,0.35)',
-              background: 'linear-gradient(180deg, rgba(255,255,255,0.015) 0%, rgba(140,110,80,0.08) 100%)',
-              borderRadius: '8px'
-            }}
-          >
-            {bookNotes.map(n => {
-              const content = scannedContents[n.path] || '';
-              const meta = parseBookMeta(n.name, content);
-              const percent = meta.totalPages > 0 ? Math.min(100, Math.round((meta.currentPage / meta.totalPages) * 100)) : 0;
-              // Sırt yüksekliği sayfa sayısına göre hafifçe değişir — gerçek bir raf hissi.
-              const spineHeight = Math.max(160, Math.min(230, 150 + (meta.totalPages || 200) / 8));
-              return (
-                <div
-                  key={n.path}
-                  className="library-book-spine"
-                  onClick={() => setSelectedBookName(meta.title)}
-                  title={`${meta.title}${meta.author ? ' — ' + meta.author : ''}`}
-                  style={{
-                    width: '46px',
-                    height: `${spineHeight}px`,
-                    background: `linear-gradient(100deg, ${meta.color} 0%, rgba(${hexToRgbString(meta.color)},0.72) 100%)`,
-                    borderRadius: '3px 6px 6px 3px',
-                    boxShadow: `2px 4px 10px rgba(0,0,0,0.35), inset -2px 0 4px rgba(0,0,0,0.25)`,
-                    cursor: 'pointer',
-                    position: 'relative',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    justifyContent: 'center',
-                    paddingTop: '14px',
-                    flexShrink: 0
-                  }}
-                >
-                  <span style={{
-                    writingMode: 'vertical-rl',
-                    transform: 'rotate(180deg)',
-                    color: '#fff',
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    maxHeight: `${spineHeight - 30}px`,
-                    textShadow: '0 1px 3px rgba(0,0,0,0.4)'
-                  }}>
-                    {meta.title}
-                  </span>
-                  {percent > 0 && (
-                    <div style={{ position: 'absolute', bottom: '6px', left: '4px', right: '4px', height: '3px', background: 'rgba(255,255,255,0.25)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${percent}%`, background: '#fff' }} />
-                    </div>
-                  )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Arama + sıralama + görünüm anahtarı */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+              <input
+                type="search" value={libSearch} onChange={e => setLibSearch(e.target.value)} placeholder="Kitap veya yazar ara…"
+                style={{ flex: 1, minWidth: '160px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '9px 12px', color: 'var(--text-primary, #fff)', fontSize: '13px', outline: 'none' }}
+              />
+              <select
+                value={libSort} onChange={e => setLibSort(e.target.value as 'name' | 'progress' | 'author')}
+                style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text-primary, #fff)', fontSize: '12.5px' }}
+              >
+                <option value="name">Ada göre</option>
+                <option value="progress">İlerlemeye göre</option>
+                <option value="author">Yazara göre</option>
+              </select>
+              <div style={{ display: 'flex', border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden' }}>
+                {([['shelf', 'Kitaplık'], ['cards', 'Kapak kartları'], ['list', 'Liste']] as [LibraryViewMode, string][]).map(([m, label]) => (
+                  <button
+                    key={m} type="button" onClick={() => changeViewMode(m)}
+                    style={{ border: 'none', padding: '9px 13px', fontSize: '12.5px', cursor: 'pointer', background: viewMode === m ? 'var(--accent-color)' : 'var(--bg-secondary)', color: viewMode === m ? '#fff' : 'var(--text-muted)', fontWeight: viewMode === m ? 700 : 500 }}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Kategori çipleri */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+              {['Tümü', ...catList].map(c => {
+                const active = libCat === c;
+                const count = c === 'Tümü' ? libBooks.length : catCounts[c];
+                return (
+                  <button
+                    key={c} type="button" onClick={() => setLibCat(c)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', borderRadius: '999px', padding: '5px 11px', fontSize: '12px', cursor: 'pointer', background: active ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${active ? 'var(--accent-color)' : 'var(--border-color)'}`, color: active ? 'var(--text-primary, #fff)' : 'var(--text-muted)' }}
+                  >
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: c === 'Tümü' ? '#8f8b84' : categoryColor(c) }} />
+                    {c} <span style={{ opacity: 0.7 }}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {shownBooks.length === 0 ? (
+              <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px 0', fontSize: '13px' }}>Eşleşen kitap yok.</div>
+            ) : viewMode === 'shelf' ? (
+              // ---- KİTAPLIK: siyah çerçeve, kategori başına bir bölme ----
+              <div ref={shelfRef} style={{ width: '100%' }}>
+                <div style={{ display: 'grid', gap: '9px', background: '#0a0a0b', padding: '9px', borderRadius: '4px', boxShadow: '0 0 0 1px #000, 0 10px 30px rgba(0,0,0,0.5)', gridTemplateColumns: `repeat(${shelfCols}, minmax(0, 1fr))` }}>
+                  {catList.filter(c => shownBooks.some(b => b.cat === c)).map(c => {
+                    const books: ShelfBook[] = shownBooks.filter(b => b.cat === c).map(b => ({ title: b.meta.title, author: b.meta.author, pct: b.pct, pages: b.meta.totalPages, color: b.color }));
+                    const rows = packShelfRows(buildShelfItems(books), shelfCellW);
+                    const tip = (b: ShelfBook) => `${b.title}${b.author ? ' — ' + b.author : ''}${b.pct ? ` · %${b.pct}` : ''}`;
+                    return (
+                      <div key={c} style={{ background: '#17171a', backgroundImage: 'linear-gradient(180deg, rgba(0,0,0,0.35), transparent 40%)', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                        <div style={{ alignSelf: 'flex-start', margin: '8px 0 0 10px', fontSize: '10.5px', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#cbbd9d', background: '#26231c', border: '1px solid #4a4332', borderRadius: '2px', padding: '2px 8px' }}>
+                          {c}<span style={{ opacity: 0.6, marginLeft: '6px' }}>{books.length}</span>
+                        </div>
+                        {rows.map((row, ri) => (
+                          <div key={ri} style={{ display: 'flex', alignItems: 'flex-end', height: '262px', padding: '0 8px', borderBottom: '8px solid #2a2a30', boxShadow: '0 1px 0 rgba(255,255,255,0.05) inset' }}>
+                            {row.map((it, ii) => {
+                              if (it.type === 'stack') {
+                                return (
+                                  <div key={ii} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', margin: '0 6px 0 4px', width: '158px', flexShrink: 0 }}>
+                                    {it.grp.slice().reverse().map(g => (
+                                      <div
+                                        key={g.b.title} className="library-book-spine" onClick={() => setSelectedBookName(g.b.title)} title={tip(g.b)}
+                                        style={{ height: `${g.h}px`, marginLeft: `${g.dx}px`, background: `linear-gradient(180deg, ${g.bg}, rgba(0,0,0,0.25)), ${g.bg}`, color: g.fg, borderRadius: '2px', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '0 10px', fontWeight: 700, fontSize: '11px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textShadow: '0 1px 2px rgba(0,0,0,0.5)', boxShadow: 'inset 0 -2px 3px rgba(0,0,0,0.3), inset 0 1px 1px rgba(255,255,255,0.15), 0 1px 2px rgba(0,0,0,0.5)' }}
+                                      >{g.b.title}</div>
+                                    ))}
+                                  </div>
+                                );
+                              }
+                              const lean = it.type === 'lean';
+                              return (
+                                <div
+                                  key={ii} className="library-book-spine" onClick={() => setSelectedBookName(it.b.title)} title={tip(it.b)}
+                                  style={{
+                                    position: 'relative', flexShrink: 0, width: `${it.w}px`, height: `${it.h}px`, marginRight: lean ? `${it.gap}px` : '2px',
+                                    background: `linear-gradient(90deg, ${it.bg}, ${it.bg} 60%, rgba(0,0,0,0.18))`, color: it.fg, borderRadius: '2px 2px 0 0', cursor: 'pointer',
+                                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between', padding: '9px 0',
+                                    boxShadow: 'inset -2px 0 3px rgba(0,0,0,0.35), inset 1px 0 1px rgba(255,255,255,0.12), 1px 0 2px rgba(0,0,0,0.5)',
+                                    ...(lean ? { transformOrigin: '100% 100%', transform: `rotate(${it.deg}deg)` } : {})
+                                  }}
+                                >
+                                  <div style={{ width: '100%', height: '3px', background: 'rgba(255,255,255,0.3)' }} />
+                                  <div style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontWeight: 700, fontSize: '12px', lineHeight: 1.1, overflow: 'hidden', flex: 1, margin: '8px 0', textShadow: '0 1px 2px rgba(0,0,0,0.5)', maxHeight: '100%' }}>{it.b.title}</div>
+                                  <div style={{ width: '100%', height: '3px', background: 'rgba(255,255,255,0.3)' }} />
+                                  {it.b.pct > 0 && (
+                                    <div style={{ position: 'absolute', left: '3px', right: '3px', bottom: '3px', height: '3px', background: 'rgba(255,255,255,0.25)', borderRadius: '2px', overflow: 'hidden' }}>
+                                      <div style={{ height: '100%', width: `${it.b.pct}%`, background: '#fff' }} />
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              </div>
+            ) : viewMode === 'cards' ? (
+              // ---- KAPAK KARTLARI ----
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                {shownBooks.map(b => (
+                  <div
+                    key={b.path} onClick={() => setSelectedBookName(b.meta.title)}
+                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden', cursor: 'pointer', display: 'flex', flexDirection: 'column' }}
+                  >
+                    <div style={{ aspectRatio: '3 / 4', maxWidth: '100%', padding: '14px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', color: '#fff', background: `linear-gradient(160deg, ${b.color}, ${b.color}77)` }}>
+                      <div style={{ fontWeight: 700, fontSize: '15px', lineHeight: 1.2, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>{b.meta.title}</div>
+                      <div style={{ fontSize: '11px', opacity: 0.85 }}>{b.meta.author || '—'}</div>
+                    </div>
+                    <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{b.cat}</div>
+                      <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${b.pct}%`, background: 'var(--accent-color)' }} />
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{b.meta.totalPages > 0 ? `${b.meta.currentPage}/${b.meta.totalPages} sayfa · ` : ''}%{b.pct}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              // ---- LİSTE ----
+              <div style={{ display: 'flex', flexDirection: 'column', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden' }}>
+                {shownBooks.map(b => (
+                  <div
+                    key={b.path} onClick={() => setSelectedBookName(b.meta.title)}
+                    style={{ display: 'grid', gridTemplateColumns: '10px minmax(0, 1fr) auto 52px', gap: '12px', alignItems: 'center', padding: '10px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}
+                  >
+                    <div style={{ width: '10px', height: '28px', borderRadius: '3px', background: b.color }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '13.5px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.meta.title}</div>
+                      <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>{b.meta.author || '—'}</div>
+                    </div>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', border: '1px solid var(--border-color)', borderRadius: '999px', padding: '2px 9px' }}>{b.cat}</span>
+                    <div style={{ textAlign: 'right', fontSize: '11px', color: 'var(--text-muted)' }}>%{b.pct}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
