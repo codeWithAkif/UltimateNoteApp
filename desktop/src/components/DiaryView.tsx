@@ -52,6 +52,181 @@ const bodyOf = (content: string | undefined, header: string): string => {
   return content;
 };
 
+// Günlük notlarına uygulamanın başka yerlerinden (Hızlı Giriş, görev tamamlama) yazılan
+// "- [x] Başlık [due:..] [plannedtime:..] [project:..] [completed:..] [outcome:..]" satırları
+// ham etiketleriyle okunması zor — bunlar düzenlenebilir metin alanından AYRILIP temiz satırlar
+// olarak gösterilir (Not editöründeki rozet etiketleriyle aynı dakiklik metinleri). Satırların
+// kendisi dosyada AYNEN korunur, kaydederken olduğu gibi geri yazılır.
+// SADECE uygulamanın yazdığı (etiketli) görev satırları ayrılır; kullanıcının kutuya kendi
+// yazdığı düz "- [ ] bir şey" satırı kutuda kalır — aksi halde yazarken satır kutudan kopup
+// yukarı taşınıyor ve kullanıcı "yazamıyorum" hissediyordu.
+const isTaskLine = (l: string) =>
+  /^\s*[-*]\s+\[[ xX]\]\s*/.test(l) && /\[(due|plannedtime|project|completed|outcome|started|priority):[^\]]*\]/i.test(l);
+
+const OUTCOME_LABEL: Record<string, string> = {
+  fast: '⚡ Erken', ontime: '✅ Zamanında', late: '⏰ Geç', incomplete: '❌ Bitirilmedi'
+};
+
+const splitBody = (body: string): { taskLines: string[]; freeText: string } => {
+  const taskLines: string[] = [];
+  const free: string[] = [];
+  body.split('\n').forEach(l => (isTaskLine(l) ? taskLines.push(l) : free.push(l)));
+  return { taskLines, freeText: free.join('\n').replace(/^\n+/, '').replace(/\s+$/, '') };
+};
+
+const parseTask = (line: string) => {
+  const done = /^\s*[-*]\s+\[[xX]\]/.test(line);
+  const rest = line.replace(/^\s*[-*]\s+\[[ xX]\]\s*/, '');
+  const tags: Record<string, string> = {};
+  rest.replace(/\[(\w+):([^\]]*)\]/g, (_m, k: string, v: string) => { tags[k.toLowerCase()] = v; return ''; });
+  const title = rest.replace(/\[\w+:[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+  let completedAt = '';
+  if (tags.completed) {
+    const d = new Date(tags.completed);
+    if (!isNaN(d.getTime())) completedAt = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  return { done, title: title || '(başlıksız görev)', project: tags.project || '', planned: tags.plannedtime || '', completedAt, outcome: OUTCOME_LABEL[(tags.outcome || '').toLowerCase()] || '' };
+};
+
+// ----------------------------------------------------------------------------
+// Satır-bazlı canlı editör — Markdown'ın küçük bir alt kümesi (görev kutusu, madde işareti,
+// başlık). İSTEK (kullanıcı: "dönüşmüyor taska falan, md dönüştürme yok"): düz bir <textarea>
+// "- [ ] x" yazınca hiçbir şeye dönüştürmüyordu. Not editöründeki gibi: odaktaki satır ham
+// metin (input), diğer satırlar işlenmiş görünür (☐/☑ tıklanabilir, • madde, başlık).
+// ----------------------------------------------------------------------------
+const TASK_RE = /^(\s*)([-*])\s+\[([ xX]?)\]\s?(.*)$/;
+const BULLET_RE = /^(\s*)([-*])\s+(.*)$/;
+const HEADING_RE = /^(#{1,3})\s+(.*)$/;
+
+const listPrefixOf = (line: string): string => {
+  const t = line.match(TASK_RE);
+  if (t) return `${t[1]}${t[2]} [ ] `;
+  const b = line.match(BULLET_RE);
+  if (b) return `${b[1]}${b[2]} `;
+  return '';
+};
+// Satır sadece boş bir liste maddesi mi ("- [ ] " ya da "- ")?
+const isEmptyItem = (line: string): boolean => {
+  const t = line.match(TASK_RE);
+  if (t) return t[4].trim() === '';
+  const b = line.match(BULLET_RE);
+  return !!b && b[3].trim() === '';
+};
+
+const LiveLines: React.FC<{ value: string; onChange: (v: string) => void; onFlush: () => void; placeholder: string }> = ({ value, onChange, onFlush, placeholder }) => {
+  const lines = value === '' ? [''] : value.split('\n');
+  const [focusIdx, setFocusIdx] = useState(-1);
+  const refs = useRef<(HTMLInputElement | null)[]>([]);
+  const pending = useRef<{ idx: number; pos: number } | null>(null);
+
+  React.useEffect(() => {
+    const p = pending.current;
+    if (p && refs.current[p.idx]) {
+      const el = refs.current[p.idx]!;
+      el.focus();
+      el.setSelectionRange(p.pos, p.pos);
+      pending.current = null;
+    }
+  });
+
+  const emit = (next: string[]) => onChange(next.join('\n'));
+  const focusLine = (idx: number, pos: number) => { pending.current = { idx, pos }; setFocusIdx(idx); };
+  const toggle = (i: number) => {
+    const next = [...lines];
+    next[i] = next[i].replace(/\[([ xX]?)\]/, /\[[xX]\]/.test(next[i]) ? '[ ]' : '[x]');
+    emit(next);
+  };
+
+  const onKeyDown = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    const el = e.currentTarget;
+    const pos = el.selectionStart ?? 0;
+    const line = lines[i];
+    const collapsed = el.selectionStart === el.selectionEnd;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const next = [...lines];
+      if (isEmptyItem(line) && pos >= line.length) { // boş maddede Enter = listeden çık
+        next[i] = '';
+        emit(next); focusLine(i, 0);
+        return;
+      }
+      const before = line.slice(0, pos), after = line.slice(pos);
+      const prefix = listPrefixOf(line);
+      next.splice(i, 1, before, prefix + after);
+      emit(next); focusLine(i + 1, prefix.length);
+    } else if (e.key === 'Backspace' && collapsed) {
+      if (isEmptyItem(line) && pos >= line.length && line.length > 0) { // boş maddede Backspace = işareti sil
+        e.preventDefault();
+        const next = [...lines]; next[i] = '';
+        emit(next); focusLine(i, 0);
+      } else if (pos === 0 && i > 0) { // satır başında Backspace = üst satırla birleştir
+        e.preventDefault();
+        const next = [...lines];
+        next.splice(i - 1, 2, lines[i - 1] + line);
+        emit(next); focusLine(i - 1, lines[i - 1].length);
+      }
+    } else if (e.key === 'ArrowUp' && i > 0) {
+      e.preventDefault(); focusLine(i - 1, Math.min(pos, lines[i - 1].length));
+    } else if (e.key === 'ArrowDown' && i < lines.length - 1) {
+      e.preventDefault(); focusLine(i + 1, Math.min(pos, lines[i + 1].length));
+    }
+  };
+
+  const rowBase: React.CSSProperties = { minHeight: '22px', lineHeight: '22px', fontSize: '12px', color: '#e8ddc8', display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '0 4px' };
+
+  return (
+    <div
+      style={{ flex: 1, minHeight: '64px', margin: '0 10px 10px', padding: '4px 0', borderRadius: '6px', cursor: 'text',
+        backgroundImage: 'repeating-linear-gradient(to bottom, transparent, transparent 21px, rgba(240,230,210,0.1) 22px)',
+        backgroundPositionY: '4px', backgroundColor: 'rgba(0,0,0,0.14)' }}
+      onMouseDown={e => { if (e.target === e.currentTarget) { e.preventDefault(); focusLine(lines.length - 1, lines[lines.length - 1].length); } }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setFocusIdx(-1); onFlush(); } }}
+    >
+      {lines.map((line, i) => {
+        if (i === focusIdx) {
+          return (
+            <div key={i} style={rowBase}>
+              <input
+                ref={el => { refs.current[i] = el; }}
+                value={line}
+                onChange={e => { const next = [...lines]; next[i] = e.target.value; emit(next); }}
+                onKeyDown={e => onKeyDown(i, e)}
+                placeholder={lines.length === 1 && line === '' ? placeholder : ''}
+                style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', color: '#e8ddc8', fontSize: '12px', lineHeight: '22px', height: '22px', padding: 0, fontFamily: 'inherit' }}
+              />
+            </div>
+          );
+        }
+        const t = line.match(TASK_RE);
+        const b = !t && line.match(BULLET_RE);
+        const h = !t && !b && line.match(HEADING_RE);
+        let content: React.ReactNode;
+        if (t) {
+          const done = /[xX]/.test(t[3]);
+          content = (
+            <>
+              <span
+                onMouseDown={e => { e.preventDefault(); e.stopPropagation(); toggle(i); }}
+                style={{ cursor: 'pointer', color: done ? '#6aa86a' : '#a89a86', fontSize: '13px', paddingLeft: `${t[1].length * 6}px` }}
+              >{done ? '☑' : '☐'}</span>
+              <span style={{ flex: 1, textDecoration: done ? 'line-through' : 'none', color: done ? '#a89a86' : '#e8ddc8' }}>{t[4]}</span>
+            </>
+          );
+        } else if (b) {
+          content = (<><span style={{ color: '#a89a86', paddingLeft: `${b[1].length * 6}px` }}>•</span><span style={{ flex: 1 }}>{b[3]}</span></>);
+        } else if (h) {
+          content = <span style={{ flex: 1, fontWeight: 800, fontSize: h[1].length === 1 ? '14px' : '13px', color: '#f4c98a' }}>{h[2]}</span>;
+        } else {
+          content = <span style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: line ? '#e8ddc8' : 'rgba(201,189,168,0.35)' }}>{line || (lines.length === 1 ? placeholder : '')}</span>;
+        }
+        return (
+          <div key={i} style={rowBase} onMouseDown={e => { e.preventDefault(); focusLine(i, line.length); }}>{content}</div>
+        );
+      })}
+    </div>
+  );
+};
+
 interface DiaryViewProps {
   fileContents: Record<string, string>;
   onSaveNote: (path: string, content: string) => Promise<void>;
@@ -66,6 +241,10 @@ export default function DiaryView({ fileContents, onSaveNote, onOpenNote }: Diar
   // asla geri okunup üzerine yazılmaz (aksi halde yazarken imleç/metin sıçrardı).
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Kaydetme anında EN GÜNCEL dosya içeriğinden görev satırlarını okumak için (debounce
+  // sırasında başka bir yerden eklenen görev satırı ezilmesin).
+  const contentsRef = useRef(fileContents);
+  contentsRef.current = fileContents;
 
   const todayStr = toDateStr(new Date());
 
@@ -99,13 +278,33 @@ export default function DiaryView({ fileContents, onSaveNote, onOpenNote }: Diar
   }, [weekDays]);
 
   // Yazarken debounce'lu kaydetme — her tuş vuruşunda değil, kullanıcı durakladığında kaydeder.
+  // Dosyaya yazılacak içerik: başlık + (korunan) görev satırları + kullanıcının serbest metni.
+  const buildContent = (day: (typeof weekDays)[number], freeText: string) => {
+    const header = headerFor(day.weekdayFull, day.dayNum, day.monthFull);
+    const fileTasks = splitBody(bodyOf(contentsRef.current[day.path], header)).taskLines;
+    // Kullanıcı serbest metin alanına bir görev satırı yazdıysa/yapıştırdıysa o da görev
+    // satırı sayılır — tekilleştirerek (aynı satır iki kez yazılmasın) birleştirilir.
+    const typed = splitBody(freeText);
+    const taskLines = Array.from(new Set([...fileTasks, ...typed.taskLines]));
+    return `${header}\n\n${taskLines.length ? taskLines.join('\n') + '\n\n' : ''}${typed.freeText}`;
+  };
+
   const handleChange = (day: (typeof weekDays)[number], value: string) => {
     setDrafts(prev => ({ ...prev, [day.path]: value }));
     if (saveTimers.current[day.path]) clearTimeout(saveTimers.current[day.path]);
-    saveTimers.current[day.path] = setTimeout(() => {
-      const header = headerFor(day.weekdayFull, day.dayNum, day.monthFull);
-      onSaveNote(day.path, `${header}\n\n${value}`);
-    }, SAVE_DEBOUNCE_MS);
+    saveTimers.current[day.path] = setTimeout(() => commit(day, value), SAVE_DEBOUNCE_MS);
+  };
+
+  // Kaydeder ve düzenleme alanını (draft) görev satırlarından arındırır — görev satırları
+  // kaydedildikten sonra temiz satır olarak gösterildiğinden alanda ham halde kalmamalı.
+  const commit = (day: (typeof weekDays)[number], value: string) => {
+    onSaveNote(day.path, buildContent(day, value));
+    // Metne SADECE içinde etiketli görev satırı varsa dokun, o da yalnızca o satırları
+    // çıkararak (baştaki/sondaki boşlukları KIRPMADAN) — aksi halde kayıttan sonra metnin
+    // sonundaki Enter ile açılan boş satır siliniyor ve imleç yukarı sıçrıyordu.
+    if (value.split('\n').some(isTaskLine)) {
+      setDrafts(prev => ({ ...prev, [day.path]: value.split('\n').filter(l => !isTaskLine(l)).join('\n') }));
+    }
   };
 
   // Sayfadan ayrılmadan/sekme kapanmadan önce bekleyen (henüz debounce süresi dolmamış)
@@ -161,7 +360,9 @@ export default function DiaryView({ fileContents, onSaveNote, onOpenNote }: Diar
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
           {weekDays.map(day => {
             const header = headerFor(day.weekdayFull, day.dayNum, day.monthFull);
-            const value = drafts[day.path] !== undefined ? drafts[day.path] : bodyOf(fileContents[day.path], header);
+            const { taskLines, freeText } = splitBody(bodyOf(fileContents[day.path], header));
+            const value = drafts[day.path] !== undefined ? drafts[day.path] : freeText;
+            const tasks = taskLines.map(parseTask);
             return (
               <div
                 key={day.dateStr}
@@ -179,27 +380,41 @@ export default function DiaryView({ fileContents, onSaveNote, onOpenNote }: Diar
                     style={{ background: 'none', border: 'none', color: 'rgba(240,230,210,0.4)', cursor: 'pointer', fontSize: '12px', padding: '2px' }}
                   >↗</button>
                 </div>
-                <textarea
+                {tasks.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px 8px' }}>
+                    {tasks.map((t, i) => (
+                      <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '6px 8px', borderRadius: '7px', background: 'rgba(0,0,0,0.22)', borderLeft: `3px solid ${t.done ? '#6aa86a' : '#a89a86'}` }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                          <span style={{ fontSize: '11px', color: t.done ? '#6aa86a' : '#a89a86', lineHeight: '16px' }}>{t.done ? '✓' : '○'}</span>
+                          <span style={{ fontSize: '11.5px', lineHeight: '16px', color: t.done ? '#bfb29c' : '#e8ddc8', textDecoration: t.done ? 'line-through' : 'none', textDecorationColor: 'rgba(191,178,156,0.5)' }}>{t.title}</span>
+                        </div>
+                        {(t.project || t.planned || t.completedAt || t.outcome) && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', paddingLeft: '17px' }}>
+                            {t.project && <span style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '8px', background: 'rgba(224,164,88,0.16)', color: '#e0a458' }}>📁 {t.project}</span>}
+                            {t.planned && <span style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '8px', background: 'rgba(240,230,210,0.08)', color: '#a89a86' }}>🕘 {t.planned}</span>}
+                            {t.completedAt && <span style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '8px', background: 'rgba(106,168,106,0.14)', color: '#8fc48f' }}>✔ {t.completedAt}</span>}
+                            {t.outcome && <span style={{ fontSize: '9.5px', padding: '1px 6px', borderRadius: '8px', background: 'rgba(240,230,210,0.08)', color: '#c9bda8' }}>{t.outcome}</span>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <LiveLines
                   value={value}
-                  onChange={e => handleChange(day, e.target.value)}
-                  onBlur={() => {
-                    // Odak kaybedilince bekleyen kaydı hemen uygula — kullanıcı başka bir güne
-                    // geçtiğinde son yazdığı satırın debounce süresini beklememesi için.
+                  onChange={v => handleChange(day, v)}
+                  onFlush={() => {
+                    // Odak kutudan tamamen çıkınca bekleyen kaydı hemen uygula — kullanıcı başka
+                    // bir güne geçtiğinde son yazdığı satırın debounce süresini beklememesi için.
                     if (saveTimers.current[day.path]) {
                       clearTimeout(saveTimers.current[day.path]);
                       delete saveTimers.current[day.path];
-                      onSaveNote(day.path, `${header}\n\n${value}`);
+                      commit(day, value);
                     }
                   }}
                   placeholder="Buraya yaz…"
-                  style={{
-                    flex: 1, width: '100%', border: 'none', outline: 'none', resize: 'none', boxSizing: 'border-box',
-                    margin: '0 10px 10px', padding: '4px 4px', borderRadius: '6px',
-                    backgroundImage: 'repeating-linear-gradient(to bottom, transparent, transparent 21px, rgba(240,230,210,0.1) 22px)',
-                    backgroundColor: 'rgba(0,0,0,0.14)',
-                    color: '#e8ddc8', fontSize: '12px', lineHeight: '22px', fontFamily: 'inherit'
-                  }}
                 />
+
               </div>
             );
           })}
