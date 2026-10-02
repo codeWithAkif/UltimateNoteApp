@@ -38,7 +38,8 @@ interface BookMeta {
 }
 
 const parseBookMeta = (noteName: string, content: string): BookMeta => {
-  const authorM = content.match(/\[yazar:([^\]]+)\]/i);
+  // Yazar: önce [yazar:..] etiketi, yoksa ön bilgideki `yazar: "..."` alanı.
+  const authorM = content.match(/\[yazar:([^\]]+)\]/i) || content.match(/^yazar:[ \t]*["']?(.+?)["']?[ \t]*$/mi);
   const totalM = content.match(/\[toplam_sayfa:(\d+)\]/i);
   const curM = lastMatch(content, '\\[son_sayfa:(\\d+)\\]');
   const colorM = lastMatch(content, BOOK_COLOR_REGEX.source);
@@ -76,8 +77,22 @@ const hexToRgbString = (hex: string): string => {
 // ============================================================================
 const capitalizeTr = (s: string) => s.charAt(0).toLocaleUpperCase('tr') + s.slice(1);
 
-// #kitap dışındaki ilk etiket kitabın kategorisidir; etiket yoksa 'Diğer'.
+// Kitabın kategorisi, öncelik sırasıyla: (1) ön bilgideki (front matter) `kategori: "..."`
+// alanı, (2) ön bilgideki `tags: [kitap, x]` listesinin #kitap dışındaki ilk elemanı,
+// (3) metindeki #kitap dışındaki ilk #etiket, (4) 'Diğer'. Gerçek vault'ta kategoriler
+// `kategori:` alanında duruyor; `[[Kütüphane#Bilim|...]]` içindeki "#Bilim" bir bağlantı
+// parçası, etiket değil (satır içi etiket yalnızca boşluktan/satır başından sonra gelir).
 const parseCategory = (content: string): string => {
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (fm) {
+    const k = fm[1].match(/^kategori:[ \t]*["']?(.+?)["']?[ \t]*$/mi);
+    if (k && k[1].trim()) return k[1].trim();
+    const t = fm[1].match(/^tags:[ \t]*\[([^\]]*)\]/mi);
+    if (t) {
+      const first = t[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).find(s => s && s.toLocaleLowerCase('tr') !== 'kitap');
+      if (first) return capitalizeTr(first.replace(/-/g, ' '));
+    }
+  }
   for (const m of content.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
     const tag = m[1].toLocaleLowerCase('tr');
     if (tag !== 'kitap') return capitalizeTr(tag);
