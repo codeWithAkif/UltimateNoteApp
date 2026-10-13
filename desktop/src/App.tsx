@@ -4524,7 +4524,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   };
 
   // 3. Save Note Content
-  const handleSaveNote = async (path: string, content: string) => {
+  // `opts.lightweight`: Hunter Sistemi gibi sık güncellenen DURUM dosyaları için — her dokunuşta
+  // (set tamamlama vb.) sürüm geçmişi dosyasını okuyup yazmak ve 5 sn sonra bütün kasayı yeniden
+  // taramak, telefonda arayüzü yavaşlatıyordu (kullanıcı: "çok ağır çalışıyor, scroll kasıyor").
+  // Hafif modda sürüm anlık görüntüsü alınmaz ve tam tarama planlanmaz; içerik yine diske yazılır,
+  // senkrona gider ve `fileContents` anında güncellenir.
+  const handleSaveNote = async (path: string, content: string, opts?: { lightweight?: boolean }) => {
     if (!isBrowser) {
       // Sürüm Geçmişi (Version History): içerik gerçekten değiştiyse, üzerine
       // yazılmadan önceki hâli `.versions/<yol>.json` altında JSON anlık
@@ -4532,7 +4537,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       // mobil dosya listelemesinde otomatik olarak gizlenir (bkz. platform.ts,
       // electron/main.cjs), dolayısıyla not listesinde görünmez.
       const previousContent = fileContents[path];
-      if (previousContent !== undefined && previousContent !== content) {
+      if (!opts?.lightweight && previousContent !== undefined && previousContent !== content) {
         try {
           const historyPath = `.versions/${path}.json`;
           let history: { timestamp: number; content: string }[] = [];
@@ -4567,7 +4572,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       // geçmişi diff'i ve bu nota bağlı görünümler için yeterli) ve tam
       // çalışma alanı taramasını ertelenmiş/debounce'lu olarak planla.
       setFileContents(prev => ({ ...prev, [path]: content }));
-      scheduleWorkspaceScan();
+      if (!opts?.lightweight) scheduleWorkspaceScan();
     } else {
       // Web Mock
       localStorage.setItem(`mock_note_${path}`, content);

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 // ============================================================================
 // HUNTER SİSTEMİ — Solo Leveling temalı fitness/görev modülü
@@ -416,7 +416,7 @@ const RankHexagon: React.FC<{ rank: Rank; size?: number }> = ({ rank, size = 96 
 // (E→S) vücut kademeli olarak daha kaslı/karmaşık bir siluete evriliyor: omuzlar
 // genişliyor, bel daralıyor (V-taper), abs satırları artıyor, biceps/trap/damar
 // detay çizgileri ekleniyor, S-Rank'te aura + omuz zırhı beliriyor.
-const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankColor: string; rank: Rank }> = ({ status, rankColor, rank }) => {
+const MuscleBodyDiagramImpl: React.FC<{ status: Record<MuscleGroup, boolean>; rankColor: string; rank: Rank }> = ({ status, rankColor, rank }) => {
   const fillFor = (group: MuscleGroup) => status[group] ? rankColor : 'rgba(148,163,184,0.12)';
   const strokeFor = (group: MuscleGroup) => status[group] ? rankColor : 'rgba(148,163,184,0.4)';
   const glow = (group: MuscleGroup) => status[group] ? { filter: 'url(#bodyGlow)' } : {};
@@ -544,10 +544,16 @@ const MuscleBodyDiagram: React.FC<{ status: Record<MuscleGroup, boolean>; rankCo
   );
 };
 
+// PERFORMANS: diyagram çok sayıda SVG bulanıklık (glow) filtresi içerir; her set dokunuşunda
+// değil, YALNIZCA kas grubu durumu/rank/renk değişince yeniden çizilir (scroll akıcılığı için).
+const MuscleBodyDiagram = React.memo(MuscleBodyDiagramImpl, (a, b) =>
+  a.rank === b.rank && a.rankColor === b.rankColor &&
+  (Object.keys(a.status) as MuscleGroup[]).every(k => a.status[k] === b.status[k]));
+
 interface HunterViewProps {
   fileContents: Record<string, string>;
   readNoteContent: (path: string) => Promise<string>;
-  onSaveNote: (path: string, content: string) => Promise<void>;
+  onSaveNote: (path: string, content: string, opts?: { lightweight?: boolean }) => Promise<void>;
 }
 
 export default function HunterView({ fileContents, readNoteContent, onSaveNote }: HunterViewProps) {
@@ -566,7 +572,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
   const rawContent = fileContents[HUNTER_NOTE_PATH];
 
   // İlk kez açılıyorsa (not hiç yoksa) taze bir E-Rank başlangıç state'i.
-  const state: HunterState = useMemo(() => {
+  const baseState: HunterState = useMemo(() => {
     if (!rawContent) {
       return {
         rank: 'E', xp: 0, penaltyLevel: 0, streak: 0, bestStreak: 0,
@@ -577,6 +583,47 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     }
     const parsed = parseHunterState(rawContent);
     return parsed;
+  }, [rawContent]);
+
+  // PERFORMANS (kullanıcı: spor salonunda "çok ağır çalışıyor, bir şey eklerken çok bekliyor,
+  // scroll kasıyor"): eskiden her dokunuş diske yazılıp dosya içeriği geri gelene kadar arayüz
+  // kilitleniyordu. Artık değişiklik EKRANA ANINDA yansır (`override`), kayıt arka planda sıraya
+  // alınır — peş peşe dokunuşlarda yalnızca en son durum yazılır (önceki ara durumlar atlanır).
+  // Kayıt `lightweight` modda yapılır (sürüm geçmişi ve tam kasa taraması yok, bkz. App.tsx).
+  const [override, setOverride] = useState<HunterState | null>(null);
+  const state: HunterState = override ?? baseState;
+  const pendingSave = useRef<HunterState | null>(null);
+  const saving = useRef(false);
+  const lastSavedText = useRef('');
+  const rawRef = useRef(rawContent);
+  rawRef.current = rawContent;
+  const persist = (next: HunterState) => {
+    setOverride(next);
+    pendingSave.current = next;
+    if (saving.current) return;
+    saving.current = true;
+    (async () => {
+      try {
+        while (pendingSave.current) {
+          const s = pendingSave.current;
+          pendingSave.current = null;
+          const text = serializeHunterState(s);
+          lastSavedText.current = text;
+          try { await onSaveNote(HUNTER_NOTE_PATH, text, { lightweight: true }); }
+          catch (e) { console.error('Hunter kaydı başarısız:', e); }
+        }
+      } finally {
+        saving.current = false;
+        if (rawRef.current === lastSavedText.current) setOverride(null);
+      }
+    })();
+  };
+  // Dosya içeriği bizim son yazdığımızla eşleşince geçici durumu bırakır (dosya doğruluk
+  // kaynağı olur). Eşleşmezse override KORUNUR: bu durumda başka bir cihazdan gelen bir
+  // değişiklik, bu cihazdaki sonraki ilk kayıt gelene kadar ekrana yansımaz (bilinen sınır).
+  useEffect(() => {
+    if (saving.current || !override) return;
+    if (rawContent === lastSavedText.current) setOverride(null);
   }, [rawContent]);
 
   // Kullanıcının kendi programında bir gün için hiç hareket eklenmemişse (dinlenme günü) o gün
@@ -627,7 +674,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         quest: newQuest,
         history: missed ? [historyEntry, ...state.history] : state.history
       };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
+      persist(newState);
     } finally {
       setBusy(false);
     }
@@ -676,7 +723,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         history: newHistory,
         shadows: newShadows
       };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
+      persist(newState);
     } finally {
       setBusy(false);
     }
@@ -687,7 +734,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     setBusy(true);
     try {
       const updatedQuest = state.quest.map(q => questItemId(q) === id && q.setsDone > 0 ? { ...q, setsDone: q.setsDone - 1 } : q);
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, quest: updatedQuest }));
+      persist({ ...state, quest: updatedQuest });
     } finally {
       setBusy(false);
     }
@@ -728,7 +775,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         lastStatus: dayStatusFor(newQuest, state.programMode),
         history: [{ date: todayStr(), text: rankedUp ? `🌀 Yükselme Zindanı tamamlandı — ${nextRank}-Rank'e terfi!` : '🏆 Zaten en üst rank\'tesin', xpDelta: 0 }, ...state.history]
       };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
+      persist(newState);
       setDungeonMode(false);
     } finally {
       setBusy(false);
@@ -754,7 +801,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         ...state, programMode: mode, lastDate: dateStr, quest: newQuest,
         lastStatus: dayStatusFor(newQuest, mode)
       };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState(newState));
+      persist(newState);
     } finally {
       setBusy(false);
     }
@@ -772,7 +819,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
         programMode: 'custom', rank: state.rank, penaltyLevel: state.penaltyLevel, dateStr,
         customExercises: state.customExercises, weeklyProgram: state.weeklyProgram
       });
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, quest: newQuest, lastStatus: dayStatusFor(newQuest, 'custom') }));
+      persist({ ...state, quest: newQuest, lastStatus: dayStatusFor(newQuest, 'custom') });
     } finally {
       setBusy(false);
     }
@@ -784,7 +831,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     setBusy(true);
     try {
       const newExercise: CustomExercise = { id: `ex${Date.now()}`, name, groups: newExGroups };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, customExercises: [...state.customExercises, newExercise] }));
+      persist({ ...state, customExercises: [...state.customExercises, newExercise] });
       setNewExName('');
       setNewExGroups([]);
     } finally {
@@ -799,7 +846,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
       const newExercises = state.customExercises.filter(e => e.id !== id);
       const newProgram: WeeklyProgram = { ...state.weeklyProgram };
       WEEKDAYS.forEach(day => { newProgram[day] = (newProgram[day] || []).filter(e => e.exerciseId !== id); });
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, customExercises: newExercises, weeklyProgram: newProgram }));
+      persist({ ...state, customExercises: newExercises, weeklyProgram: newProgram });
     } finally {
       setBusy(false);
     }
@@ -816,7 +863,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     setBusy(true);
     try {
       const newProgram: WeeklyProgram = { ...state.weeklyProgram, [day]: [...(state.weeklyProgram[day] || []), { exerciseId: form.exerciseId, sets: form.sets, reps: form.reps }] };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, weeklyProgram: newProgram }));
+      persist({ ...state, weeklyProgram: newProgram });
     } finally {
       setBusy(false);
     }
@@ -827,7 +874,7 @@ export default function HunterView({ fileContents, readNoteContent, onSaveNote }
     setBusy(true);
     try {
       const newProgram: WeeklyProgram = { ...state.weeklyProgram, [day]: (state.weeklyProgram[day] || []).filter((_, i) => i !== index) };
-      await onSaveNote(HUNTER_NOTE_PATH, serializeHunterState({ ...state, weeklyProgram: newProgram }));
+      persist({ ...state, weeklyProgram: newProgram });
     } finally {
       setBusy(false);
     }
