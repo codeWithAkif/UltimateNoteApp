@@ -220,6 +220,9 @@ interface CalendarViewProps {
   // bırakıyor) arkaplanda çalışmaya devam eder — bu callback, App.tsx'teki sekme durumunu
   // (activeTab) CalendarView'dan bağımsız tutmak için "Takvim'e geç" isteğini yukarı iletir.
   onRequestFocusCalendar?: () => void;
+  // Bulutla ilk senkron bitene kadar false: otomatik dosya yazıcıları (ör. 'saati geçen görevi planlanmamışa al')
+  // eski yerel kopyalar üzerinde çalışıp buluttaki doğru içeriği ezmesin (bkz. App.tsx firstSyncSettled).
+  autoWriteReady?: boolean;
 }
 
 export interface WorkspaceSubTask {
@@ -626,7 +629,8 @@ export default function CalendarView({
   clientProjectSlugs = {},
   bookNames = [],
   onOpenNotePath,
-  onRequestFocusCalendar
+  onRequestFocusCalendar,
+  autoWriteReady = true
 }: CalendarViewProps) {
   const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
 
@@ -2040,6 +2044,7 @@ export default function CalendarView({
   // geciken görev varsa hepsini TEK okuma/yazma turunda işler (yarış durumu olmasın diye).
   const autoRevertedTaskIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!autoWriteReady) return;
     const now = Date.now();
     const isPlannedWindowPassed = (t: WorkspaceTask): boolean => {
       if (!t.dueDate || !t.timeSlot) return false;
@@ -2093,7 +2098,12 @@ export default function CalendarView({
           const fileContent = await readNoteContent(filePath);
           const lines = fileContent.split('\n');
           due.forEach(t => {
-            if (t.lineIdx >= 0 && t.lineIdx < lines.length) {
+            // `tasks` taramadan, `lines` ise o an okunan GÜNCEL içerikten geliyor; arada senkron/başka bir
+            // yazma olduysa satır değişmiş olabilir. Satır hâlâ "işaretsiz, başlanmamış ve bu planlı tarihli"
+            // değilse (ör. artık tamamlanmışsa) DOKUNMA — yoksa tamamlanmış bir görevin planı silinirdi.
+            const cur = lines[t.lineIdx];
+            const stillUnstarted = cur !== undefined && /^\s*[*\-]\s+\[ \]/.test(cur) && !/\[(?:started|baslangic|başlangıç|başlama|completed|tamamlanma):/i.test(cur) && cur.includes(`[due:${t.dueDate}]`);
+            if (stillUnstarted && t.lineIdx >= 0 && t.lineIdx < lines.length) {
               lines[t.lineIdx] = lines[t.lineIdx]
                 .replace(/\s*\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
                 .replace(/\s*\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
@@ -2106,14 +2116,17 @@ export default function CalendarView({
               lines[t.lineIdx] = lines[t.lineIdx].replace(` ${planTag}`, '').replace(planTag, '');
             }
           });
-          await onSaveNote(filePath, lines.join('\n'));
+          // İçerik fiilen değişmediyse dosyaya DOKUNMA: boş yere yeniden yazmak dosyanın değişiklik zamanını
+          // (mtime) "yeni" yapıp senkronda eski içeriğin kazanmasına yol açabilir.
+          const nextContent = lines.join('\n');
+          if (nextContent !== fileContent) await onSaveNote(filePath, nextContent);
         } catch (err) {
           console.error('Error auto-reverting overdue unstarted tasks:', filePath, err);
         }
       }
       setRefreshTrigger(prev => prev + 1);
     })();
-  }, [tasks]);
+  }, [tasks, autoWriteReady]);
 
   // Handle Drag scheduling
   const handleScheduleTask = async (taskId: string, dateStr: string, timeSlot: string | null) => {

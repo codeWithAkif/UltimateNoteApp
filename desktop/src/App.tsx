@@ -1064,12 +1064,24 @@ export default function App() {
     }
   };
 
+  // VERİ KAYBI DÜZELTMESİ (kullanıcı: takvimde yapılmış/tamamlanmış görevler "Planlanmamış"a düştü ve
+  // işaretleri silindi): açılışta bulutla İLK senkron bitmeden, yerel (telefonda eski olabilen) kopyalar
+  // üzerinde çalışan otomatik yazıcılar — takvimin "saati geçen görevi planlanmamışa al"ı, "başlanmamış/
+  // bitirilmemiş görevi damgala" taramaları — dosyayı değiştirip mtime'ını "daha yeni" yapıyor, senkron
+  // "yerel daha yeni" deyip buluttaki DOĞRU içeriğin üstüne yazıyordu. Bu bayrak, kayıtlı senkron ayarı
+  // varsa ilk BAŞARILI senkron + veri yüklemesi tamamlanana kadar bu yazıcıları bekletir.
+  const [firstSyncSettled, setFirstSyncSettled] = useState<boolean>(() => {
+    try { return !localStorage.getItem('supabase_sync_creds'); } catch { return true; }
+  });
+
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // "Hiç bitirilmeden gün geçmesi" kuralı: uygulama açılışında/veri yüklendiğinde tüm
   // notları tarayıp son tarihi geçmiş, hâlâ işaretlenmemiş, henüz [quest:] etiketi
   // olmayan görevleri "failed" damgalar. Habit Garden'daki applyStreakDecayToAll'un
   // görev-versiyonu — kalıcı ilerlemeye dokunmaz, sadece bir kerelik ceza uygular.
   useEffect(() => {
+    // İlk senkron bitmeden (eski yerel kopyalar üzerinde) hiçbir şey yazma — bkz. firstSyncSettled.
+    if (!firstSyncSettled) return;
     const todayStr = new Date().toISOString().split('T')[0];
     let anyFailed = false;
     const writes: { path: string; content: string }[] = [];
@@ -1113,7 +1125,7 @@ export default function App() {
     // etkiler ve zaten gerekli değildir (yeni biten görevler kendi tamamlama anında
     // ödüllendirilir, bu efekt sadece "unutulmuş/asla başlanmamış" görevler içindir).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes.length > 0]);
+  }, [notes.length > 0 && firstSyncSettled]);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // İSTEK: "▶️ Başla" ile başlanmış ama planlanan bitişin üzerinden 30+ dakika geçtiği hâlde
@@ -1164,12 +1176,12 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!(notes.length > 0)) return;
+    if (!(notes.length > 0) || !firstSyncSettled) return;
     runAutoStopUnfinishedScan();
     const interval = setInterval(runAutoStopUnfinishedScan, 60000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes.length > 0]);
+  }, [notes.length > 0 && firstSyncSettled]);
 
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
   const [customizingFolder, setCustomizingFolder] = useState<string | null>(null);
@@ -3169,7 +3181,9 @@ export default function App() {
       hasCompletedFirstSyncRef.current = true;
     }
     if (status === 'synced') {
-      loadAllData();
+      // Pull edilen içerik state'e yerleşmeden otomatik yazıcıları serbest bırakma: eski kopya üzerinde
+      // çalışıp buluttaki doğru içeriği ezmesinler (bkz. firstSyncSettled).
+      loadAllData().finally(() => setFirstSyncSettled(true));
       loadFinanceData();
     }
   };
@@ -7401,6 +7415,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   ) : (
                     <div className="notes-quick-calendar">
                       <CalendarView
+              autoWriteReady={firstSyncSettled}
                         embedded
                         notes={notes}
                         folders={folders}
@@ -7475,6 +7490,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           <div style={{ display: activeTab === 'calendar' ? 'block' : 'none', height: '100%' }}>
             <CalendarView
+              autoWriteReady={firstSyncSettled}
               notes={notes}
               folders={folders}
               tags={tags}

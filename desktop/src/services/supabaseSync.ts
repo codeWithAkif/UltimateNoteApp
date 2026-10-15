@@ -39,6 +39,29 @@ const uploadDebounceTimers: Record<string, any> = {};
 const pendingUploadContent: Record<string, string> = {};
 const isUploadingPaths: Record<string, boolean> = {};
 
+// VERİ KAYBI ÖNLEMİ (kullanıcı: telefondaki eski kopya buluta çıkıp masaüstündeki doğru görev kaydını ezdi):
+// Uzaktan gelen içerik yerel dosyanın ÜSTÜNE yazılmadan önce, yerel halini normal "Sürüm Geçmişi"ne
+// (`.versions/<yol>.json`, uygulamanın kendi kayıt yoluyla AYNI biçim ve en çok 20 kayıt) koyar; böylece
+// ezilen içerik Notlar > Sürüm Geçmişi'nden geri alınabilir. Hata verirse senkronu ASLA engellemez.
+const snapshotBeforeRemoteOverwrite = async (path: string, localContent: string) => {
+  try {
+    if (!localContent || path.startsWith('.versions/')) return;
+    const historyPath = `.versions/${path}.json`;
+    let history: { timestamp: number; content: string }[] = [];
+    try {
+      const raw = await localPlatform.readNote(historyPath);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) history = parsed;
+    } catch { /* geçmiş yok/bozuk: boş başla */ }
+    if (history.length > 0 && history[history.length - 1].content === localContent) return;
+    history.push({ timestamp: Date.now(), content: localContent });
+    if (history.length > 20) history = history.slice(history.length - 20);
+    await localPlatform.writeNote(historyPath, JSON.stringify(history));
+  } catch (e) {
+    console.error('[Supabase Sync] Sürüm anlık görüntüsü alınamadı (senkron devam ediyor):', path, e);
+  }
+};
+
 const getHash = (str: string): string => {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -615,6 +638,7 @@ const subscribeToRealtimeChanges = () => {
             }
             if (normalizedLocal !== normalizedRemote) {
               console.log(`[Supabase Realtime] Remote update event for: ${path}`);
+              await snapshotBeforeRemoteOverwrite(path, normalizedLocal);
               await localPlatform.writeNote(path, normalizedRemote);
               updateSyncHash(path, getHash(normalizedRemote));
               if (onRemoteChangeCallback) onRemoteChangeCallback();
@@ -974,6 +998,7 @@ const startSync = async () => {
           if (sentStamp) newSyncStamps[item.path] = sentStamp;
         } else if (!localChanged && remoteChanged) {
           console.log(`[Supabase Sync] Remote modified: ${item.path}, downloading...`);
+          await snapshotBeforeRemoteOverwrite(item.path, item.localContent);
           await localPlatform.writeNote(item.path, normalizedRemoteContent);
         } else {
           // Conflict / no history, compare timestamps with scale normalization
