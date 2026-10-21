@@ -240,6 +240,31 @@ interface AutoResizingTextareaProps {
   style?: React.CSSProperties;
 }
 
+// PERFORMANS (kullanıcı: bir yerden kopyalayıp yapıştırınca 3 sn+ donuyor): her satırın textarea'sı kendi
+// yüksekliğini "height='auto' yaz → scrollHeight OKU → yaz" ile ayarlıyordu. Okuma tarayıcıyı o anda SENKRON
+// yerleşim (layout) hesaplamaya zorladığından, N satır yapıştırılınca N kez art arda tam yerleşim hesaplanıyordu
+// (40 satır ≈ 6 sn, 300 satır ≈ 2 dk). Artık istekler tek bir kuyrukta toplanır ve bir mikro-görevde ÜÇ aşamada
+// işlenir: hepsine 'auto' yaz → hepsinin scrollHeight'ını oku (tek yerleşim) → hepsine yüksekliği yaz.
+// Mikro-görev boyamadan önce çalıştığı için titreme olmaz.
+const pendingHeightAdjust = new Set<HTMLTextAreaElement>();
+let heightAdjustQueued = false;
+const flushHeightAdjust = () => {
+  heightAdjustQueued = false;
+  const els = Array.from(pendingHeightAdjust).filter(el => el.isConnected);
+  pendingHeightAdjust.clear();
+  if (els.length === 0) return;
+  els.forEach(el => { el.style.height = 'auto'; });
+  const heights = els.map(el => el.scrollHeight);
+  els.forEach((el, i) => { el.style.height = `${heights[i]}px`; });
+};
+const queueHeightAdjust = (el: HTMLTextAreaElement) => {
+  pendingHeightAdjust.add(el);
+  if (!heightAdjustQueued) {
+    heightAdjustQueued = true;
+    queueMicrotask(flushHeightAdjust);
+  }
+};
+
 const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({
   value,
   onChange,
@@ -258,10 +283,7 @@ const AutoResizingTextarea: React.FC<AutoResizingTextareaProps> = ({
 
   const adjustHeight = () => {
     const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${textarea.scrollHeight}px`;
-    }
+    if (textarea) queueHeightAdjust(textarea);
   };
 
   useEffect(() => {
@@ -4152,7 +4174,14 @@ export default function NotesView({
   } | null>(null);
 
   // Helpers for Heading Folding, Callouts, and Selections
+  // PERFORMANS: bu fonksiyon görünen HER satır için çağrılıyordu (tüm notu baştan tarayarak). Aynı render içinde
+  // sonuç hep aynı olduğundan render başına bir kez hesaplanıp önbelleğe alınır (her render yeni bir önbellek).
+  let hiddenLineIndicesCache: Set<number> | null = null;
   const getHiddenLineIndices = (): Set<number> => {
+    if (!hiddenLineIndicesCache) hiddenLineIndicesCache = computeHiddenLineIndices();
+    return hiddenLineIndicesCache;
+  };
+  const computeHiddenLineIndices = (): Set<number> => {
     const hidden = new Set<number>();
     
     // 1. Folded Headings
@@ -9997,7 +10026,13 @@ export default function NotesView({
                     );
                   })()}
                   {(() => {
+                    // PERFORMANS: görünen her satır için yeniden hesaplanıyordu; render başına tek hesap.
+                    let skippedLineIndicesCache: Set<number> | null = null;
                     const getSkippedLineIndices = () => {
+                      if (!skippedLineIndicesCache) skippedLineIndicesCache = computeSkippedLineIndices();
+                      return skippedLineIndicesCache;
+                    };
+                    const computeSkippedLineIndices = () => {
                       const skipped = new Set<number>();
                       let inCodeBlockState = false;
                       let codeBlockStartIdx = -1;

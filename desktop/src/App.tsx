@@ -75,6 +75,42 @@ interface ShortcutKey {
 }
 
 // Not başına saklanacak maksimum sürüm geçmişi anlık görüntüsü sayısı.
+// İSTEK (kullanıcı): "late" damgasını sistem otomatik yazıyor; bu, kullanıcının o notu DEĞİŞTİRDİĞİ
+// anlamına gelmez, bu yüzden Zaman Akışı / son değişenler listelerinde "bugün değişti" görünmemeli.
+// Otomatik damga yazılmadan önce notun gerçek "son değiştirilme" zamanı burada hatırlanır; liste
+// yüklenirken, dosya zamanı damga anından (+3 sn) ilerisine geçmediyse (= sonradan kullanıcı
+// düzenlemediyse) eski zaman gösterilir. Kullanıcı düzenleyince kayıt kendiliğinden geçersiz olur.
+const AUTO_STAMP_KEY = 'auto_stamp_mtime';
+const readAutoStamps = (): Record<string, { orig: number; until: number }> => {
+  try { return JSON.parse(localStorage.getItem(AUTO_STAMP_KEY) || '{}') || {}; } catch { return {}; }
+};
+const rememberAutoStamp = (path: string, currentUpdatedAt: number | undefined) => {
+  try {
+    const all = readAutoStamps();
+    const prev = all[path];
+    const orig = prev && (currentUpdatedAt === undefined || currentUpdatedAt <= prev.until + 3000)
+      ? prev.orig
+      : (currentUpdatedAt || 0);
+    if (!orig) return;
+    all[path] = { orig, until: Date.now() };
+    localStorage.setItem(AUTO_STAMP_KEY, JSON.stringify(all));
+  } catch { /* depolama yoksa sadece eski davranış */ }
+};
+const applyAutoStamps = <T extends { path: string; updatedAt: number }>(list: T[]): T[] => {
+  const all = readAutoStamps();
+  if (Object.keys(all).length === 0) return list;
+  let dirty = false;
+  const out = list.map(n => {
+    const e = all[n.path];
+    if (!e) return n;
+    if (n.updatedAt <= e.until + 3000) return { ...n, updatedAt: e.orig };
+    delete all[n.path]; dirty = true;
+    return n;
+  });
+  if (dirty) { try { localStorage.setItem(AUTO_STAMP_KEY, JSON.stringify(all)); } catch { /* yoksay */ } }
+  return out;
+};
+
 const MAX_NOTE_VERSIONS = 20;
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -1106,6 +1142,7 @@ export default function App() {
 
     if (anyFailed) {
       writes.forEach(async ({ path, content }) => {
+        rememberAutoStamp(path, notes.find(n => n.path === path)?.updatedAt);
         if (!isBrowser) {
           await platform.writeNote(path, content);
         } else {
@@ -1160,6 +1197,7 @@ export default function App() {
 
     if (anyStopped) {
       writes.forEach(async ({ path, content }) => {
+        rememberAutoStamp(path, notes.find(n => n.path === path)?.updatedAt);
         if (!isBrowser) {
           await platform.writeNote(path, content);
         } else {
@@ -1630,12 +1668,17 @@ export default function App() {
   // karışmasını istemediği için, sağ hızlı erişim paneline (Arama/Takvim'in yanına)
   // "Bağlantılar" sekmesi olarak taşındı. Hesaplama mantığı NotesView.tsx'te zaten
   // vardı, buraya aynen taşındı (aynı girdiler: notes/fileContents/activeNotePath).
+  const smartSuggestWordCacheRef = useRef<Map<string, { content: string; words: Set<string> }>>(new Map());
   const rightPanelSmartSuggestions = useMemo(() => {
     const stopWords = new Set([
       'bir', 've', 'veya', 'ile', 'da', 'de', 'icin', 'için', 'olan', 'bu', 'su', 'şu', 'o', 'ne', 'kadar', 'gibi', 'mi', 'mu', 'mü', 'mi', 'sonra', 'once', 'önce', 'daha', 'cok', 'çok', 'en', 'her', 'hiç', 'hic', 'ama', 'fakat', 'ancak', 'lakin', 'yani', 'ise',
       'the', 'and', 'for', 'with', 'that', 'this', 'your', 'from', 'about', 'with', 'here', 'there', 'they', 'them', 'these', 'those'
     ]);
 
+    // PERFORMANS (kullanıcı: yazarken sayfa donuyor): bu hesap TÜM notların içeriğini kelimelere böler ve
+    // fileContents her değiştiğinde (her otomatik kayıtta) yeniden çalışıyordu — panel kapalıyken bile.
+    // Sonuç yalnızca "Bağlantılar" panelinde görünür; o yüzden panel görünmüyorsa hiç hesaplanmaz.
+    if (!(rightPanelExpanded && rightPanelView === 'links')) return [];
     if (!activeNotePath || !notes || notes.length <= 1) return [];
     const activeContent = fileContents[activeNotePath] || '';
     if (!activeContent.trim()) return [];
@@ -1661,11 +1704,20 @@ export default function App() {
       const otherContent = fileContents[note.path] || '';
       if (!otherContent.trim()) return;
 
-      const otherWords = new Set(
-        otherContent.toLowerCase()
-          .split(/[^a-z0-9ğüşıöç]/)
-          .filter(w => w.length > 4 && !stopWords.has(w))
-      );
+      // Not başına kelime kümesi önbelleği: içerik (string) değişmediyse yeniden bölme.
+      let cached = smartSuggestWordCacheRef.current.get(note.path);
+      if (!cached || cached.content !== otherContent) {
+        cached = {
+          content: otherContent,
+          words: new Set(
+            otherContent.toLowerCase()
+              .split(/[^a-z0-9ğüşıöç]/)
+              .filter(w => w.length > 4 && !stopWords.has(w))
+          )
+        };
+        smartSuggestWordCacheRef.current.set(note.path, cached);
+      }
+      const otherWords = cached.words;
 
       let overlapCount = 0;
       activeWords.forEach(w => {
@@ -1681,9 +1733,10 @@ export default function App() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 4)
       .map(s => s.note);
-  }, [activeNotePath, fileContents, notes]);
+  }, [activeNotePath, fileContents, notes, rightPanelExpanded, rightPanelView]);
 
   const rightPanelBacklinks = useMemo(() => {
+    if (!(rightPanelExpanded && rightPanelView === 'links')) return [];
     if (!activeNotePath || !notes || notes.length === 0) return [];
 
     const activeNote = notes.find(n => n.path === activeNotePath);
@@ -1716,7 +1769,7 @@ export default function App() {
     });
 
     return results;
-  }, [activeNotePath, fileContents, notes]);
+  }, [activeNotePath, fileContents, notes, rightPanelExpanded, rightPanelView]);
 
   const handleInsertSmartLinkFromPanel = async (noteName: string) => {
     if (!activeNotePath) return;
@@ -3548,7 +3601,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               dateStr = `${naturalDateMatch[3]}-${naturalDateMatch[2]}-${naturalDateMatch[1]}`;
               timestamp = `${naturalDateMatch[4]}:${naturalDateMatch[5]}`;
             } else {
-              const noteDate = new Date(note.updatedAt);
+              const completedMatch = line.match(/\[(?:completed|tamamlanma):(\d{4}-\d{2}-\d{2}T[^\]]+)\]/i);
+              const completedDate = completedMatch ? new Date(completedMatch[1]) : null;
+              const noteDate = completedDate && !isNaN(completedDate.getTime()) ? completedDate : new Date(note.updatedAt);
               dateStr = format(noteDate, 'yyyy-MM-dd');
               timestamp = format(noteDate, 'HH:mm');
             }
@@ -3822,7 +3877,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       try {
         // Load files list
         const fileList = await platform.listFiles();
-        const filteredList = fileList.filter(f => f.path !== 'music_library.md');
+        const filteredList = applyAutoStamps(fileList.filter(f => f.path !== 'music_library.md'));
         setNotes(filteredList);
         loadedNotes = filteredList;
         // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
@@ -3877,36 +3932,44 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const mergedTimeline = [...filteredRawTimeline];
         const scannedTimelineItems: TimelineItem[] = [];
 
+        // PERFORMANS (kullanıcı: yazarken/yapıştırırken sayfa donuyor): Eşleştirme eskiden her taranan görev için
+        // TÜM zaman akışı öğelerini dolaşıyordu (7.500 öğe × 460 görev ≈ 3,5 milyon karşılaştırma, her
+        // karşılaştırmada toLowerCase/replace) ve her kayıttan 5 sn sonra çalışan bu tarama ana iş parçacığını
+        // ~3,7 sn kilitliyordu. Eşleşme koşulu zaten "içerik (trim) birebir aynı" şartını içerdiğinden öğeleri
+        // içeriğe göre indeksleyip yalnızca aynı içerikli adaylara bakıyoruz; sonuç aynı, maliyet doğrusal.
+        const mergedByContent = new Map<string, number[]>();
+        mergedTimeline.forEach((item, i) => {
+          if (!item.content) return;
+          const key = item.content.trim();
+          const bucket = mergedByContent.get(key);
+          if (bucket) bucket.push(i); else mergedByContent.set(key, [i]);
+        });
+        const normNote = (n?: string | null) => (n || 'inbox').toLowerCase().replace('.md', '');
+
         for (const scanned of scannedTasks) {
           let matched = false;
-          for (let i = 0; i < mergedTimeline.length; i++) {
-            const item = mergedTimeline[i];
-            const normItemNote = (item.note || 'inbox').toLowerCase().replace('.md', '');
-            const normScannedNote = (scanned.note || 'inbox').toLowerCase().replace('.md', '');
-            const normItemFolder = (item.folder || '').toLowerCase();
-            const normScannedFolder = (scanned.folder || '').toLowerCase();
-            const sameLocation = normItemNote === normScannedNote && normItemFolder === normScannedFolder;
-            const sameDateTime = item.dateStr === scanned.dateStr && item.timestamp === scanned.timestamp;
+          const candidates = scanned.content ? mergedByContent.get(scanned.content.trim()) : undefined;
+          if (candidates) {
+            for (const i of candidates) {
+              const item = mergedTimeline[i];
+              const sameLocation = normNote(item.note) === normNote(scanned.note)
+                && (item.folder || '').toLowerCase() === (scanned.folder || '').toLowerCase();
+              const sameDateTime = item.dateStr === scanned.dateStr && item.timestamp === scanned.timestamp;
 
-            const bothTodo = item.isTodo && scanned.isTodo;
-            const bothLog = !item.isTodo && !scanned.isTodo;
+              const bothTodo = item.isTodo && scanned.isTodo;
+              const bothLog = !item.isTodo && !scanned.isTodo;
 
-            if (
-              (bothTodo || bothLog) &&
-              item.content &&
-              scanned.content &&
-              item.content.trim() === scanned.content.trim() &&
-              (sameDateTime || sameLocation)
-            ) {
-              mergedTimeline[i] = {
-                ...item,
-                isCompleted: scanned.isCompleted,
-                folder: scanned.folder,
-                note: scanned.note,
-                tags: scanned.tags
-              };
-              matched = true;
-              break;
+              if ((bothTodo || bothLog) && (sameDateTime || sameLocation)) {
+                mergedTimeline[i] = {
+                  ...item,
+                  isCompleted: scanned.isCompleted,
+                  folder: scanned.folder,
+                  note: scanned.note,
+                  tags: scanned.tags
+                };
+                matched = true;
+                break;
+              }
             }
           }
 
