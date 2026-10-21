@@ -378,6 +378,82 @@ app.on('window-all-closed', () => {
   }
 });
 
+// Performans kaydı (Ayarlar > Uygulama Hakkında): kayıt süresince Chromium CPU profilleyicisini (CDP) çalıştırır ve
+// durdurulunca fonksiyon bazlı özet (kendi süresi + toplam süresi) döndürür. Ham profil dosyası taşınmaz.
+ipcMain.handle('perf-profiler-start', async () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false, error: 'pencere yok' };
+    const dbg = mainWindow.webContents.debugger;
+    if (!dbg.isAttached()) dbg.attach('1.3');
+    await dbg.sendCommand('Profiler.enable');
+    await dbg.sendCommand('Profiler.setSamplingInterval', { interval: 1000 });
+    await dbg.sendCommand('Profiler.start');
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: String(e && e.message || e) };
+  }
+});
+
+ipcMain.handle('perf-profiler-stop', async () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false, error: 'pencere yok' };
+    const dbg = mainWindow.webContents.debugger;
+    if (!dbg.isAttached()) return { success: false, error: 'profilleyici bağlı değil' };
+    const { profile } = await dbg.sendCommand('Profiler.stop');
+    try { await dbg.sendCommand('Profiler.disable'); } catch (_e) { /* yoksay */ }
+    try { dbg.detach(); } catch (_e) { /* yoksay */ }
+
+    const byId = new Map();
+    const parent = new Map();
+    profile.nodes.forEach(n => {
+      byId.set(n.id, n);
+      (n.children || []).forEach(c => parent.set(c, n.id));
+    });
+    const keyOf = (n) => {
+      const f = n.callFrame;
+      const file = String(f.url || '').split('/').pop().split('?')[0];
+      return `${f.functionName || '(anonim)'} @${file}:${f.lineNumber + 1}:${f.columnNumber + 1}`;
+    };
+    const self = new Map();
+    const incl = new Map();
+    let totalUs = 0;
+    const samples = profile.samples || [];
+    const deltas = profile.timeDeltas || [];
+    for (let i = 0; i < samples.length; i++) {
+      const dt = Math.min(deltas[i] || 0, 50000);
+      totalUs += dt;
+      let id = samples[i];
+      const first = byId.get(id);
+      if (!first) continue;
+      const k0 = keyOf(first);
+      self.set(k0, (self.get(k0) || 0) + dt);
+      const seen = new Set();
+      while (id !== undefined) {
+        const n = byId.get(id);
+        if (!n) break;
+        const k = keyOf(n);
+        if (!seen.has(k)) { seen.add(k); incl.set(k, (incl.get(k) || 0) + dt); }
+        id = parent.get(id);
+      }
+    }
+    const top = (m, n, skip) => Array.from(m.entries())
+      .filter(([k]) => !skip.test(k))
+      .sort((a, b) => b[1] - a[1]).slice(0, n)
+      .map(([k, us]) => ({ name: k, ms: Math.round(us / 1000) }));
+    const skipRoot = /^\((root)\)/;
+    const idleMs = Math.round(((self.get(Array.from(self.keys()).find(k => k.startsWith('(idle)')) || '') || 0)) / 1000);
+    return {
+      success: true,
+      totalMs: Math.round(totalUs / 1000),
+      idleMs,
+      self: top(self, 30, /^\((idle|root)\)/),
+      incl: top(incl, 45, skipRoot)
+    };
+  } catch (e) {
+    return { success: false, error: String(e && e.message || e) };
+  }
+});
+
 // Directory and Markdown operations IPC handlers
 
 ipcMain.handle('get-notes-path', () => {

@@ -27,6 +27,8 @@ export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   restartAndInstall: () => Promise<{ success: boolean }>;
   checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
+  perfProfilerStart?: () => Promise<{ success: boolean; error?: string }>;
+  perfProfilerStop?: () => Promise<{ success: boolean; error?: string; totalMs?: number; idleMs?: number; self?: { name: string; ms: number }[]; incl?: { name: string; ms: number }[] }>;
   onUpdateStatus: (callback: (data: { status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'; version?: string; percent?: number; text?: string }) => void) => () => void;
 }
 

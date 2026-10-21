@@ -4585,8 +4585,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   // Helper to sync timeline items from a saved Markdown file's content
   const syncTimelineFromMarkdown = (path: string, content: string, currentTimeline: TimelineItem[]): TimelineItem[] => {
     const lines = content.split('\n');
-    let updatedTimeline = [...currentTimeline];
-    let changed = false;
+    // PERFORMANS: eskiden tarihli her görev satırı için 7.500+ öğenin tamamı map ile dolaşılıp her seferinde yeni
+    // dizi üretiliyordu (her otomatik kayıtta). Öğeler (tarih|saat) anahtarıyla indekslenir ve dizi kopyası yalnızca
+    // gerçekten bir öğe değişirse alınır. Eşleşme koşulları ve sonuç aynıdır.
+    let updatedTimeline: TimelineItem[] | null = null;
+    let timelineIndex: Map<string, number[]> | null = null;
 
     lines.forEach(line => {
       const checklistMatch = line.match(/^(\s*[*\-]\s+\[([ xX\/])\])\s+(.*)$/);
@@ -4621,25 +4624,34 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             .trim();
 
           // Find matching timeline item
-          updatedTimeline = updatedTimeline.map(item => {
-            if (
-              item.isTodo &&
-              item.dateStr === dateStr &&
-              item.timestamp === timestamp &&
-              item.content.trim() === cleanContent
-            ) {
-              if (item.isCompleted !== isChecked || item.status !== newStatus || item.kanbanStatus !== newKanbanStatus) {
-                changed = true;
-                return { ...item, isCompleted: isChecked, status: newStatus, kanbanStatus: newKanbanStatus };
+          if (!timelineIndex) {
+            timelineIndex = new Map();
+            currentTimeline.forEach((it, i) => {
+              if (!it.isTodo) return;
+              const key = `${it.dateStr}|${it.timestamp}`;
+              const bucket = timelineIndex!.get(key);
+              if (bucket) bucket.push(i); else timelineIndex!.set(key, [i]);
+            });
+          }
+          const candidates = timelineIndex.get(`${dateStr}|${timestamp}`);
+          if (candidates) {
+            for (const i of candidates) {
+              const item = (updatedTimeline || currentTimeline)[i];
+              if (
+                item.isTodo &&
+                item.content.trim() === cleanContent &&
+                (item.isCompleted !== isChecked || item.status !== newStatus || item.kanbanStatus !== newKanbanStatus)
+              ) {
+                if (!updatedTimeline) updatedTimeline = [...currentTimeline];
+                updatedTimeline[i] = { ...item, isCompleted: isChecked, status: newStatus, kanbanStatus: newKanbanStatus };
               }
             }
-            return item;
-          });
+          }
         }
       }
     });
 
-    return changed ? updatedTimeline : currentTimeline;
+    return updatedTimeline || currentTimeline;
   };
 
   // 3. Save Note Content
@@ -9630,7 +9642,8 @@ grant execute on function get_db_size() to anon;`}
                           setPerfRecordNote('Kayıt devam ediyor… Ayarları kapatıp normal kullanın.');
                           setIsPerfRecording(true);
                         } else {
-                          const report = perfRecorder.stop();
+                          setPerfRecordNote('Profil toplanıyor, birkaç saniye sürebilir…');
+                          const report = await perfRecorder.stop();
                           setIsPerfRecording(false);
                           try {
                             await handleSaveNote('Sistem/performans-kaydi.md', report, { lightweight: true });

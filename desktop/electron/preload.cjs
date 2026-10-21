@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('electron', {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  perfProfilerStart: () => ipcRenderer.invoke('perf-profiler-start'),
+  perfProfilerStop: () => ipcRenderer.invoke('perf-profiler-stop'),
   focusAndFlashWindow: () => ipcRenderer.invoke('focus-and-flash-window'),
   googleSetCredentials: (clientId, clientSecret) => ipcRenderer.invoke('google-set-credentials', { clientId, clientSecret }),
   googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
