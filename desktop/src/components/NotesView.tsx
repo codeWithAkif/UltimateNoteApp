@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { perfRecorder } from '../services/perfRecorder';
 import { flushSync } from 'react-dom';
 import { 
   Plus, Trash2, FileText, Folder, ArrowLeft, Clock, Calendar, ChevronDown, ChevronUp, ChevronLeft, Star,
@@ -246,16 +247,33 @@ interface AutoResizingTextareaProps {
 // (40 satır ≈ 6 sn, 300 satır ≈ 2 dk). Artık istekler tek bir kuyrukta toplanır ve bir mikro-görevde ÜÇ aşamada
 // işlenir: hepsine 'auto' yaz → hepsinin scrollHeight'ını oku (tek yerleşim) → hepsine yüksekliği yaz.
 // Mikro-görev boyamadan önce çalıştığı için titreme olmaz.
+const TR_COLLATOR = new Intl.Collator('tr');
 const pendingHeightAdjust = new Set<HTMLTextAreaElement>();
 let heightAdjustQueued = false;
+// PERFORMANS (kullanıcı: yazarken hâlâ anlık takılma): 'auto' yazıp geri ölçmek, yükseklik aslında değişmese bile
+// editördeki tüm sonraki blokların yeniden konumlanmasına (tam yerleşim) yol açıyordu (~19 ms/tuş). Metin yalnızca
+// birkaç karakter UZADIYSA (normal yazma) görsel satır sayısı azalamaz; bu durumda sıfırlama yapmadan sadece
+// gerekiyorsa büyütürüz. Kısalma/silme/yapıştırma/ilk ölçüm için eski tam yol aynen korunur.
+const lastHeightLen = new WeakMap<HTMLTextAreaElement, number>();
 const flushHeightAdjust = () => {
   heightAdjustQueued = false;
   const els = Array.from(pendingHeightAdjust).filter(el => el.isConnected);
   pendingHeightAdjust.clear();
   if (els.length === 0) return;
-  els.forEach(el => { el.style.height = 'auto'; });
-  const heights = els.map(el => el.scrollHeight);
-  els.forEach((el, i) => { el.style.height = `${heights[i]}px`; });
+  const grow: HTMLTextAreaElement[] = [];
+  const full: HTMLTextAreaElement[] = [];
+  els.forEach(el => {
+    const len = el.value.length;
+    const prev = lastHeightLen.get(el);
+    lastHeightLen.set(el, len);
+    if (prev !== undefined && len >= prev && len - prev <= 3 && el.style.height) grow.push(el);
+    else full.push(el);
+  });
+  const growTarget = grow.map(el => (el.scrollHeight > el.clientHeight ? el.scrollHeight : 0));
+  full.forEach(el => { el.style.height = 'auto'; });
+  const fullHeights = full.map(el => el.scrollHeight);
+  grow.forEach((el, i) => { if (growTarget[i]) el.style.height = `${growTarget[i]}px`; });
+  full.forEach((el, i) => { el.style.height = `${fullHeights[i]}px`; });
 };
 const queueHeightAdjust = (el: HTMLTextAreaElement) => {
   pendingHeightAdjust.add(el);
@@ -2344,6 +2362,10 @@ export default function NotesView({
   lineMargin = 8,
   onQuestReward
 }: NotesViewProps) {
+  const __notesRenderStart = performance.now();
+  useLayoutEffect(() => {
+    perfRecorder.renderDone('NotesView', __notesRenderStart, '', 25);
+  });
   const [editorContent, setEditorContent] = useState<string>(() => {
     if (activeNotePath) {
       return localStorage.getItem(`active_note_draft_${activeNotePath}`) || '';
@@ -5010,7 +5032,10 @@ export default function NotesView({
   }, [dragSelectStartIdx, dragSelectEndIdx, lines, isSourceMode]);
 
   // Filter notes based on selected folder and selected tag
-  const filteredNotes = notes.filter((item) => {
+  // PERFORMANS (kullanıcı: yazarken anlık takılma): bu liste her tuş vuruşunda (her render'da) 518 notun tamamı için
+  // yeniden süzülüp localeCompare ile sıralanıyordu (~5 ms/tuş). Girdileri değişmedikçe önbellekten gelir; etiket
+  // süzgeci yokken fileContents'e bağımlı olmaz (her otomatik kayıtta yeniden hesaplanmasın diye).
+  const filteredNotes = useMemo(() => notes.filter((item) => {
     if (item.type !== 'note' && item.type !== 'excalidraw' && item.type !== 'drawio') return false;
 
     if (selectedFolder) {
@@ -5041,9 +5066,9 @@ export default function NotesView({
   }).sort((a, b) => {
     // İSTEK ("sıralamayı tersine çevir, günümüzden geçmişe doğru gitsin"): dosya adına göre
     // (tarih-adlı Günlükler notlarında bu = kronolojik) sırala — varsayılan YENİDEN ESKİYE.
-    const cmp = a.path.localeCompare(b.path, 'tr');
+    const cmp = TR_COLLATOR.compare(a.path, b.path);
     return noteListSortDesc ? -cmp : cmp;
-  });
+  }), [notes, selectedFolder, selectedTag, noteListSearch, noteListSortDesc, selectedTag ? fileContents : null]);
 
   // Fetch active note content when activeNotePath changes
   useEffect(() => {

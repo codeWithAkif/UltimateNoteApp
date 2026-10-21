@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+﻿import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -36,6 +36,7 @@ import DiaryView from './components/DiaryView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
 import { platform, isElectron, isCapacitor, isBrowser } from './services/platform';
+import { perfRecorder } from './services/perfRecorder';
 import { initLiveUpdates } from './services/liveUpdate';
 import { initSupabase, handleLocalSave, handleLocalDelete, uploadFolderDirect, handleLocalFolderDelete, mergeDevPath, deleteDevPathRemote, nudgePunctualityScoreRemote, triggerRemoteSync, resolveConflict, fetchDeletedNotes, restoreRemoteNote, permanentlyDeleteRemoteNote, fetchDatabaseSizeBytes, flushPendingUploads, type SyncConflict } from './services/supabaseSync';
 import { type DevPath, type DevPathLevel, type DevPathTopic, type DevPathNoteMode, RANK_LADDER, getRankForXp, XP_PER_TASK, XP_PER_LINK, countWikilinks } from './devPaths';
@@ -299,6 +300,7 @@ const iconMap: Record<string, React.ComponentType<any>> = {
 };
 
 export default function App() {
+  const __appRenderStart = performance.now();
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('active_tab') || 'notfactory';
   });
@@ -2722,6 +2724,12 @@ export default function App() {
 
   // Supabase Sync states
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  // Performans kaydı (Ayarlar > Uygulama Hakkında): takılmaları kaydedip Sistem/performans-kaydi.md'ye yazar.
+  const [isPerfRecording, setIsPerfRecording] = useState(false);
+  const [perfRecordNote, setPerfRecordNote] = useState('');
+  useLayoutEffect(() => {
+    perfRecorder.renderDone('App (tüm ağaç)', __appRenderStart, '', 40);
+  });
   const [supabaseUrl, setSupabaseUrl] = useState('');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
   const [supabaseVault, setSupabaseVault] = useState('default');
@@ -3871,7 +3879,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     }, 5000);
   };
 
+  // Performans kaydı açıkken kasa taramasının toplam süresini (bekleme dahil) kaydeder.
   const loadAllData = async () => {
+    const endSpan = perfRecorder.span('kasa taraması (loadAllData)', 150);
+    try { return await loadAllDataInner(); } finally { endSpan(); }
+  };
+  const loadAllDataInner = async () => {
     let loadedNotes: NoteItem[] | null = null;
     if (!isBrowser) {
       try {
@@ -9568,6 +9581,52 @@ grant execute on function get_db_size() to anon;`}
               {settingsTab === 'about' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
                   <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>Uygulama Hakkında</h3>
+
+                  <div style={{ padding: '10px 12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <strong style={{ fontSize: '12.5px', color: '#fff' }}>⏱ Performans kaydı</strong>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                      Takılma yaşıyorsanız: Başlat'a basın, uygulamayı 1-2 dakika normal kullanın (yazın, yapıştırın, kaydırın), sonra Durdur'a basın.
+                      Kayıt "Sistem/performans-kaydi.md" notuna yazılır.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!isPerfRecording) {
+                          perfRecorder.start({
+                            'Uygulama sürümü': appVersion ? `v${appVersion}` : '?',
+                            'Platform': isElectron ? 'Masaüstü (Electron)' : (window as any).Capacitor?.getPlatform?.() === 'android' ? 'Android' : 'Web',
+                            'Not sayısı': String(notes.length),
+                            'Aktif sekme': String(activeTab)
+                          });
+                          setPerfRecordNote('Kayıt devam ediyor… Ayarları kapatıp normal kullanın.');
+                          setIsPerfRecording(true);
+                        } else {
+                          const report = perfRecorder.stop();
+                          setIsPerfRecording(false);
+                          try {
+                            await handleSaveNote('Sistem/performans-kaydi.md', report, { lightweight: true });
+                            setPerfRecordNote('Kaydedildi: Sistem/performans-kaydi.md');
+                          } catch (err) {
+                            setPerfRecordNote('Kayıt yazılamadı: ' + String(err));
+                          }
+                        }
+                      }}
+                      style={{
+                        padding: '6px 14px',
+                        background: isPerfRecording ? 'rgba(239, 68, 68, 0.2)' : 'rgba(99, 102, 241, 0.2)',
+                        border: isPerfRecording ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(99, 102, 241, 0.4)',
+                        color: isPerfRecording ? '#fca5a5' : '#a5b4fc',
+                        borderRadius: '6px',
+                        fontSize: '11.5px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        alignSelf: 'flex-start'
+                      }}
+                    >
+                      {isPerfRecording ? '⏹ Durdur ve kaydet' : '▶ Kaydı başlat'}
+                    </button>
+                    {perfRecordNote && <span style={{ fontSize: '11px', color: isPerfRecording ? '#fca5a5' : '#86efac' }}>{perfRecordNote}</span>}
+                  </div>
                   
                   <div style={{ 
                     display: 'flex', 
