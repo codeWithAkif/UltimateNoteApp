@@ -241,6 +241,67 @@ interface AutoResizingTextareaProps {
   style?: React.CSSProperties;
 }
 
+// PERFORMANS (kullanıcı: yazarken her tuşta ~100 ms takılma): not listesi NotesView'ın içindeydi, bu yüzden
+// her tuş vuruşunda (editorContent değişince) 689 satırın tamamı yeniden oluşturuluyordu. Ayrı bir React.memo
+// bileşeni olduğundan, liste/aktif not/geri çağrılar değişmedikçe tuş vuruşları listeyi hiç yeniden çizmez.
+const NoteListPane = React.memo(function NoteListPane({
+  notes, activeNotePath, setActiveNotePath, onNoteContextMenu, onRequestConfirm, onDeletePath
+}: {
+  notes: NoteItem[];
+  activeNotePath: string | null;
+  setActiveNotePath: (path: string | null) => void;
+  onNoteContextMenu?: (e: React.MouseEvent, notePath: string) => void;
+  onRequestConfirm?: (message: string, onConfirm: () => void) => void;
+  onDeletePath: (path: string) => Promise<void>;
+}) {
+  return (
+    <div className="notes-list">
+      {notes.length === 0 ? (
+        <div className="empty-notes">Bu alanda not bulunamadı.</div>
+      ) : (
+        notes.map((note) => (
+        <div
+          key={note.path}
+          className={`note-list-item ${activeNotePath === note.path ? 'active' : ''}`}
+          onClick={() => setActiveNotePath(note.path)}
+          onContextMenu={(e) => onNoteContextMenu?.(e, note.path)}
+        >
+          <div className="note-item-icon">
+            {note.type === 'excalidraw' ? <PenTool size={16} style={{ color: 'rgb(139, 92, 246)' }} /> : note.type === 'drawio' ? <GitBranch size={16} style={{ color: 'rgb(242, 148, 0)' }} /> : <FileText size={16} />}
+          </div>
+          <div className="note-item-info" style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
+            <span className="note-item-title" style={{ fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{note.name}</span>
+            {note.path.includes('/') && (
+              <span className="note-item-folder-path" style={{ fontSize: '10px', color: 'var(--text-muted)', opacity: 0.8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                📂 {note.path.substring(0, note.path.lastIndexOf('/'))}
+              </span>
+            )}
+            <span className="note-item-date" style={{ fontSize: '9px', opacity: 0.6 }}>
+              {new Date(note.updatedAt).toLocaleDateString('tr-TR')}
+            </span>
+          </div>
+          <button
+            className="btn-delete-note"
+            onClick={(e) => {
+              e.stopPropagation();
+              const message = 'Bu notu silmek istediğinize emin misiniz?';
+              if (onRequestConfirm) {
+                onRequestConfirm(message, () => onDeletePath(note.path));
+              } else if (confirm(message)) {
+                onDeletePath(note.path);
+              }
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+
+        ))
+      )}
+    </div>
+  );
+});
+
 // PERFORMANS (kullanıcı: bir yerden kopyalayıp yapıştırınca 3 sn+ donuyor): her satırın textarea'sı kendi
 // yüksekliğini "height='auto' yaz → scrollHeight OKU → yaz" ile ayarlıyordu. Okuma tarayıcıyı o anda SENKRON
 // yerleşim (layout) hesaplamaya zorladığından, N satır yapıştırılınca N kez art arda tam yerleşim hesaplanıyordu
@@ -9491,49 +9552,14 @@ export default function NotesView({
             </form>
           )}
 
-          <div className="notes-list">
-            {filteredNotes.length === 0 ? (
-              <div className="empty-notes">Bu alanda not bulunamadı.</div>
-            ) : (
-              filteredNotes.map((note) => (
-                <div
-                  key={note.path}
-                  className={`note-list-item ${activeNotePath === note.path ? 'active' : ''}`}
-                  onClick={() => setActiveNotePath(note.path)}
-                  onContextMenu={(e) => onNoteContextMenu?.(e, note.path)}
-                >
-                  <div className="note-item-icon">
-                    {note.type === 'excalidraw' ? <PenTool size={16} style={{ color: 'rgb(139, 92, 246)' }} /> : note.type === 'drawio' ? <GitBranch size={16} style={{ color: 'rgb(242, 148, 0)' }} /> : <FileText size={16} />}
-                  </div>
-                  <div className="note-item-info" style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
-                    <span className="note-item-title" style={{ fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{note.name}</span>
-                    {note.path.includes('/') && (
-                      <span className="note-item-folder-path" style={{ fontSize: '10px', color: 'var(--text-muted)', opacity: 0.8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        📂 {note.path.substring(0, note.path.lastIndexOf('/'))}
-                      </span>
-                    )}
-                    <span className="note-item-date" style={{ fontSize: '9px', opacity: 0.6 }}>
-                      {new Date(note.updatedAt).toLocaleDateString('tr-TR')}
-                    </span>
-                  </div>
-                  <button
-                    className="btn-delete-note"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const message = 'Bu notu silmek istediğinize emin misiniz?';
-                      if (onRequestConfirm) {
-                        onRequestConfirm(message, () => onDeletePath(note.path));
-                      } else if (confirm(message)) {
-                        onDeletePath(note.path);
-                      }
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+          <NoteListPane
+            notes={filteredNotes}
+            activeNotePath={activeNotePath}
+            setActiveNotePath={setActiveNotePath}
+            onNoteContextMenu={onNoteContextMenu}
+            onRequestConfirm={onRequestConfirm}
+            onDeletePath={onDeletePath}
+          />
         </div>
       )}
 

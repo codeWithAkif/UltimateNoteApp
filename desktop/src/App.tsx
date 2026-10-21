@@ -1111,6 +1111,8 @@ export default function App() {
   const [firstSyncSettled, setFirstSyncSettled] = useState<boolean>(() => {
     try { return !localStorage.getItem('supabase_sync_creds'); } catch { return true; }
   });
+  // handleStatusChange senkron servisine bir kez verilen eski bir kopya olarak çalıştığı için state yerine ref okur.
+  const firstScanDoneRef = useRef(false);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // "Hiç bitirilmeden gün geçmesi" kuralı: uygulama açılışında/veri yüklendiğinde tüm
@@ -3242,10 +3244,15 @@ export default function App() {
       hasCompletedFirstSyncRef.current = true;
     }
     if (status === 'synced') {
-      // Pull edilen içerik state'e yerleşmeden otomatik yazıcıları serbest bırakma: eski kopya üzerinde
-      // çalışıp buluttaki doğru içeriği ezmesinler (bkz. firstSyncSettled).
-      loadAllData().finally(() => setFirstSyncSettled(true));
-      loadFinanceData();
+      if (!firstScanDoneRef.current) {
+        // Pull edilen içerik state'e yerleşmeden otomatik yazıcıları serbest bırakma: eski kopya üzerinde
+        // çalışıp buluttaki doğru içeriği ezmesinler (bkz. firstSyncSettled). İLK senkron hemen taranır.
+        loadAllData().finally(() => { firstScanDoneRef.current = true; setFirstSyncSettled(true); });
+        loadFinanceData();
+      } else {
+        // Sonraki 'synced' bildirimleri (her otomatik kayıttan sonra gelir): yazmayı bölmeyecek şekilde ertelenir.
+        scheduleWorkspaceScan({ alsoFinance: true });
+      }
     }
   };
 
@@ -3871,13 +3878,35 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   // sıfırlar: yazma seansı sürerken tam tarama HİÇ çalışmaz, kullanıcı
   // gerçekten işini bitirip bıraktığında bir kez çalışır.
   const pendingScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scheduleWorkspaceScan = () => {
+  // PERFORMANS (performans kaydı: 53 sn'de 8 tarama, her biri 2,8-4 sn; yazarken tuşlar 1,6 sn gecikti):
+  // tarama (a) bulut senkronu "synced" dediğinde bekleme olmadan çalışıyordu (her otomatik kayıt senkron
+  // tetikler) ve (b) kullanıcı yazarken başlayabiliyordu. Artık hep bu zamanlayıcıdan geçer ve kullanıcı en az
+  // 4 sn tuşa basmamışsa ertelenir.
+  const lastTypingAtRef = useRef(0);
+  const pendingFinanceRefreshRef = useRef(false);
+  const scheduleWorkspaceScan = (opts?: { alsoFinance?: boolean }) => {
+    if (opts?.alsoFinance) pendingFinanceRefreshRef.current = true;
     if (pendingScanTimerRef.current) clearTimeout(pendingScanTimerRef.current);
-    pendingScanTimerRef.current = setTimeout(() => {
+    const run = () => {
+      const idleFor = Date.now() - lastTypingAtRef.current;
+      if (idleFor < 4000) {
+        pendingScanTimerRef.current = setTimeout(run, 4200 - idleFor);
+        return;
+      }
       pendingScanTimerRef.current = null;
       loadAllData();
-    }, 5000);
+      if (pendingFinanceRefreshRef.current) {
+        pendingFinanceRefreshRef.current = false;
+        loadFinanceData();
+      }
+    };
+    pendingScanTimerRef.current = setTimeout(run, 5000);
   };
+  useEffect(() => {
+    const onKey = () => { lastTypingAtRef.current = Date.now(); };
+    window.addEventListener('keydown', onKey, { capture: true, passive: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true } as EventListenerOptions);
+  }, []);
 
   // Performans kaydı açıkken kasa taramasının toplam süresini (bekleme dahil) kaydeder.
   const loadAllData = async () => {
