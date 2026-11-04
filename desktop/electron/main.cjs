@@ -292,38 +292,49 @@ app.whenReady().then(() => {
 
       logDebug(`File found. Size: ${stats.size} bytes, MimeType: ${mimeType}`);
 
-      const nodeStream = fs.createReadStream(filePath);
-      const webStream = new ReadableStream({
-        start(controller) {
-          nodeStream.on('data', (chunk) => {
-            controller.enqueue(chunk);
-          });
-          nodeStream.on('end', () => {
-            logDebug(`Stream read finished successfully for: ${urlPath}`);
-            controller.close();
-          });
-          nodeStream.on('error', (err) => {
-            logDebug(`Stream error: ${err.message}`);
-            controller.error(err);
-          });
-        },
-        cancel() {
-          logDebug(`Stream cancelled for: ${urlPath}`);
-          nodeStream.destroy();
+      // PERFORMANS (bellek): akış artık geri basınçlıdır (Readable.toWeb) — eskiden her 'data' parçası tüketici
+      // hazır olmadan kuyruğa atılıyor, büyük bir dosya (108 MB MP3) bellekte birikebiliyordu. Ayrıca HTTP Range
+      // desteği eklendi: ses/video elemanları ileri sarma için aralık ister; 206 ile yalnızca istenen bölüm okunur.
+      let start = 0;
+      let end = stats.size - 1;
+      let status = 200;
+      const rangeHeader = request.headers.get('range');
+      if (rangeHeader && stats.size > 0) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+        if (m && (m[1] !== '' || m[2] !== '')) {
+          if (m[1] === '') {
+            // "bytes=-N": son N bayt
+            start = Math.max(0, stats.size - parseInt(m[2], 10));
+          } else {
+            start = parseInt(m[1], 10);
+            if (m[2] !== '') end = Math.min(parseInt(m[2], 10), stats.size - 1);
+          }
+          if (start > end || start >= stats.size) {
+            return new Response('Range Not Satisfiable', {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${stats.size}` }
+            });
+          }
+          status = 206;
         }
-      });
+      }
 
-      return new Response(webStream, {
-        status: 200,
-        headers: {
-          'Content-Length': stats.size.toString(),
-          'Content-Type': mimeType,
-          'Accept-Ranges': 'bytes',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': '*',
-          'Access-Control-Allow-Methods': '*'
-        }
-      });
+      const nodeStream = stats.size > 0
+        ? fs.createReadStream(filePath, { start, end })
+        : fs.createReadStream(filePath);
+      nodeStream.on('error', (err) => logDebug(`Stream error: ${err.message}`));
+      const webStream = require('stream').Readable.toWeb(nodeStream);
+
+      const headers = {
+        'Content-Length': (stats.size > 0 ? end - start + 1 : 0).toString(),
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Methods': '*'
+      };
+      if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${stats.size}`;
+      return new Response(webStream, { status, headers });
     } catch (error) {
       logDebug(`Protocol handler error: ${error.message}\n${error.stack}`);
       console.error('Error handling media protocol request:', error);

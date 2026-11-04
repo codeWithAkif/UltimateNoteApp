@@ -255,6 +255,10 @@ const mediaStoragePath = (relativePath: string): string =>
 // Başarısızlıkları bir bekleme süresiyle (cooldown) hafızada tutarak bu sonsuz döngüyü
 // durduruyoruz; dosya değişmeden tekrar tekrar denenmeye devam etmez.
 const MEDIA_RETRY_COOLDOWN_MS = 30 * 60 * 1000; // 30 dakika
+// PERFORMANS (bellek/ağ): bulut depolamanın tek dosya sınırı genelde 50 MB'dır; daha büyük dosyalar yüklenemez ama
+// her 30 dakikada bir tamamen belleğe okunup (base64) yeniden denenirdi. Bu eşiğin üstündeki medya senkrondan atlanır.
+const MEDIA_MAX_SYNC_BYTES = 45 * 1024 * 1024;
+const warnedOversizedMedia = new Set<string>();
 
 const getMediaFailuresKey = (): string => {
   if (!supabase) return 'sync_media_failures_default';
@@ -322,6 +326,13 @@ const syncMediaFiles = async () => {
 
     // A. Yerelde yeni/değişmiş medyaları yükle
     for (const f of localFiles) {
+      if ((f.size || 0) > MEDIA_MAX_SYNC_BYTES) {
+        if (!warnedOversizedMedia.has(f.path)) {
+          warnedOversizedMedia.add(f.path);
+          console.warn(`[Supabase Sync] Medya çok büyük, senkrondan atlandı (${Math.round((f.size || 0) / 1048576)} MB > ${Math.round(MEDIA_MAX_SYNC_BYTES / 1048576)} MB): ${f.path}`);
+        }
+        continue;
+      }
       const stamp = stamps[f.path];
       const localChanged = !stamp || stamp.size !== (f.size || 0) || stamp.mtimeMs !== f.updatedAt;
       if (!localChanged && remoteMap[f.path]) continue;

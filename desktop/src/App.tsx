@@ -2114,6 +2114,11 @@ export default function App() {
       });
     } else if (currentTrack.path.startsWith('http')) {
       setResolvedAudioSrc(currentTrack.path);
+    } else if (isElectron && currentTrack.path.split('/')[0] === currentTrack.path.split('/')[0].toLowerCase()) {
+      // PERFORMANS (bellek): müzik dosyası eskiden tamamen okunup base64 data URL'e çevriliyordu (108 MB MP3 =
+      // ana süreçte ve arayüzde yüzlerce MB). Artık akış halinde app-media protokolüyle çalınır (Range destekli).
+      // URL'in "host" kısmı küçük harfe çevrildiğinden, ilk klasör adı küçük harfli değilse eski yola düşülür.
+      setResolvedAudioSrc(`app-media://${currentTrack.path}`);
     } else {
       platform.readMedia(currentTrack.path).then((dataUrl) => {
         setResolvedAudioSrc(dataUrl);
