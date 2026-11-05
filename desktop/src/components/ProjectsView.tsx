@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
+import { KANBAN_CONFIG_PATH, parseKanbanConfig, serializeKanbanConfig, columnsForProject, type KanbanColumn } from '../kanbanColumns';
 import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2, CheckCircle2, Circle } from 'lucide-react';
 
 interface NoteItem {
@@ -13,7 +14,7 @@ interface ProjectsViewProps {
   timelineItems: TimelineItem[];
   notes: NoteItem[];
   scannedContents: Record<string, string>;
-  onChangeTaskStatus: (id: string, newStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done') => void;
+  onChangeTaskStatus: (id: string, newStatus: string) => void;
   onOpenNote?: (item: TimelineItem) => void;
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Müşteriye renk/icon atarken müşteri notunun içeriğine [renk:]/[icon:] etiketi yazmak
@@ -80,6 +81,26 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
+
+  // Kanban sütunları: proje bazında özelleştirilebilir, ayar "Sistem/Kanban.md" notunda tutulur. Özel ayarı
+  // olmayan projeler (ve "Genel Bakış") varsayılan listeyi kullanır.
+  const kanbanConfigText = scannedContents[KANBAN_CONFIG_PATH];
+  const kanbanConfig = useMemo(() => parseKanbanConfig(kanbanConfigText), [kanbanConfigText]);
+  const kanbanProjectKey = selectedProject ? selectedProject.toLowerCase() : null;
+  const kanbanColumns = columnsForProject(kanbanConfig, selectedProject);
+  const isKanbanCustomized = !!(kanbanProjectKey && kanbanConfig.projeler[kanbanProjectKey]);
+  const saveKanbanColumns = async (cols: KanbanColumn[]) => {
+    if (!onSaveNote) return;
+    const next = { varsayilan: kanbanConfig.varsayilan, projeler: { ...kanbanConfig.projeler } };
+    if (kanbanProjectKey) next.projeler[kanbanProjectKey] = cols; else next.varsayilan = cols;
+    await onSaveNote(KANBAN_CONFIG_PATH, serializeKanbanConfig(next));
+  };
+  const resetKanbanColumns = async () => {
+    if (!onSaveNote || !kanbanProjectKey) return;
+    const projeler = { ...kanbanConfig.projeler };
+    delete projeler[kanbanProjectKey];
+    await onSaveNote(KANBAN_CONFIG_PATH, serializeKanbanConfig({ varsayilan: kanbanConfig.varsayilan, projeler }));
+  };
 
   // 1. Identify all projects (Notes containing #proje)
   const projectNotes = notes.filter(note => {
@@ -957,10 +978,17 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           )}
 
           {activeTab === 'kanban' && (
-            <KanbanBoard 
-              tasks={currentProjectTasks} 
+            <KanbanBoard
+              tasks={currentProjectTasks}
+              columns={kanbanColumns}
               onChangeTaskStatus={onChangeTaskStatus}
               onOpenNote={onOpenNote}
+              onSaveColumns={onSaveNote ? saveKanbanColumns : undefined}
+              isCustomized={isKanbanCustomized}
+              onResetColumns={resetKanbanColumns}
+              scopeLabel={selectedProject
+                ? `${selectedProject}: ${isKanbanCustomized ? 'bu projeye özel sütunlar' : 'varsayılan sütunlar'}`
+                : 'Genel görünüm: varsayılan sütunlar'}
             />
           )}
 

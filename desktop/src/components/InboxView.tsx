@@ -155,7 +155,7 @@ export default function InboxView({
           .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
           .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
           .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
-          .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+          .replace(/\[status:[a-z0-9_-]+\]/gi, '')
           .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
           .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
           .replace(/\[(?:project|proje):[^\]]+\]/gi, '')

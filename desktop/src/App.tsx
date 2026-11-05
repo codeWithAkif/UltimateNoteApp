@@ -226,7 +226,7 @@ export interface TimelineItem {
   // "İncelemede"/"Bloklu" gibi ara aşamaları da tutar. Satırda [status:review]/[status:blocked]
   // etiketi varsa oradan gelir, yoksa checkbox işaretinden türetilir (geriye dönük uyumlu —
   // eski görevlerin hiçbiri bu etikete sahip değil, hepsi otomatik backlog/inprogress/done olur).
-  kanbanStatus?: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done';
+  kanbanStatus?: string;
   folder: string | null;
   note: string | null;
   tags: string[];
@@ -3558,11 +3558,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
             // DevOps Kanban durumu: [status:review]/[status:blocked] etiketi varsa öncelikli,
             // yoksa checkbox işaretinden türetilir (bkz. TimelineItem.kanbanStatus yorumu).
-            const kanbanStatusTagMatch = rawText.match(/\[status:(review|blocked|backlog|inprogress)\]/i);
-            const kanbanStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done' = isChecked
+            const kanbanStatusTagMatch = rawText.match(/\[status:(?!done\])([a-z0-9_-]+)\]/i);
+            const kanbanStatus: string = isChecked
               ? 'done'
               : kanbanStatusTagMatch
-                ? (kanbanStatusTagMatch[1].toLowerCase() as 'review' | 'blocked' | 'backlog' | 'inprogress')
+                ? kanbanStatusTagMatch[1].toLowerCase()
                 : (isInProgress ? 'inprogress' : 'backlog');
 
             // Pop from stack until top of stack has strictly less indent
@@ -3641,7 +3641,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
               .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
               .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
-              .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+              .replace(/\[status:[a-z0-9_-]+\]/gi, '')
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
               .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
@@ -4604,11 +4604,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const isInProgress = mark === '/';
         const newStatus = isChecked ? 'done' : (isInProgress ? 'in-progress' : 'todo');
         const rawText = checklistMatch[3];
-        const kanbanStatusTagMatch = rawText.match(/\[status:(review|blocked|backlog|inprogress)\]/i);
-        const newKanbanStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done' = isChecked
+        const kanbanStatusTagMatch = rawText.match(/\[status:(?!done\])([a-z0-9_-]+)\]/i);
+        const newKanbanStatus: string = isChecked
           ? 'done'
           : kanbanStatusTagMatch
-            ? (kanbanStatusTagMatch[1].toLowerCase() as 'review' | 'blocked' | 'backlog' | 'inprogress')
+            ? kanbanStatusTagMatch[1].toLowerCase()
             : (isInProgress ? 'inprogress' : 'backlog');
 
         // Match standard inbox timestamp format: [YYYY-MM-DD HH:mm]
@@ -6087,7 +6087,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   // için satıra [status:review]/[status:blocked] etiketi yazılır ve checkbox '/' (devam
   // ediyor) olarak işaretlenir; 'backlog'/'inprogress'/'done' geldiğinde ise etiket temizlenip
   // yalnızca checkbox işareti güncellenir (eski davranışla tam uyumlu).
-  const handleChangeTaskStatus = async (id: string, newStatus: 'backlog' | 'inprogress' | 'review' | 'blocked' | 'done') => {
+  const handleChangeTaskStatus = async (id: string, newStatus: string) => {
     let targetItem: TimelineItem | null = null;
     const legacyStatus: 'todo' | 'in-progress' | 'done' = newStatus === 'done' ? 'done' : (newStatus === 'backlog' ? 'todo' : 'in-progress');
     let nextStateCompleted = newStatus === 'done';
@@ -6157,8 +6157,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               // gerçek durum [status:] etiketiyle taşınır. Diğer üç durumda etiket varsa
               // (örn. daha önce bloklu işaretlenmiş bir görev şimdi bitiriliyorsa) temizlenir.
               const statusChar = newStatus === 'done' ? 'x' : (newStatus === 'backlog' ? ' ' : '/');
-              let restOfLine = match[3].replace(/\s*\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '');
-              if (newStatus === 'review' || newStatus === 'blocked') {
+              let restOfLine = match[3].replace(/\s*\[status:[a-z0-9_-]+\]/gi, '');
+              if (newStatus !== 'backlog' && newStatus !== 'inprogress' && newStatus !== 'done') {
                 restOfLine = `${restOfLine} [status:${newStatus}]`;
               }
               lines[lineIdx] = `${match[1]}${statusChar}${restOfLine}`;

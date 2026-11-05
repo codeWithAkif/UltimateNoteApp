@@ -76,7 +76,7 @@ const cleanTaskText = (rawText: string): string => rawText
   .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
   .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
   .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
-  .replace(/\[status:(?:backlog|inprogress|review|blocked|done)\]/gi, '')
+  .replace(/\[status:[a-z0-9_-]+\]/gi, '')
   .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
   .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
   .replace(/\[(?:project|proje):[^\]]+\]/gi, '')
