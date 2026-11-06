@@ -77,9 +77,33 @@ const upsertClientTag = (content: string, tagRegex: RegExp, newTag: string): str
   return `${stripped}\n${newTag}`;
 };
 
+// PROJE DURUMU (kullanıcı: "kapandı, bitti vb. hiçbir filtreleme yok"): durum, proje notunun İÇİNDE
+// [durum:beklemede|tamamlandi|arsiv] etiketiyle tutulur (etiket yoksa proje "aktif"tir). Böylece mevcut projeler
+// aynen aktif görünür, durum notla birlikte senkronlanır ve Not Fabrikası dışında da okunabilir.
+type ProjectStatus = 'aktif' | 'beklemede' | 'tamamlandi' | 'arsiv';
+type ProjectFilter = 'open' | 'tamamlandi' | 'arsiv' | 'all';
+const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = { aktif: 'Aktif', beklemede: 'Beklemede', tamamlandi: 'Tamamlandı', arsiv: 'Arşiv' };
+const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = { aktif: '#22c55e', beklemede: '#eab308', tamamlandi: '#3b82f6', arsiv: '#94a3b8' };
+const PROJECT_STATUS_REGEX = /\[durum:(aktif|beklemede|tamamlandi|arsiv)\]/i;
+const parseProjectStatus = (content: string): ProjectStatus => {
+  const m = lastMatch(content, PROJECT_STATUS_REGEX.source);
+  return m ? (m[1].toLowerCase() as ProjectStatus) : 'aktif';
+};
+const upsertProjectStatus = (content: string, status: ProjectStatus): string => {
+  if (status === 'aktif') {
+    // Aktif varsayılandır: etiketi tamamen kaldır (nota gereksiz iz bırakma).
+    return content.replace(new RegExp(PROJECT_STATUS_REGEX.source, 'g'), '').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  }
+  return upsertClientTag(content, PROJECT_STATUS_REGEX, `[durum:${status}]`);
+};
+// Bir not yalnızca TAM "#proje" etiketini taşıyorsa proje sayılır ("#projeler", "#proje-x" gibi başka etiketler
+// ya da "#proje" kelimesini içeren metinler değil). Nokta ile başlayan gizli klasörlerdeki (.trash, .versions...) notlar dışlanır.
+const PROJECT_TAG_REGEX = /(^|[\s,;(])#proje(?![0-9A-Za-zçğıöşüÇĞİÖŞÜ_-])/i;
+
 export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler' }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = useState<ProjectFilter>('open');
   const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
 
   // Kanban sütunları: proje bazında özelleştirilebilir, ayar "Sistem/Kanban.md" notunda tutulur. Özel ayarı
@@ -104,9 +128,26 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
 
   // 1. Identify all projects (Notes containing #proje)
   const projectNotes = notes.filter(note => {
-    const content = scannedContents[note.path] || '';
-    return content.toLowerCase().includes('#proje');
+    if (note.path.split('/').some(seg => seg.startsWith('.'))) return false;
+    return PROJECT_TAG_REGEX.test(scannedContents[note.path] || '');
   });
+
+  // Durum filtresi: varsayılan "Açık" (aktif + beklemede) — tamamlanan/arşivlenen projeler gizlenir.
+  const projectStatusOf = (note: NoteItem): ProjectStatus => parseProjectStatus(scannedContents[note.path] || '');
+  const matchesProjectFilter = (st: ProjectStatus) =>
+    projectFilter === 'all' || (projectFilter === 'open' ? (st === 'aktif' || st === 'beklemede') : st === projectFilter);
+  const visibleProjects = projectNotes.filter(n => matchesProjectFilter(projectStatusOf(n)));
+  const projectFilterCounts = {
+    open: projectNotes.filter(n => ['aktif', 'beklemede'].includes(projectStatusOf(n))).length,
+    tamamlandi: projectNotes.filter(n => projectStatusOf(n) === 'tamamlandi').length,
+    arsiv: projectNotes.filter(n => projectStatusOf(n) === 'arsiv').length,
+    all: projectNotes.length
+  };
+  const setProjectStatus = async (note: NoteItem, status: ProjectStatus) => {
+    const content = scannedContents[note.path];
+    if (!onSaveNote || content === undefined) return;
+    await onSaveNote(note.path, upsertProjectStatus(content, status));
+  };
 
   // 2. Identify all clients (Notes containing #müşteri)
   const clientNotes = notes.filter(note => {
@@ -199,7 +240,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
   // satırları (subtaskDepth 2) burada FİLTRELENİR (onlar Takvim'de kendi kartları olarak görünür).
   const currentProjectTasks = (selectedProject
     ? timelineItems.filter(t => t.isTodo && isProjectTask(t, selectedProject))
-    : timelineItems.filter(t => t.isTodo && projectNotes.some(p => isProjectTask(t, p.name.replace('.md', ''))))
+    : timelineItems.filter(t => t.isTodo && visibleProjects.some(p => isProjectTask(t, p.name.replace('.md', ''))))
   ).filter(t => (t.subtaskDepth ?? 0) < 2);
 
   // Renk/icon seçimi, müşteri notunun İÇİNE [renk:hex]/[icon:emoji] etiketi olarak yazılır
@@ -849,7 +890,34 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
         {/* Sidebar for Projects */}
         {activeTab !== 'clients' && (
           <div className="projects-sidebar" style={{ width: '250px', borderRight: '1px solid var(--border-color)', overflowY: 'auto', padding: '16px', background: 'var(--bg-secondary)' }}>
-            <h3 style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.5px', marginBottom: '12px' }}>PROJELER ({projectNotes.length})</h3>
+            <h3 style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.5px', marginBottom: '12px' }}>PROJELER ({visibleProjects.length})</h3>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+              {([['open', 'Açık'], ['tamamlandi', 'Tamamlandı'], ['arsiv', 'Arşiv'], ['all', 'Tümü']] as [ProjectFilter, string][]).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setProjectFilter(key);
+                    // Seçili proje yeni filtreyle gizleniyorsa seçimi kaldır.
+                    if (selectedProject) {
+                      const sel = projectNotes.find(n => n.name.replace('.md', '') === selectedProject);
+                      const st = sel ? projectStatusOf(sel) : 'aktif';
+                      const show = key === 'all' || (key === 'open' ? (st === 'aktif' || st === 'beklemede') : st === key);
+                      if (!show) setSelectedProject(null);
+                    }
+                  }}
+                  style={{
+                    fontSize: '11px', padding: '3px 9px', borderRadius: '12px', cursor: 'pointer',
+                    border: '1px solid var(--border-color)',
+                    background: projectFilter === key ? 'var(--accent-color)' : 'var(--bg-tertiary)',
+                    color: projectFilter === key ? '#fff' : 'var(--text-secondary)'
+                  }}
+                >
+                  {label} ({projectFilterCounts[key]})
+                </button>
+              ))}
+            </div>
             
             <div 
               onClick={() => setSelectedProject(null)}
@@ -868,9 +936,10 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
               <Folder size={16} /> Tüm Görevler
             </div>
 
-            {projectNotes.map(note => {
+            {visibleProjects.map(note => {
               const cleanName = note.name.replace('.md', '');
               const { percent } = getProjectProgress(note.name);
+              const listStatus = projectStatusOf(note);
               return (
                 <div
                   key={note.path}
@@ -889,6 +958,9 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                     <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '13px' }}>
                       {cleanName}
                     </span>
+                    {listStatus !== 'aktif' && (
+                      <span style={{ marginLeft: 'auto', fontSize: '10px', color: PROJECT_STATUS_COLORS[listStatus] }}>{PROJECT_STATUS_LABELS[listStatus]}</span>
+                    )}
                   </div>
                   
                   {/* Progress bar mini */}
@@ -908,8 +980,9 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
               <h2>{selectedProject ? selectedProject : 'Genel Bakış'}</h2>
               
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px', marginTop: '24px' }}>
-                {(selectedProject ? projectNotes.filter(n => n.name.replace('.md', '').toLowerCase() === selectedProject.toLowerCase()) : projectNotes).map(note => {
+                {(selectedProject ? projectNotes.filter(n => n.name.replace('.md', '').toLowerCase() === selectedProject.toLowerCase()) : visibleProjects).map(note => {
                   const stats = getProjectProgress(note.name);
+                  const cardStatus = projectStatusOf(note);
                   const changelogPreview = getProjectChangelogPreview(note.path);
                   return (
                     <div key={note.path} style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
@@ -919,6 +992,31 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           {note.name.replace('.md', '')}
                         </h3>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {onSaveNote && stats.total > 0 && stats.percent === 100 && cardStatus === 'aktif' && (
+                            <button
+                              type="button"
+                              onClick={() => setProjectStatus(note, 'tamamlandi')}
+                              title="Tüm görevler bitti — projeyi Tamamlandı olarak işaretle (varsayılan listeden gizlenir)"
+                              style={{ fontSize: '11px', fontWeight: 700, color: '#3b82f6', background: 'rgba(59,130,246,0.12)', border: 'none', padding: '3px 8px', borderRadius: '10px', cursor: 'pointer' }}
+                            >
+                              ✓ Tamamlandı yap
+                            </button>
+                          )}
+                          {onSaveNote && (
+                            <select
+                              value={cardStatus}
+                              onChange={(e) => setProjectStatus(note, e.target.value as ProjectStatus)}
+                              title="Proje durumu"
+                              style={{
+                                fontSize: '11px', fontWeight: 700, padding: '3px 6px', borderRadius: '6px', cursor: 'pointer',
+                                background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: PROJECT_STATUS_COLORS[cardStatus]
+                              }}
+                            >
+                              {(Object.keys(PROJECT_STATUS_LABELS) as ProjectStatus[]).map(k => (
+                                <option key={k} value={k}>{PROJECT_STATUS_LABELS[k]}</option>
+                              ))}
+                            </select>
+                          )}
                           {stats.blocked > 0 && (
                             <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px' }}>
                               🔴 Bloklu: {stats.blocked}
