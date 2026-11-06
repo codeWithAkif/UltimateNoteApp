@@ -27,6 +27,8 @@ interface ProjectsViewProps {
   // (#müşteri etiketli) ve {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md (#proje +
   // müşteri-slug etiketli). Ayarlar'daki varsayılan "Müşteriler" ile eşleşir.
   clientsFolder?: string;
+  // Görev eklendikten sonra görevlerin (Kanban/ilerleme) hemen yenilenmesi için (App.tsx loadAllData).
+  onTasksAdded?: () => void;
 }
 
 // Bir müşteri/proje notunun içeriğinden [renk:hex] ve [icon:emoji] etiketlerini okur.
@@ -100,7 +102,48 @@ const upsertProjectStatus = (content: string, status: ProjectStatus): string => 
 // ya da "#proje" kelimesini içeren metinler değil). Nokta ile başlayan gizli klasörlerdeki (.trash, .versions...) notlar dışlanır.
 const PROJECT_TAG_REGEX = /(^|[\s,;(])#proje(?![0-9A-Za-zçğıöşüÇĞİÖŞÜ_-])/i;
 
-export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler' }: ProjectsViewProps) {
+// Projeye hızlı görev ekleme kutusu: tek satır + Enter/Ekle. Yalnızca EKLER; düzenlemek için nota gidilir.
+function ProjectTaskAdder({ onAdd, projectName }: { onAdd: (text: string) => Promise<void>; projectName: string }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    try { await onAdd(t); setText(''); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', minWidth: 0 }}>
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+        placeholder="Görev ekle…"
+        title={`${projectName} projesine görev ekle`}
+        maxLength={300}
+        style={{
+          flex: 1, minWidth: 0, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
+          color: 'var(--text-primary)', borderRadius: '6px', padding: '6px 10px', fontSize: '12.5px'
+        }}
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={busy || !text.trim()}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0, whiteSpace: 'nowrap',
+          background: 'var(--accent-color)', color: '#fff', border: 'none', borderRadius: '6px',
+          padding: '6px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+          opacity: busy || !text.trim() ? 0.5 : 1
+        }}
+      >
+        <Plus size={13} /> Ekle
+      </button>
+    </div>
+  );
+}
+
+export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>('open');
@@ -147,6 +190,17 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     const content = scannedContents[note.path];
     if (!onSaveNote || content === undefined) return;
     await onSaveNote(note.path, upsertProjectStatus(content, status));
+  };
+  // Projeye görev ekle: görev proje notunun SONUNA tek satır olarak yazılır (İş Planla ile aynı biçim:
+  // [project:slug] etiketli). Düzenleme/ayrıntı için kullanıcı nota gider; burası yalnızca ekler.
+  const addTaskToProject = async (note: NoteItem, text: string) => {
+    const content = scannedContents[note.path];
+    if (!onSaveNote || content === undefined) return;
+    const title = text.replace(/\s+/g, ' ').trim();
+    if (!title) return;
+    const slug = note.name.replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/\s+/g, '-');
+    await onSaveNote(note.path, `${content.replace(/\s+$/, '')}\n- [ ] ${title} [project:${slug}]\n`);
+    onTasksAdded?.();
   };
 
   // 2. Identify all clients (Notes containing #müşteri)
@@ -986,18 +1040,20 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                   const changelogPreview = getProjectChangelogPreview(note.path);
                   return (
                     <div key={note.path} style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <Briefcase size={18} />
-                          {note.name.replace('.md', '')}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px 12px', marginBottom: '16px' }}>
+                        <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', flex: '1 1 140px', minWidth: 0 }}>
+                          <Briefcase size={18} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={note.name.replace('.md', '')}>
+                            {note.name.replace('.md', '')}
+                          </span>
                         </h3>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }}>
                           {onSaveNote && stats.total > 0 && stats.percent === 100 && cardStatus === 'aktif' && (
                             <button
                               type="button"
                               onClick={() => setProjectStatus(note, 'tamamlandi')}
                               title="Tüm görevler bitti — projeyi Tamamlandı olarak işaretle (varsayılan listeden gizlenir)"
-                              style={{ fontSize: '11px', fontWeight: 700, color: '#3b82f6', background: 'rgba(59,130,246,0.12)', border: 'none', padding: '3px 8px', borderRadius: '10px', cursor: 'pointer' }}
+                              style={{ fontSize: '11px', fontWeight: 700, color: '#3b82f6', background: 'rgba(59,130,246,0.12)', border: 'none', padding: '3px 8px', borderRadius: '10px', cursor: 'pointer', whiteSpace: 'nowrap' }}
                             >
                               ✓ Tamamlandı yap
                             </button>
@@ -1008,7 +1064,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                               onChange={(e) => setProjectStatus(note, e.target.value as ProjectStatus)}
                               title="Proje durumu"
                               style={{
-                                fontSize: '11px', fontWeight: 700, padding: '3px 6px', borderRadius: '6px', cursor: 'pointer',
+                                fontSize: '11px', fontWeight: 700, padding: '3px 6px', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap',
                                 background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: PROJECT_STATUS_COLORS[cardStatus]
                               }}
                             >
@@ -1018,7 +1074,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                             </select>
                           )}
                           {stats.blocked > 0 && (
-                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: '10px', whiteSpace: 'nowrap' }}>
                               🔴 Bloklu: {stats.blocked}
                             </span>
                           )}
@@ -1041,7 +1097,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                               style={{
                                 display: 'flex', alignItems: 'center', gap: '4px',
                                 background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
-                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer',
+                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer', whiteSpace: 'nowrap',
                                 fontSize: '11px', fontWeight: 700, padding: '3px 8px'
                               }}
                             >
@@ -1068,6 +1124,12 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                           </ul>
                         </div>
                       )}
+
+                      {onSaveNote && (
+                        <div style={{ marginTop: '14px' }}>
+                          <ProjectTaskAdder projectName={note.name.replace('.md', '')} onAdd={(t) => addTaskToProject(note, t)} />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1076,6 +1138,16 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           )}
 
           {activeTab === 'kanban' && (
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              {onSaveNote && selectedProject && (() => {
+                const selNote = projectNotes.find(n => n.name.replace('.md', '') === selectedProject);
+                return selNote ? (
+                  <div style={{ padding: '12px 16px 0 16px' }}>
+                    <ProjectTaskAdder projectName={selectedProject} onAdd={(t) => addTaskToProject(selNote, t)} />
+                  </div>
+                ) : null;
+              })()}
+              <div style={{ flex: 1, minHeight: 0 }}>
             <KanbanBoard
               tasks={currentProjectTasks}
               columns={kanbanColumns}
@@ -1088,6 +1160,8 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                 ? `${selectedProject}: ${isKanbanCustomized ? 'bu projeye özel sütunlar' : 'varsayılan sütunlar'}`
                 : 'Genel görünüm: varsayılan sütunlar'}
             />
+              </div>
+            </div>
           )}
 
           {activeTab === 'clients' && (
@@ -1157,7 +1231,7 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
                               style={{
                                 display: 'flex', alignItems: 'center', gap: '4px',
                                 background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
-                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer',
+                                borderRadius: '6px', color: 'var(--accent-color)', cursor: 'pointer', whiteSpace: 'nowrap',
                                 fontSize: '11px', fontWeight: 700, padding: '3px 8px'
                               }}
                             >

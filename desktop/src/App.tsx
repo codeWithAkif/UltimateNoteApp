@@ -7656,6 +7656,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               scannedContents={fileContents}
               onChangeTaskStatus={handleChangeTaskStatus}
               onSaveNote={handleSaveNote}
+              onTasksAdded={() => { loadAllData(); }}
               clientsFolder={clientsFolder}
               onOpenNote={(item) => {
                 if (item.note) {
