@@ -46,6 +46,7 @@ import {
   ListTodo
 } from 'lucide-react';
 import Hourglass from './Hourglass';
+import { BriefingLauncherModal, MeetingBriefingModal, type BriefingEvent } from './MeetingBriefing';
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Bir görevin planlanan bitişine kalan süre için canlı geri sayım. Her saniye kendini
@@ -223,6 +224,8 @@ interface CalendarViewProps {
   // Bulutla ilk senkron bitene kadar false: otomatik dosya yazıcıları (ör. 'saati geçen görevi planlanmamışa al')
   // eski yerel kopyalar üzerinde çalışıp buluttaki doğru içeriği ezmesin (bkz. App.tsx firstSyncSettled).
   autoWriteReady?: boolean;
+  // Toplantı brifingi: müşteri notlarının kök klasörü (Ayarlar > Clients; varsayılan 'Müşteriler').
+  clientsFolder?: string;
 }
 
 export interface WorkspaceSubTask {
@@ -630,8 +633,12 @@ export default function CalendarView({
   bookNames = [],
   onOpenNotePath,
   onRequestFocusCalendar,
-  autoWriteReady = true
+  autoWriteReady = true,
+  clientsFolder = 'Müşteriler'
 }: CalendarViewProps) {
+  // Toplantı brifingi (yapay zekâ): başlatıcı listesi + seçilen toplantının brifing penceresi.
+  const [briefingLauncherOpen, setBriefingLauncherOpen] = useState(false);
+  const [briefingTarget, setBriefingTarget] = useState<{ title: string; when: string } | null>(null);
   const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
 
   // Right sidebar resizable width state
@@ -3391,6 +3398,17 @@ export default function CalendarView({
                 <ChevronRight size={16} />
               </button>
             </div>
+            {!embedded && (
+              <button
+                type="button"
+                className="btn-nav"
+                onClick={() => setBriefingLauncherOpen(true)}
+                title="Toplantı brifingi (yapay zekâ): müşteri/proje notlarınızdan toplantı öncesi hazırlık özeti"
+                style={{ whiteSpace: 'nowrap', padding: '0 10px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px', flexShrink: 0, minWidth: '34px' }}
+              >
+                <span>🧠</span>
+              </button>
+            )}
             {!embedded && <button
               type="button"
               className="btn-unplanned-toggle visible-mobile"
@@ -6809,6 +6827,38 @@ export default function CalendarView({
         </div>
       )}
 
+      {briefingLauncherOpen && (() => {
+        const ymd = (d: Date) => format(d, 'yyyy-MM-dd');
+        const todayStr = ymd(new Date());
+        const tomorrowStr = ymd(addDays(new Date(), 1));
+        const list: BriefingEvent[] = allMergedEvents
+          .filter(e => e.dueDate && (e.dueDate === todayStr || e.dueDate === tomorrowStr) && e.timeSlot && !e.isChecked && !e.isSessionOccurrence && !e.isSubtask)
+          .sort((a, b) => (a.dueDate + a.timeSlot).localeCompare(b.dueDate + b.timeSlot))
+          .slice(0, 14)
+          .map(e => ({ key: e.id, title: e.content.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim(), when: `${e.dueDate === todayStr ? 'bugün' : 'yarın'} ${e.timeSlot}` }))
+          .filter(e => e.title);
+        return (
+          <BriefingLauncherModal
+            events={list}
+            errand={{ tasks, fileContents, onSaveNote }}
+            onClose={() => setBriefingLauncherOpen(false)}
+            onPick={(title, when) => { setBriefingLauncherOpen(false); setBriefingTarget({ title, when }); }}
+          />
+        );
+      })()}
+      {briefingTarget && (
+        <MeetingBriefingModal
+          title={briefingTarget.title}
+          when={briefingTarget.when}
+          notes={notes}
+          fileContents={fileContents}
+          tasks={tasks}
+          clientsFolder={clientsFolder}
+          onSaveNote={onSaveNote}
+          onClose={() => setBriefingTarget(null)}
+        />
+      )}
+
       {externalEventInfoModal && (
         <div
           style={{
@@ -6841,7 +6891,22 @@ export default function CalendarView({
             <p style={{ margin: '0 0 18px 0', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
               {externalEventInfoModal.dueDate}{externalEventInfoModal.timeSlot ? ` (${externalEventInfoModal.timeSlot})` : ''}
             </p>
-            <div style={{ display: 'flex', gap: '10px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const ev = externalEventInfoModal;
+                  setExternalEventInfoModal(null);
+                  setBriefingTarget({ title: ev.content, when: `${ev.dueDate}${ev.timeSlot ? ` ${ev.timeSlot}` : ''}` });
+                }}
+                title="Bu etkinlik için notlarınızdan hazırlık brifingi üret"
+                style={{
+                  flex: '1 1 100%', background: 'var(--accent-glow)', border: '1px solid rgba(168, 85, 247, 0.3)', borderRadius: '8px',
+                  color: 'var(--accent-color)', padding: '10px', fontSize: '13px', fontWeight: 700, cursor: 'pointer'
+                }}
+              >
+                🧠 Toplantı brifingi
+              </button>
               <button
                 type="button"
                 onClick={() => setExternalEventInfoModal(null)}

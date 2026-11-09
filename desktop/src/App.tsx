@@ -7538,6 +7538,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                     <div className="notes-quick-calendar">
                       <CalendarView
               autoWriteReady={firstSyncSettled}
+              clientsFolder={clientsFolder}
                         embedded
                         notes={notes}
                         folders={folders}
@@ -7613,6 +7614,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           <div style={{ display: activeTab === 'calendar' ? 'block' : 'none', height: '100%' }}>
             <CalendarView
               autoWriteReady={firstSyncSettled}
+              clientsFolder={clientsFolder}
               notes={notes}
               folders={folders}
               tags={tags}

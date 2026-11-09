@@ -90,7 +90,7 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
 // SADECE AI Öğretmen'in gerçek YouTube video arama akışı için kullanılır (bkz.
 // findYouTubeVideoForTopic) — normal ders anlatımı/quiz/kart üretimi hâlâ callGemini'yi
 // (yapılandırılmış JSON, arama YOK) kullanır.
-async function callGeminiGroundedText(prompt: string): Promise<string> {
+export async function callGeminiGroundedText(prompt: string): Promise<string> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
