@@ -1,7 +1,7 @@
 // Serbest metinden görev çıkarma: toplantı notu, yapıştırılan yazı ya da günlük girdisindeki "Ahmet ile görüş",
 // "cuma günü sunumu gönder" gibi cümleleri Gemini ile görev adaylarına çevirir. Kullanıcı onaylamadan hiçbir şey yazılmaz.
 // Ayrıştırma/temizleme/tekilleştirme/ekleme saf fonksiyonlardır (ağ yok).
-import { getGeminiApiKey, getGeminiModel } from './geminiMentor';
+import { callAIJson } from './geminiMentor';
 import { normalizeTr } from './meetingBriefing';
 
 export interface ExtractedTask { text: string; due?: string }
@@ -98,26 +98,5 @@ export const appendTasksToNote = (content: string, items: ExtractedTask[]): stri
 export const dailyNotePath = (now: Date = new Date()) => `Günlükler/${ymdOf(now)}.md`;
 
 export const generateTasks = async (source: string, now: Date = new Date()): Promise<ExtractedTask[]> => {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: buildExtractPrompt(source, now) }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA }
-      })
-    }
-  );
-  if (!res.ok) {
-    let errText = '';
-    try { errText = await res.text(); } catch { /* yoksay */ }
-    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Gemini yanıtı boş döndü.');
-  return parseExtracted(JSON.parse(text), now);
+  return parseExtracted(await callAIJson<any>(buildExtractPrompt(source, now), SCHEMA), now);
 };

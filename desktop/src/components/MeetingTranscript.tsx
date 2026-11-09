@@ -71,7 +71,7 @@ export default function MeetingTranscriptPanel({ source: initial, fileContents, 
 
   const run = async () => {
     if (!parsed) return;
-    if (!isGeminiConfigured()) { setState('error'); setError('Gemini API anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden ekleyin.'); return; }
+    if (!isGeminiConfigured()) { setState('error'); setError('Yapay zekâ anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.'); return; }
     const id = ++runId.current;
     setState('loading'); setError(''); setOff(new Set());
     try {

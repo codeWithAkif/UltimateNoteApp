@@ -58,7 +58,7 @@ export default function ErrandPlannerPanel({ tasks, fileContents, onSaveNote }: 
     catch (e: any) { setLocNote(`Kaydedilemedi: ${String(e?.message || e)}`); }
   };
   const run = async () => {
-    if (!isGeminiConfigured()) { setState('error'); setError('Gemini API anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden ekleyin.'); return; }
+    if (!isGeminiConfigured()) { setState('error'); setError('Yapay zekâ anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.'); return; }
     setState('loading'); setError(''); setPlan(null);
     const chosen = selected.slice(0, 12);
     setPlanned(chosen);

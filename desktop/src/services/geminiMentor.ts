@@ -1,11 +1,11 @@
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // "Gelişim Yolu" (rank) özelliğinin AI mentor katmanı (Faz 2). Google Gemini API'sini
-// kullanıcının KENDİ API anahtarıyla doğrudan cihazdan çağırır — Anthropic/Claude API'si
-// veya "Antigravity" DEĞİL (ikisi de bu kullanım için uygun değil, bkz. kullanıcıyla
-// yapılan tartışma). Anahtar yalnızca localStorage'da tutulur, Supabase senkron
+// kullanıcının KENDİ API anahtarıyla doğrudan cihazdan çağırır. Birincil sağlayıcı Gemini'dir;
+// kullanıcı Claude API anahtarı da girdiyse Gemini kotası dolunca/hata verince Claude yedek olur (bkz. claudeApi.ts). Anahtar yalnızca localStorage'da tutulur, Supabase senkron
 // bilgilerinin saklanma deseniyle birebir aynı yaklaşım.
 
 import type { DevPathNoteMode } from '../devPaths';
+import { claudeGroundedText, claudeJson, isClaudeConfigured } from './claudeApi';
 
 const GEMINI_KEY_STORAGE = 'gemini_api_key';
 const GEMINI_MODEL_STORAGE = 'gemini_model';
@@ -43,12 +43,22 @@ export const setGeminiModel = (model: string) => {
   }
 };
 
-export const isGeminiConfigured = (): boolean => !!getGeminiApiKey();
+// "Yapay zekâ hazır mı?" kapısı: Gemini VEYA Claude anahtarı girilmişse hazır sayılır (Claude, Gemini kotası dolunca yedek ya da
+// yalnızca Claude kullanan kullanıcı için tek sağlayıcıdır). Ad eski kaldı; birçok ekran bu kapıyı kullanıyor.
+export const isGeminiConfigured = (): boolean => !!getGeminiApiKey() || isClaudeConfigured();
+
+// Gemini hatası Claude'a düşmeyi hak ediyor mu? Kota (429), kimlik/izin (401/403), sunucu (5xx) ve ağ hataları evet;
+// 400 gibi istek hataları hayır (gerçek bir hata gizlenmesin).
+const isFallbackWorthy = (e: any): boolean => {
+  const st = e?.status;
+  if (typeof st === 'number') return st === 429 || st === 401 || st === 403 || st >= 500;
+  return e instanceof TypeError; // fetch ağ hatası
+};
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Gemini'nin "responseSchema" ile yapılandırılmış JSON çıktısı özelliğini kullanır —
 // serbest metin ayrıştırmaya güvenmek yerine her zaman geçerli JSON döndürmesini garanti eder.
-async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
+async function callGeminiOnly<T>(prompt: string, responseSchema: any): Promise<T> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
@@ -72,7 +82,7 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
   if (!res.ok) {
     let errText = '';
     try { errText = await res.text(); } catch (e) { /* yoksay */ }
-    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
+    throw Object.assign(new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`), { status: res.status });
   }
 
   const data = await res.json();
@@ -83,6 +93,29 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+// Yapılandırılmış JSON isteği: önce Gemini; kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude anahtarı varsa Claude.
+// İki sağlayıcı da hata verirse kullanıcıya ikisinin de nedeni gösterilir.
+export async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
+  if (!getGeminiApiKey()) {
+    if (isClaudeConfigured()) return claudeJson<T>(prompt, responseSchema);
+    throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.');
+  }
+  try {
+    return await callGeminiOnly<T>(prompt, responseSchema);
+  } catch (e: any) {
+    if (!(isClaudeConfigured() && isFallbackWorthy(e))) throw e;
+    console.warn("[AI] Gemini kullanılamadı, Claude'a geçiliyor:", e?.message || e);
+    try {
+      return await claudeJson<T>(prompt, responseSchema);
+    } catch (e2: any) {
+      throw new Error(`${e.message}
+
+Claude yedeği de başarısız: ${e2?.message || e2}`);
+    }
+  }
+}
+export const callAIJson = callGemini;
+
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // callGemini'nin GERÇEK ARAMA yapabilen hâli — "google_search" aracı (grounding) açık,
 // ama responseSchema/JSON zorlaması YOK (Gemini API'de arama aracı ile zorunlu JSON şeması
@@ -90,7 +123,7 @@ async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
 // SADECE AI Öğretmen'in gerçek YouTube video arama akışı için kullanılır (bkz.
 // findYouTubeVideoForTopic) — normal ders anlatımı/quiz/kart üretimi hâlâ callGemini'yi
 // (yapılandırılmış JSON, arama YOK) kullanır.
-export async function callGeminiGroundedText(prompt: string): Promise<string> {
+async function callGeminiGroundedOnly(prompt: string): Promise<string> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
@@ -111,13 +144,34 @@ export async function callGeminiGroundedText(prompt: string): Promise<string> {
   if (!res.ok) {
     let errText = '';
     try { errText = await res.text(); } catch (e) { /* yoksay */ }
-    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
+    throw Object.assign(new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`), { status: res.status });
   }
 
   const data = await res.json();
   const parts = data?.candidates?.[0]?.content?.parts;
   const text = Array.isArray(parts) ? parts.map((p: any) => p.text).filter(Boolean).join('\n') : '';
   return text;
+}
+
+// Aramalı metin: önce Gemini (google_search); kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude'un web arama aracı.
+export async function callGeminiGroundedText(prompt: string): Promise<string> {
+  if (!getGeminiApiKey()) {
+    if (isClaudeConfigured()) return claudeGroundedText(prompt);
+    throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.');
+  }
+  try {
+    return await callGeminiGroundedOnly(prompt);
+  } catch (e: any) {
+    if (!(isClaudeConfigured() && isFallbackWorthy(e))) throw e;
+    console.warn("[AI] Gemini araması kullanılamadı, Claude'a geçiliyor:", e?.message || e);
+    try {
+      return await claudeGroundedText(prompt);
+    } catch (e2: any) {
+      throw new Error(`${e.message}
+
+Claude yedeği de başarısız: ${e2?.message || e2}`);
+    }
+  }
 }
 
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):

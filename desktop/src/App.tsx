@@ -65,6 +65,7 @@ import {
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
   Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen
 } from 'lucide-react';
+import { getClaudeApiKey, setClaudeApiKey, getClaudeModel, setClaudeModel, CLAUDE_MODEL_OPTIONS } from './services/claudeApi';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -2840,6 +2841,8 @@ export default function App() {
   });
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>(() => getGeminiApiKey() || '');
   const [geminiModelInput, setGeminiModelInput] = useState<string>(() => getGeminiModel());
+  const [claudeApiKeyInput, setClaudeApiKeyInput] = useState<string>(() => getClaudeApiKey() || '');
+  const [claudeModelInput, setClaudeModelInput] = useState<string>(() => getClaudeModel());
 
   // Gelişim yolu AI sihirbazı (seviye/müfredat belirleme) durumu.
   const [devPathWizardTarget, setDevPathWizardTarget] = useState<string | null>(null);
@@ -9111,7 +9114,7 @@ grant execute on function get_db_size() to anon;`}
 
               {settingsTab === 'ai' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
-                  <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>AI Mentor (Gemini)</h3>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>AI Mentor (Gemini + Claude yedeği)</h3>
                   <p style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.4, margin: 0 }}>
                     Gelişim yollarınızda seviye/müfredat belirleme ve testler için Google Gemini'yi kullanır. Kendi ücretsiz API anahtarınızı{' '}
                     <a href="https://aistudio.google.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-color)' }}>Google AI Studio</a>
@@ -9158,6 +9161,30 @@ grant execute on function get_db_size() to anon;`}
                       Ücretsiz katmanda her modelin günlük istek kotası ayrı takip edilir — birinin kotası dolarsa (Google AI Studio "Rate Limit" panelinden görebilirsin) buradan başka bir modele geçebilirsin.
                     </span>
                   </div>
+                  <div style={{ paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Claude API Anahtarı (yedek, isteğe bağlı)
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="sk-ant-..."
+                      value={claudeApiKeyInput}
+                      onChange={(e) => setClaudeApiKeyInput(e.target.value)}
+                      className="modal-input"
+                      style={{ width: '100%' }}
+                    />
+                    <select
+                      value={claudeModelInput}
+                      onChange={(e) => setClaudeModelInput(e.target.value)}
+                      className="modal-input"
+                      style={{ width: '100%', marginTop: '8px' }}
+                    >
+                      {Array.from(new Set([...CLAUDE_MODEL_OPTIONS, claudeModelInput])).map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '4px', lineHeight: 1.4 }}>
+                      Gemini kotası dolunca ya da Gemini hata verince aynı istek otomatik olarak Claude'a gider (ücretli API kullanımınızdan düşer). Gemini anahtarı boşsa yalnızca Claude kullanılır. Anahtar yalnızca bu cihazda saklanır ve sadece api.anthropic.com'a gönderilir.
+                    </span>
+                  </div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
                     <input
                       type="checkbox"
@@ -9184,6 +9211,8 @@ grant execute on function get_db_size() to anon;`}
                       onClick={() => {
                         setGeminiApiKey(geminiApiKeyInput);
                         setGeminiModel(geminiModelInput);
+                        setClaudeApiKey(claudeApiKeyInput);
+                        setClaudeModel(claudeModelInput);
                         setIsSettingsModalOpen(false);
                       }}
                     >

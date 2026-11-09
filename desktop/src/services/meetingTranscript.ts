@@ -1,7 +1,7 @@
 // Toplantı transkripti: Teams'ten inen standart WebVTT (.vtt) dosyasını konuşmacı bazlı dökümüne çevirir, Gemini ile
 // özet / kararlar / kişi bazlı görevler / paylaşılan kaynaklar çıkarır ve nota yazılacak markdown'ı üretir.
 // Ayrıştırma ve markdown üretimi saf fonksiyonlardır (ağ yok).
-import { getGeminiApiKey, getGeminiModel } from './geminiMentor';
+import { callAIJson } from './geminiMentor';
 import { normalizeTr } from './meetingBriefing';
 
 export interface Turn { speaker: string; start: number; text: string } // start: saniye
@@ -157,29 +157,8 @@ export const parseSummary = (raw: any, now: Date): MeetingSummary => {
 };
 
 export const generateMeetingSummary = async (title: string, p: ParsedTranscript, meetingDate?: Date, now: Date = new Date()): Promise<MeetingSummary> => {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
   const { text } = transcriptForPrompt(p);
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: buildTranscriptPrompt(title, p, text, now, meetingDate) }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA }
-      })
-    }
-  );
-  if (!res.ok) {
-    let errText = '';
-    try { errText = await res.text(); } catch { /* yoksay */ }
-    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!out) throw new Error('Gemini yanıtı boş döndü.');
-  return parseSummary(JSON.parse(out), now);
+  return parseSummary(await callAIJson<any>(buildTranscriptPrompt(title, p, text, now, meetingDate), SCHEMA), now);
 };
 
 const safe = (s: string) => s.replace(/\[/g, '(').replace(/\]/g, ')');

@@ -164,7 +164,7 @@ export function MeetingBriefingModal({ title, when, notes, fileContents, tasks, 
     setState('loading'); setError(''); setNote('');
     if (!isGeminiConfigured()) {
       setState('error');
-      setError('Gemini API anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden ekleyin.');
+      setError('Yapay zekâ anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.');
       return;
     }
     try {

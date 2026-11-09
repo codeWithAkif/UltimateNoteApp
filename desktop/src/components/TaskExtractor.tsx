@@ -44,7 +44,7 @@ export default function TaskExtractorPanel({ fileContents, onSaveNote }: {
   const canRun = source.trim().length >= 10 && state !== 'loading';
 
   const run = async () => {
-    if (!isGeminiConfigured()) { setState('error'); setError('Gemini API anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden ekleyin.'); return; }
+    if (!isGeminiConfigured()) { setState('error'); setError('Yapay zekâ anahtarı ayarlı değil. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.'); return; }
     setState('loading'); setError(''); setItems([]); setOff(new Set());
     try {
       const found = await generateTasks(prepareSource(source));

@@ -1,7 +1,7 @@
 // Toplantı öncesi brifing: takvimdeki bir etkinliğin başlığından ilgili MÜŞTERİ/PROJE'yi bulur, notlardan ve
 // görevlerden bağlamı toplar, Gemini'ye yalnızca bu seçili bağlamı gönderip kısa bir brifing üretir.
 // Veri toplama ve eşleştirme saf fonksiyonlardır (ağ yok) — ayrı ayrı test edilebilir.
-import { getGeminiApiKey, getGeminiModel } from './geminiMentor';
+import { callAIJson } from './geminiMentor';
 
 export interface BriefNote { path: string; name: string; updatedAt: number; type?: string }
 export interface BriefTask {
@@ -220,28 +220,7 @@ Sadece JSON döndür.`;
 };
 
 export const generateBriefing = async (title: string, when: string, ctx: BriefingContext): Promise<Briefing> => {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: buildBriefingPrompt(title, when, ctx) }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: BRIEFING_SCHEMA }
-      })
-    }
-  );
-  if (!res.ok) {
-    let errText = '';
-    try { errText = await res.text(); } catch { /* yoksay */ }
-    throw new Error(`Gemini API hatası (${res.status}): ${errText.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Gemini yanıtı boş döndü.');
-  const b = JSON.parse(text) as Briefing;
+  const b = await callAIJson<Briefing>(buildBriefingPrompt(title, when, ctx), BRIEFING_SCHEMA);
   const arr = (x: any) => (Array.isArray(x) ? x.filter(s => typeof s === 'string' && s.trim()) : []);
   return {
     ozet: typeof b.ozet === 'string' ? b.ozet : '',
