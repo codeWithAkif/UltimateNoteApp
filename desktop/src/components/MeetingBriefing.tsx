@@ -7,6 +7,7 @@ import {
   type Briefing, type BriefNote, type BriefTask
 } from '../services/meetingBriefing';
 import ErrandPlannerPanel from './ErrandPlanner';
+import TaskExtractorPanel from './TaskExtractor';
 import type { ErrandTaskInput } from '../services/errandPlanner';
 
 const overlayStyle: React.CSSProperties = {
@@ -36,8 +37,8 @@ export function BriefingLauncherModal({ events, onPick, onClose, errand }: {
   errand?: { tasks: ErrandTaskInput[]; fileContents: Record<string, string>; onSaveNote?: (path: string, content: string) => Promise<void> };
 }) {
   const [custom, setCustom] = useState('');
-  const [tab, setTab] = useState<'meeting' | 'errands'>('meeting');
-  const tabBtn = (key: 'meeting' | 'errands', text: string) => (
+  const [tab, setTab] = useState<'meeting' | 'errands' | 'extract'>('meeting');
+  const tabBtn = (key: 'meeting' | 'errands' | 'extract', text: string) => (
     <button
       type="button"
       onClick={() => setTab(key)}
@@ -59,13 +60,16 @@ export function BriefingLauncherModal({ events, onPick, onClose, errand }: {
           <button type="button" onClick={onClose} style={{ ...smallBtn, padding: '5px 7px' }} title="Kapat"><X size={14} /></button>
         </div>
         {errand && (
-          <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px' }}>
             {tabBtn('meeting', 'Toplantı brifingi')}
             {tabBtn('errands', 'Dışarı işler')}
+            {tabBtn('extract', 'Görev çıkar')}
           </div>
         )}
 
-        {tab === 'errands' && errand ? (
+        {tab === 'extract' && errand ? (
+          <TaskExtractorPanel fileContents={errand.fileContents} onSaveNote={errand.onSaveNote} />
+        ) : tab === 'errands' && errand ? (
           <ErrandPlannerPanel tasks={errand.tasks} fileContents={errand.fileContents} onSaveNote={errand.onSaveNote} />
         ) : (
           <>

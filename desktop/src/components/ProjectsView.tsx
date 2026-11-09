@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
+import { computeProjectHealth, type HealthItem, type HealthAction } from '../services/projectHealth';
 import { KANBAN_CONFIG_PATH, parseKanbanConfig, serializeKanbanConfig, columnsForProject, type KanbanColumn } from '../kanbanColumns';
 import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2, CheckCircle2, Circle } from 'lucide-react';
 
@@ -191,6 +192,36 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
     if (!onSaveNote || content === undefined) return;
     await onSaveNote(note.path, upsertProjectStatus(content, status));
   };
+  // Proje sağlık radarı ("çeki düzen"): yalnızca Genel Bakış'ta ve "Açık" filtresindeyken hesaplanır. Yoksayılan öneri
+  // 14 gün gizlenir (tarayıcıya özel).
+  const RADAR_DISMISS_KEY = 'proje_radar_yoksay';
+  const [radarDismissVersion, setRadarDismissVersion] = useState(0);
+  const [radarShowAll, setRadarShowAll] = useState(false);
+  const readDismissed = (): Record<string, number> => {
+    try { return JSON.parse(localStorage.getItem(RADAR_DISMISS_KEY) || '{}') || {}; } catch { return {}; }
+  };
+  const radarItems: HealthItem[] = useMemo(() => {
+    if (activeTab !== 'dashboard' || selectedProject || projectFilter !== 'open') return [];
+    const dismissed = readDismissed();
+    const limit = Date.now() - 14 * 24 * 3600 * 1000;
+    return computeProjectHealth(
+      projectNotes.map(n => ({ name: n.name, path: n.path, updatedAt: n.updatedAt, status: projectStatusOf(n) })),
+      scannedContents
+    ).filter(i => !(dismissed[`${i.path}|${i.rule}`] > limit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannedContents, notes, activeTab, selectedProject, projectFilter, radarDismissVersion]);
+  const dismissRadar = (i: HealthItem) => {
+    const d = readDismissed();
+    d[`${i.path}|${i.rule}`] = Date.now();
+    try { localStorage.setItem(RADAR_DISMISS_KEY, JSON.stringify(d)); } catch { /* yoksay */ }
+    setRadarDismissVersion(v => v + 1);
+  };
+  const RADAR_ACTION_LABELS: Record<HealthAction, string> = { tamamlandi: 'Tamamlandı yap', arsiv: 'Arşivle', beklemede: 'Beklemeye al' };
+  const applyRadarAction = async (i: HealthItem, a: HealthAction) => {
+    const note = projectNotes.find(n => n.path === i.path);
+    if (note) await setProjectStatus(note, a);
+  };
+
   // Projeye görev ekle: görev proje notunun SONUNA tek satır olarak yazılır (İş Planla ile aynı biçim:
   // [project:slug] etiketli). Düzenleme/ayrıntı için kullanıcı nota gider; burası yalnızca ekler.
   const addTaskToProject = async (note: NoteItem, text: string) => {
@@ -1032,6 +1063,59 @@ export default function ProjectsView({ timelineItems, notes, scannedContents, on
           {activeTab === 'dashboard' && (
             <div style={{ padding: '24px', overflowY: 'auto', height: '100%' }}>
               <h2>{selectedProject ? selectedProject : 'Genel Bakış'}</h2>
+
+              {radarItems.length > 0 && (
+                <div style={{ marginTop: '16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '14px 16px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                    Çeki düzen önerileri ({radarItems.length})
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {(radarShowAll ? radarItems : radarItems.slice(0, 5)).map(i => (
+                      <div key={`${i.path}|${i.rule}`} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 10px', padding: '8px 10px', background: 'var(--bg-tertiary)', borderRadius: '8px', borderLeft: `3px solid ${i.severity === 1 ? '#ef4444' : i.severity === 2 ? '#eab308' : 'var(--border-color)'}` }}>
+                        <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedProject(i.name)}
+                            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-primary)', fontWeight: 700, fontSize: '13px', cursor: 'pointer', textAlign: 'left', overflowWrap: 'anywhere' }}
+                          >
+                            {i.name}
+                          </button>
+                          <div style={{ fontSize: '12px', color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{i.text}</div>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {onSaveNote && i.actions.map(a => (
+                            <button
+                              key={a}
+                              type="button"
+                              onClick={() => applyRadarAction(i, a)}
+                              style={{ fontSize: '11px', fontWeight: 700, padding: '4px 9px', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap', background: 'var(--accent-glow)', color: 'var(--accent-color)', border: '1px solid rgba(168, 85, 247, 0.3)' }}
+                            >
+                              {RADAR_ACTION_LABELS[a]}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => dismissRadar(i)}
+                            title="14 gün gösterme"
+                            style={{ fontSize: '11px', padding: '4px 9px', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap', background: 'var(--bg-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}
+                          >
+                            Yoksay
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {radarItems.length > 5 && (
+                    <button
+                      type="button"
+                      onClick={() => setRadarShowAll(v => !v)}
+                      style={{ marginTop: '10px', background: 'none', border: 'none', color: 'var(--accent-color)', fontSize: '12px', fontWeight: 700, cursor: 'pointer', padding: 0 }}
+                    >
+                      {radarShowAll ? 'Daha az göster' : `Tümünü göster (${radarItems.length})`}
+                    </button>
+                  )}
+                </div>
+              )}
               
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px', marginTop: '24px' }}>
                 {(selectedProject ? projectNotes.filter(n => n.name.replace('.md', '').toLowerCase() === selectedProject.toLowerCase()) : visibleProjects).map(note => {
