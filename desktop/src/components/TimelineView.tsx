@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Clock, CheckCircle2, Circle, Tag as TagIcon, Folder as FolderIcon, Hash, History } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Clock, CheckCircle2, Circle, Tag as TagIcon, Folder as FolderIcon, Hash, History, ChevronLeft, ChevronRight } from 'lucide-react';
 import GraphView from './GraphView';
 
 interface NoteItem {
@@ -218,42 +218,79 @@ export default function TimelineView({
   const now = new Date();
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-  // Filter timeline items
-  const filteredItems = timelineItems.filter((item) => {
-    if (item.dateStr > todayStr) return false;
-    if (selectedTag && !item.tags.includes(selectedTag)) return false;
-    if (selectedFolder && item.folder !== selectedFolder) return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const contentMatch = item.content.toLowerCase().includes(q);
-      const noteMatch = item.note ? item.note.toLowerCase().includes(q) : false;
-      const folderMatch = item.folder ? item.folder.toLowerCase().includes(q) : false;
-      const tagMatch = item.tags.some(t => t.toLowerCase().includes(q));
-      
-      const displayDateStr = new Date(item.dateStr).toLocaleDateString('tr-TR', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      }).toLowerCase();
-      const dateMatch = item.dateStr.includes(q) || displayDateStr.includes(q) || item.timestamp.includes(q);
-      
-      return contentMatch || noteMatch || folderMatch || tagMatch || dateMatch;
+  // Süzme + gün gruplama yalnızca girdi değişince yeniden hesaplanır (her render'da binlerce kaydı taramasın).
+  const { groupedItems, sortedDates, totalCount } = useMemo(() => {
+    const dateText = new Map<string, string>(); // "Cuma, 7 Kasım 2026" metni gün başına bir kez üretilir
+    const textOfDate = (d: string) => {
+      let t = dateText.get(d);
+      if (t === undefined) {
+        t = new Date(d).toLocaleDateString('tr-TR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).toLowerCase();
+        dateText.set(d, t);
+      }
+      return t;
+    };
+    const q = searchQuery ? searchQuery.toLowerCase() : '';
+    const grouped: { [date: string]: TimelineItem[] } = {};
+    let count = 0;
+    for (const item of timelineItems) {
+      if (item.dateStr > todayStr) continue;
+      if (selectedTag && !item.tags.includes(selectedTag)) continue;
+      if (selectedFolder && item.folder !== selectedFolder) continue;
+      if (q) {
+        const hit =
+          item.content.toLowerCase().includes(q) ||
+          (item.note ? item.note.toLowerCase().includes(q) : false) ||
+          (item.folder ? item.folder.toLowerCase().includes(q) : false) ||
+          item.tags.some(t => t.toLowerCase().includes(q)) ||
+          item.dateStr.includes(q) || item.timestamp.includes(q) || textOfDate(item.dateStr).includes(q);
+        if (!hit) continue;
+      }
+      (grouped[item.dateStr] || (grouped[item.dateStr] = [])).push(item);
+      count++;
     }
-    return true;
-  });
+    return { groupedItems: grouped, sortedDates: Object.keys(grouped).sort((a, b) => b.localeCompare(a)), totalCount: count };
+  }, [timelineItems, selectedTag, selectedFolder, searchQuery, todayStr]);
 
-  // Group items by date
-  const groupedItems: { [date: string]: TimelineItem[] } = {};
-  filteredItems.forEach((item) => {
-    if (!groupedItems[item.dateStr]) {
-      groupedItems[item.dateStr] = [];
+  // Sayfalama: günler bölünmeden, sayfa başına yaklaşık PAGE_TARGET kayıt. Yalnızca görünen sayfa çizilir; böylece
+  // binlerce kayıt olsa da ekran donmaz.
+  const PAGE_TARGET = 50;
+  const pages = useMemo(() => {
+    const out: string[][] = [];
+    let cur: string[] = [];
+    let n = 0;
+    for (const d of sortedDates) {
+      const size = groupedItems[d].length;
+      if (cur.length > 0 && n + size > PAGE_TARGET) { out.push(cur); cur = []; n = 0; }
+      cur.push(d); n += size;
     }
-    groupedItems[item.dateStr].push(item);
-  });
-
-  // Sort dates descending
-  const sortedDates = Object.keys(groupedItems).sort((a, b) => b.localeCompare(a));
+    if (cur.length) out.push(cur);
+    return out;
+  }, [sortedDates, groupedItems]);
+  const [page, setPage] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Arama/filtre değişince ilk sayfaya dön; sayfa sayısı azalırsa taşmasın.
+  useEffect(() => { setPage(0); }, [searchQuery, selectedTag, selectedFolder]);
+  const safePage = Math.min(page, Math.max(0, pages.length - 1));
+  const visibleDates = pages[safePage] || [];
+  const goPage = (n: number) => {
+    setPage(Math.max(0, Math.min(pages.length - 1, n)));
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  };
+  const pager = pages.length > 1 ? (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: '10px', padding: '10px 0' }}>
+      <button type="button" onClick={() => goPage(safePage - 1)} disabled={safePage === 0}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-hover)', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600, cursor: safePage === 0 ? 'default' : 'pointer', opacity: safePage === 0 ? 0.45 : 1 }}>
+        <ChevronLeft size={14} /> Yeni
+      </button>
+      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+        Sayfa {safePage + 1} / {pages.length} · {totalCount} kayıt
+      </span>
+      <button type="button" onClick={() => goPage(safePage + 1)} disabled={safePage >= pages.length - 1}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-hover)', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600, cursor: safePage >= pages.length - 1 ? 'default' : 'pointer', opacity: safePage >= pages.length - 1 ? 0.45 : 1 }}>
+        Eski <ChevronRight size={14} />
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div 
@@ -354,7 +391,7 @@ export default function TimelineView({
           folderCustomizations={folderCustomizations}
         />
       ) : (
-        <div className="timeline-body" style={{ flex: 1, overflowY: 'auto' }}>
+        <div className="timeline-body" ref={bodyRef} style={{ flex: 1, overflowY: 'auto' }}>
           {sortedDates.length === 0 ? (
             <div className="timeline-empty">
               <Clock size={48} />
@@ -367,7 +404,8 @@ export default function TimelineView({
             </div>
           ) : (
             <div className="timeline-thread">
-              {sortedDates.map((dateStr) => {
+              {pager}
+              {visibleDates.map((dateStr) => {
                 const displayDate = new Date(dateStr).toLocaleDateString('tr-TR', {
                   weekday: 'long',
                   year: 'numeric',
@@ -453,6 +491,7 @@ export default function TimelineView({
                   </div>
                 );
               })}
+              {pager}
             </div>
           )}
         </div>

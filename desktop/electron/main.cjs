@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, Menu, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, Menu, shell, safeStorage, dialog } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -639,6 +639,44 @@ ipcMain.handle('read-media', async (event, relativePath) => {
   }
 });
 
+
+// Toplantı transkripti (.vtt) izleme: izlenen klasörde (varsayılan İndirilenler) yakın zamanda inen .vtt dosyalarını listeler.
+// Yalnızca .vtt okunur; hiçbir şey kendiliğinden bir yere gönderilmez (işleme kullanıcı onayıyla başlar).
+const TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024;
+ipcMain.handle('transcript-scan', async (event, folder) => {
+  try {
+    const dir = (typeof folder === 'string' && folder.trim()) ? folder.trim() : app.getPath('downloads');
+    const since = Date.now() - 7 * 24 * 3600 * 1000;
+    const files = [];
+    for (const name of await fs.promises.readdir(dir)) {
+      if (!/\.vtt$/i.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = await fs.promises.stat(full);
+        if (st.isFile() && st.mtimeMs >= since && st.size > 0 && st.size <= TRANSCRIPT_MAX_BYTES) files.push({ path: full, name, mtimeMs: st.mtimeMs, size: st.size });
+      } catch (e) { /* dosya o an kilitli/silinmiş olabilir */ }
+    }
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return { success: true, folder: dir, files: files.slice(0, 10) };
+  } catch (e) {
+    return { success: false, error: String(e && e.message || e), files: [] };
+  }
+});
+ipcMain.handle('transcript-read', async (event, filePath) => {
+  try {
+    if (typeof filePath !== 'string' || !/\.vtt$/i.test(filePath)) return { success: false, error: 'Yalnızca .vtt dosyaları okunur.' };
+    const st = await fs.promises.stat(filePath);
+    if (!st.isFile() || st.size > TRANSCRIPT_MAX_BYTES) return { success: false, error: 'Dosya çok büyük ya da geçersiz.' };
+    return { success: true, content: await fs.promises.readFile(filePath, 'utf8') };
+  } catch (e) {
+    return { success: false, error: String(e && e.message || e) };
+  }
+});
+ipcMain.handle('transcript-pick-folder', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const r = await dialog.showOpenDialog(win || undefined, { properties: ['openDirectory'], defaultPath: app.getPath('downloads') });
+  return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+});
 
 ipcMain.handle('file-exists', async (event, relativePath) => {
   try {

@@ -6840,7 +6840,7 @@ export default function CalendarView({
         return (
           <BriefingLauncherModal
             events={list}
-            errand={{ tasks, fileContents, onSaveNote }}
+            errand={{ tasks, fileContents, clientsFolder, onSaveNote }}
             onClose={() => setBriefingLauncherOpen(false)}
             onPick={(title, when) => { setBriefingLauncherOpen(false); setBriefingTarget({ title, when }); }}
           />

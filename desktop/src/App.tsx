@@ -65,6 +65,7 @@ import {
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
   Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen
 } from 'lucide-react';
+import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
 interface ShortcutKey {
@@ -360,6 +361,61 @@ export default function App() {
     }
   }, []);
 
+  // Toplantı transkripti izleme (yalnızca masaüstü): İndirilenler (ya da seçilen) klasörüne inen yeni .vtt dosyasını fark edip
+  // bildirim gösterir. Dosya okunmadan/Gemini'ye hiçbir şey gönderilmeden önce kullanıcı "İşle" demelidir.
+  const [pendingTranscript, setPendingTranscript] = useState<{ path: string; name: string; mtimeMs: number } | null>(null);
+  const [transcriptSource, setTranscriptSource] = useState<{ name: string; content: string; mtimeMs: number } | null>(null);
+  useEffect(() => {
+    if (!isElectron || !window.electron?.transcriptScan) return;
+    const SEEN_KEY = 'transcript_seen';
+    const readSeen = (): Record<string, number> | null => {
+      try { const raw = localStorage.getItem(SEEN_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+    };
+    const check = async () => {
+      try {
+        let folder: string | undefined;
+        try { folder = localStorage.getItem('transcript_folder') || undefined; } catch { /* yoksay */ }
+        const r = await window.electron.transcriptScan!(folder);
+        if (!r.success) return;
+        const seen = readSeen();
+        if (seen === null) {
+          // İlk çalıştırma: klasörde zaten duran eski transkriptler için bildirim yağmasın.
+          const base: Record<string, number> = {};
+          r.files.forEach(f => { base[`${f.path}|${f.mtimeMs}`] = Date.now(); });
+          try { localStorage.setItem(SEEN_KEY, JSON.stringify(base)); } catch { /* yoksay */ }
+          return;
+        }
+        const fresh = r.files.find(f => !seen[`${f.path}|${f.mtimeMs}`]);
+        // Dosya hâlâ iniyor olabilir: son 3 saniyede değişmişse bir sonraki taramada gösterilir.
+        if (fresh && Date.now() - fresh.mtimeMs > 3000) setPendingTranscript(prev => prev || { path: fresh.path, name: fresh.name, mtimeMs: fresh.mtimeMs });
+      } catch { /* yoksay */ }
+    };
+    check();
+    const timer = window.setInterval(check, 30000);
+    window.addEventListener('focus', check);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', check); };
+  }, []);
+  const markTranscriptSeen = (t: { path: string; mtimeMs: number }) => {
+    try {
+      const raw = localStorage.getItem('transcript_seen');
+      const seen = raw ? JSON.parse(raw) : {};
+      seen[`${t.path}|${t.mtimeMs}`] = Date.now();
+      localStorage.setItem('transcript_seen', JSON.stringify(seen));
+    } catch { /* yoksay */ }
+  };
+  const openPendingTranscript = async () => {
+    const t = pendingTranscript;
+    if (!t) return;
+    markTranscriptSeen(t);
+    setPendingTranscript(null);
+    const r = await window.electron.transcriptRead?.(t.path);
+    if (r?.success && typeof r.content === 'string') setTranscriptSource({ name: t.name, content: r.content, mtimeMs: t.mtimeMs });
+  };
+  const dismissPendingTranscript = () => {
+    if (pendingTranscript) markTranscriptSeen(pendingTranscript);
+    setPendingTranscript(null);
+  };
+
   const handleRestartAndInstall = () => {
     if (isElectron && window.electron && window.electron.restartAndInstall) {
       window.electron.restartAndInstall();
@@ -413,6 +469,8 @@ export default function App() {
   
   // App-wide unified Timeline Items (Combined tasks & logs)
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>([]);
+  // Zaman Akışı'na her render'da yeni dizi gitmesin (alt görevler hariç, yalnızca veri değişince yeniden hesaplanır).
+  const timelineItemsTopLevel = useMemo(() => timelineItems.filter(item => !item.isSubtask), [timelineItems]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   // 60 saniyelik periyodik tarama (applyAutoStopUnfinishedToLine) her tetiklendiğinde GÜNCEL
   // fileContents'a erişebilmek için — effect'in bağımlılığı kasıtlı olarak dar tutulduğundan
@@ -7595,7 +7653,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'timeline' && (
             <TimelineView
-              timelineItems={timelineItems.filter(item => !item.isSubtask)}
+              timelineItems={timelineItemsTopLevel}
               selectedTag={selectedTag}
               selectedFolder={selectedFolder}
               onToggleTodo={handleToggleTodo}
@@ -10949,6 +11007,26 @@ grant execute on function get_db_size() to anon;`}
             </button>
           </div>
         </div>
+      )}
+
+      {pendingTranscript && (
+        <div style={{ position: 'fixed', bottom: '24px', left: '24px', zIndex: 99998, maxWidth: 'min(380px, calc(100vw - 48px))', boxSizing: 'border-box', background: 'var(--bg-secondary)', border: '1px solid var(--accent-color)', borderRadius: '12px', padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700 }}>Yeni toplantı transkripti</div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '3px 0 10px', overflowWrap: 'anywhere' }}>{pendingTranscript.name}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <button type="button" onClick={openPendingTranscript} style={{ background: 'var(--accent-color)', color: '#fff', border: 'none', borderRadius: '8px', padding: '7px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>İşle</button>
+            <button type="button" onClick={dismissPendingTranscript} style={{ background: 'var(--bg-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '7px 12px', fontSize: '12px', cursor: 'pointer' }}>Yoksay</button>
+          </div>
+        </div>
+      )}
+      {transcriptSource && (
+        <MeetingTranscriptModal
+          source={transcriptSource}
+          fileContents={fileContents}
+          clientsFolder={clientsFolder}
+          onSaveNote={handleSaveNote}
+          onClose={() => setTranscriptSource(null)}
+        />
       )}
 
       {/* Floating Update Notification Toast */}

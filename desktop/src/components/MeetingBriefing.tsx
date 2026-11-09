@@ -8,6 +8,7 @@ import {
 } from '../services/meetingBriefing';
 import ErrandPlannerPanel from './ErrandPlanner';
 import TaskExtractorPanel from './TaskExtractor';
+import MeetingTranscriptPanel from './MeetingTranscript';
 import type { ErrandTaskInput } from '../services/errandPlanner';
 
 const overlayStyle: React.CSSProperties = {
@@ -34,11 +35,11 @@ export function BriefingLauncherModal({ events, onPick, onClose, errand }: {
   events: BriefingEvent[];
   onPick: (title: string, when: string) => void;
   onClose: () => void;
-  errand?: { tasks: ErrandTaskInput[]; fileContents: Record<string, string>; onSaveNote?: (path: string, content: string) => Promise<void> };
+  errand?: { tasks: ErrandTaskInput[]; fileContents: Record<string, string>; clientsFolder?: string; onSaveNote?: (path: string, content: string) => Promise<void> };
 }) {
   const [custom, setCustom] = useState('');
-  const [tab, setTab] = useState<'meeting' | 'errands' | 'extract'>('meeting');
-  const tabBtn = (key: 'meeting' | 'errands' | 'extract', text: string) => (
+  const [tab, setTab] = useState<'meeting' | 'errands' | 'extract' | 'transcript'>('meeting');
+  const tabBtn = (key: 'meeting' | 'errands' | 'extract' | 'transcript', text: string) => (
     <button
       type="button"
       onClick={() => setTab(key)}
@@ -62,12 +63,15 @@ export function BriefingLauncherModal({ events, onPick, onClose, errand }: {
         {errand && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px' }}>
             {tabBtn('meeting', 'Toplantı brifingi')}
+            {tabBtn('transcript', 'Transkript')}
             {tabBtn('errands', 'Dışarı işler')}
             {tabBtn('extract', 'Görev çıkar')}
           </div>
         )}
 
-        {tab === 'extract' && errand ? (
+        {tab === 'transcript' && errand ? (
+          <MeetingTranscriptPanel fileContents={errand.fileContents} clientsFolder={errand.clientsFolder} onSaveNote={errand.onSaveNote} />
+        ) : tab === 'extract' && errand ? (
           <TaskExtractorPanel fileContents={errand.fileContents} onSaveNote={errand.onSaveNote} />
         ) : tab === 'errands' && errand ? (
           <ErrandPlannerPanel tasks={errand.tasks} fileContents={errand.fileContents} onSaveNote={errand.onSaveNote} />
