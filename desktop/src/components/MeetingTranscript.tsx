@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileText, Save, Sparkles, X } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import AiWorking from './AiWorking';
 import { gatherBriefingContext } from '../services/meetingBriefing';
 import {
   fmtClock, generateMeetingSummary, meetingNoteMarkdown, parseVtt, titleFromFileName,
@@ -155,6 +156,7 @@ export default function MeetingTranscriptPanel({ source: initial, fileContents, 
             </div>
           )}
 
+          {state === 'loading' && <AiWorking text="Özet, kararlar ve görevler hazırlanıyor…" />}
           {state === 'error' && <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere' }}>{error}</div>}
           {state === 'saved' && (
             <div style={{ marginTop: '14px', fontSize: '12.5px', color: '#22c55e', overflowWrap: 'anywhere' }}>

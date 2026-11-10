@@ -39,6 +39,8 @@ export interface WorkspaceSubTask {
   filePath: string;
 }
 
+import { TASK_FLAGS, parseFlags, toggleFlagInLine, flagScoreBonus, type TaskFlag } from '../taskFlags';
+
 export interface WorkspaceTask {
   id: string; // FilePath + LineIdx
   content: string;
@@ -53,6 +55,7 @@ export interface WorkspaceTask {
   repeat: string;
   score: number;
   tags: string[];
+  flags?: TaskFlag[]; // [flag:...] etiketleri (Söz verildi / Sonra / Derin odak / Hafif)
   isSubtask?: boolean;
   parentTaskId?: string | null;
   subtasks?: WorkspaceSubTask[];
@@ -168,7 +171,7 @@ export default function TasksView({
 
   // Filters State
   const [statusFilter, setStatusFilter] = useState<'pending' | 'completed' | 'all'>('pending');
-  const [priorityCategory, setPriorityCategory] = useState<'all' | 'urgent' | 'important' | 'due' | 'repeat'>('all');
+  const [priorityCategory, setPriorityCategory] = useState<'all' | 'urgent' | 'important' | 'due' | 'repeat' | 'promise' | 'later' | 'deep'>('all');
   const [selectedFolderFilter, setSelectedFolderFilter] = useState<string | null>(null);
   const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
@@ -351,6 +354,8 @@ export default function TasksView({
                 taskTags.push(projTagMatch[1].toLowerCase());
               }
 
+              const flags = parseFlags(rawText);
+
               // Calculate Amplenote Score
               let score = 0;
               if (priority === 'critical') score += 10;
@@ -371,6 +376,8 @@ export default function TasksView({
                 else score += 1;
               }
 
+              score += flagScoreBonus(flags);
+
               const pathParts = note.path.split('/');
               const folderName = pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : null;
 
@@ -383,6 +390,7 @@ export default function TasksView({
                 .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
                 .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
                 .replace(/\[status:[a-z0-9_-]+\]/gi, '')
+                .replace(/\[flag:[a-z]+\]/gi, '')
                 .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
                 .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
                 .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
@@ -411,6 +419,7 @@ export default function TasksView({
                 repeat,
                 score,
                 tags: taskTags,
+                flags,
                 isSubtask,
                 parentTaskId,
                 subtasks: [],
@@ -511,21 +520,15 @@ export default function TasksView({
       const lineBodyMatch = rawLine.match(/^(\s*[*\-]\s+\[[ xX/]\]\s+)(.*)$/);
       if (!lineBodyMatch) return;
 
+      // BUG DÜZELTMESİ: eskiden burada [project:], [status:], [started:], [completed:], [session:] gibi HER etiket silinip geri
+      // yazılmıyordu; bir görevin önceliğini/tarihini değiştirmek proje bağlantısını, Kanban durumunu ve başlama/tamamlanma
+      // kayıtlarını siliyordu. Artık yalnızca bu fonksiyonun yönettiği etiketler (öncelik, bitiş, saat, tekrar) çıkarılıp yeniden
+      // yazılır; diğer her şey (proje, durum, [flag:], oturum...) olduğu gibi kalır.
       let cleanText = lineBodyMatch[2]
         .replace(/\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]/gi, '')
         .replace(/\[due:\d{4}-\d{2}-\d{2}\]/gi, '')
         .replace(/\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]/gi, '')
         .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
-        .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
-        .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
-        .replace(/\[status:[a-z0-9_-]+\]/gi, '')
-        .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
-        .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
-        .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
-        .replace(/\[hours:[\d.]+\]/gi, '')
-        .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
-        .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
-        .replace(/\[başlama:[^\]]+\]/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
 
@@ -715,6 +718,7 @@ export default function TasksView({
       .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
       .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
       .replace(/\[status:[a-z0-9_-]+\]/gi, '')
+      .replace(/\[flag:[a-z]+\]/gi, '')
       .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
       .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
       .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
@@ -745,6 +749,22 @@ export default function TasksView({
     });
   };
 
+  // Görev etiketi (Söz verildi / Sonra / Derin odak / Hafif) aç/kapat: yalnızca o görev satırı değişir.
+  const handleToggleFlag = async (task: WorkspaceTask, flag: TaskFlag) => {
+    try {
+      const content = await readNoteContent(task.filePath);
+      const lines = content.split('\n');
+      if (task.lineIdx < 0 || task.lineIdx >= lines.length) return;
+      const next = toggleFlagInLine(lines[task.lineIdx], flag);
+      if (next === lines[task.lineIdx]) return;
+      lines[task.lineIdx] = next;
+      await onSaveNote(task.filePath, lines.join('\n'));
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err) {
+      console.error('Error toggling task flag:', err);
+    }
+  };
+
   // Filters calculation
   const parentTasks = tasks.filter(t => !t.isSubtask);
 
@@ -758,6 +778,11 @@ export default function TasksView({
     if (priorityCategory === 'important' && task.priority !== 'critical' && task.priority !== 'medium') return false;
     if (priorityCategory === 'due' && !task.dueDate) return false;
     if (priorityCategory === 'repeat' && (!task.repeat || task.repeat === 'none')) return false;
+    if (priorityCategory === 'promise' && !task.flags?.includes('promise')) return false;
+    if (priorityCategory === 'later' && !task.flags?.includes('later')) return false;
+    if (priorityCategory === 'deep' && !task.flags?.includes('deep')) return false;
+    // "Sonra" görevleri varsayılan (bekleyen) görünümde gizlidir; "Sonra" süzgeci seçiliyse ya da arama yapılıyorsa görünür.
+    if (priorityCategory !== 'later' && statusFilter === 'pending' && !searchQuery.trim() && task.flags?.includes('later')) return false;
 
     // Folder
     if (selectedFolderFilter && task.folderName !== selectedFolderFilter) return false;
@@ -798,13 +823,16 @@ export default function TasksView({
   });
 
   // Category counts
-  const pendingCount = parentTasks.filter(t => !t.isChecked).length;
+  const pendingCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later')).length;
   const completedCount = parentTasks.filter(t => t.isChecked).length;
 
-  const urgentCount = parentTasks.filter(t => !t.isChecked && (t.priority === 'critical' || t.priority === 'high')).length;
-  const importantCount = parentTasks.filter(t => !t.isChecked && (t.priority === 'critical' || t.priority === 'medium')).length;
-  const dueCount = parentTasks.filter(t => !t.isChecked && t.dueDate).length;
-  const repeatCount = parentTasks.filter(t => !t.isChecked && t.repeat && t.repeat !== 'none').length;
+  const urgentCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later') && (t.priority === 'critical' || t.priority === 'high')).length;
+  const importantCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later') && (t.priority === 'critical' || t.priority === 'medium')).length;
+  const dueCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later') && t.dueDate).length;
+  const repeatCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later') && t.repeat && t.repeat !== 'none').length;
+  const promiseCount = parentTasks.filter(t => !t.isChecked && t.flags?.includes('promise')).length;
+  const laterCount = parentTasks.filter(t => !t.isChecked && t.flags?.includes('later')).length;
+  const deepCount = parentTasks.filter(t => !t.isChecked && !t.flags?.includes('later') && t.flags?.includes('deep')).length;
 
   // Folder and Tag collections from active tasks
   // BUG DÜZELTMESİ: .templates gibi nokta ile başlayan sistem klasörleri Sidebar.tsx'te
@@ -943,6 +971,26 @@ export default function TasksView({
             >
               Acil (Urgent)
             </button>
+          </div>
+        </div>
+
+        <div className="drawer-row">
+          <div className="row-label">
+            <Compass size={13} />
+            <span>ETİKET</span>
+          </div>
+          <div className="row-control-pills" style={{ flexWrap: 'wrap' }}>
+            {TASK_FLAGS.map(f => (
+              <button
+                key={f.key}
+                type="button"
+                title={f.title}
+                className={`pill-btn ${(task.flags || []).includes(f.key) ? 'active' : ''}`}
+                onClick={() => handleToggleFlag(task, f.key)}
+              >
+                {f.emoji} {f.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -1274,6 +1322,30 @@ export default function TasksView({
               <span>🔄 Tekrarlayanlar</span>
               {statusFilter === 'pending' && <span className="filter-badge-count">{repeatCount}</span>}
             </button>
+            <button
+              className={`filter-sidebar-btn ${priorityCategory === 'promise' ? 'active' : ''}`}
+              onClick={() => setPriorityCategory('promise')}
+              title="Birine söz verdiğiniz işler"
+            >
+              <span>🤝 Söz verildi</span>
+              {statusFilter === 'pending' && <span className="filter-badge-count">{promiseCount}</span>}
+            </button>
+            <button
+              className={`filter-sidebar-btn ${priorityCategory === 'deep' ? 'active' : ''}`}
+              onClick={() => setPriorityCategory('deep')}
+              title="Kesintisiz dikkat gerektiren işler"
+            >
+              <span>🧠 Derin odak</span>
+              {statusFilter === 'pending' && <span className="filter-badge-count">{deepCount}</span>}
+            </button>
+            <button
+              className={`filter-sidebar-btn ${priorityCategory === 'later' ? 'active' : ''}`}
+              onClick={() => setPriorityCategory('later')}
+              title="Şimdi değil: varsayılan listelerde gizli"
+            >
+              <span>⏳ Sonra</span>
+              {statusFilter === 'pending' && <span className="filter-badge-count">{laterCount}</span>}
+            </button>
           </div>
         </div>
 
@@ -1517,6 +1589,12 @@ export default function TasksView({
                             {task.priority === 'critical' ? 'Acil' : task.priority === 'high' ? 'Yüksek' : 'Orta'}
                           </span>
                         )}
+                        {(task.flags || []).map(fk => {
+                          const f = TASK_FLAGS.find(x => x.key === fk);
+                          return f ? (
+                            <span key={fk} className="preview-due-badge" title={f.title} style={{ whiteSpace: 'nowrap' }}>{f.emoji} {f.label}</span>
+                          ) : null;
+                        })}
                         {task.dueDate && (
                           <span className="preview-due-badge" title="Bitiş Tarihi">
                             <Calendar size={10} style={{ marginRight: '3px' }} />

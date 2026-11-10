@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Copy, Save, RefreshCw, Brain, Calendar as CalIcon } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import AiWorking from './AiWorking';
 import {
   gatherBriefingContext, generateBriefing, briefingToMarkdown,
   type Briefing, type BriefNote, type BriefTask
@@ -215,7 +216,7 @@ export function MeetingBriefingModal({ title, when, notes, fileContents, tasks, 
           <br />Gemini'ye giden: {ctx.recentNotes.length} not{ctx.recentNotes.length ? ` (${ctx.recentNotes.map(n => n.name).join(', ')})` : ''}, {ctx.openTasks.length} açık görev, {ctx.recentlyDone.length} biten iş.
         </div>
 
-        {state === 'loading' && <div style={{ marginTop: '16px', fontSize: '13px', color: 'var(--text-muted)' }}>Brifing hazırlanıyor…</div>}
+        {state === 'loading' && <AiWorking text="Brifing hazırlanıyor, notlarınız taranıyor…" />}
         {state === 'error' && <div style={{ marginTop: '16px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere' }}>{error}</div>}
         {state === 'ready' && briefing && (
           <div>

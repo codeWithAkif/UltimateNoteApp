@@ -1,3 +1,4 @@
+import { TASK_FLAGS, parseFlags, toggleFlagInLine, flagScoreBonus, type TaskFlag } from '../taskFlags';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { perfRecorder } from '../services/perfRecorder';
 import { flushSync } from 'react-dom';
@@ -9091,6 +9092,18 @@ export default function NotesView({
 
   const activeNote = notes.find(n => n.path === activeNotePath);
 
+  // Görev etiketi (Söz verildi / Sonra / Derin odak / Hafif) aç/kapat: yalnızca o satır değişir (fonksiyonel setState).
+  const handleToggleFlagInEditor = (lineIdx: number, flag: TaskFlag) => {
+    setEditorContent(prevContent => {
+      const linesArr = prevContent.split('\n');
+      if (lineIdx < 0 || lineIdx >= linesArr.length) return prevContent;
+      const next = toggleFlagInLine(linesArr[lineIdx], flag);
+      if (next === linesArr[lineIdx]) return prevContent;
+      linesArr[lineIdx] = next;
+      return linesArr.join('\n');
+    });
+  };
+
   const renderTaskDetailDrawer = (lineIdx: number, taskContent: string) => {
     const priorityMatch = taskContent.match(/\[p:(critical|acil|high|yüksek|medium|orta|low|düşük)\]/i);
     let currentPriority: 'critical' | 'high' | 'medium' | 'low' = 'low';
@@ -9116,7 +9129,8 @@ export default function NotesView({
       else if (r === 'monthly' || r === 'aylık') currentRepeat = 'monthly';
     }
 
-    const score = calculateTaskScore(taskContent);
+    const flags = parseFlags(taskContent);
+    const score = calculateTaskScore(taskContent) + flagScoreBonus(flags);
 
     return (
       <div className="task-details-drawer animate-fade">
@@ -9202,6 +9216,26 @@ export default function NotesView({
             >
               Acil (Urgent)
             </button>
+          </div>
+        </div>
+
+        <div className="drawer-row">
+          <div className="row-label">
+            <Star size={14} />
+            <span>ETİKET</span>
+          </div>
+          <div className="row-control-pills" style={{ flexWrap: 'wrap' }}>
+            {TASK_FLAGS.map(f => (
+              <button
+                key={f.key}
+                type="button"
+                title={f.title}
+                className={`pill-btn ${flags.includes(f.key) ? 'active' : ''}`}
+                onClick={() => handleToggleFlagInEditor(lineIdx, f.key)}
+              >
+                {f.emoji} {f.label}
+              </button>
+            ))}
           </div>
         </div>
 

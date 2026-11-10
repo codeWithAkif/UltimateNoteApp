@@ -20,6 +20,7 @@ function cleanTaskText(raw: string): string {
     .replace(/\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]/gi, '')
     .replace(/\[(?:completed|tamamlanma):[^\]]+\]/gi, '')
     .replace(/\[status:[a-z0-9_-]+\]/gi, '')
+    .replace(/\[flag:[a-z]+\]/gi, '')
     .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
     .replace(/\[(?:outcome|dakiklik):[^\]]+\]/gi, '')
     .replace(/\[(?:project|proje):[^\]]+\]/gi, '')

@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { MapPin, Plus, Route, ExternalLink, Trash2, Star } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import AiWorking from './AiWorking';
 import {
   PROFILE_PATH, ROUTE_PAGE_PATH, buildStops, collectErrands, detailOf, generateErrandPlan, mapsNearbyUrl, mapsRouteUrl, mapsSearchUrl,
   optionsByErrand, parseLocation, parsePlaces, removePlace, routeMarkdown, upsertLocation, upsertPlace,
@@ -199,6 +200,7 @@ export default function ErrandPlannerPanel({ tasks, fileContents, onSaveNote }: 
       <button type="button" onClick={run} disabled={!canPlan} style={{ ...btn, background: 'var(--accent-color)', color: '#fff', border: 'none', opacity: canPlan ? 1 : 0.5 }}>
         <Route size={14} /> {state === 'loading' ? 'Yerler aranıyor…' : 'Yerleri bul'}
       </button>
+      {state === 'loading' && <AiWorking text="Yerler aranıyor, seçenekler karşılaştırılıyor…" />}
 
       {state === 'error' && <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{error}</div>}
 

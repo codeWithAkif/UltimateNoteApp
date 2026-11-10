@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ExternalLink, FileText, Route, Sparkles } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import AiWorking from './AiWorking';
 import { PROFILE_PATH, mapsRouteUrl, mapsSearchUrl, parseLocation } from '../services/errandPlanner';
 import {
   GEZI_PAGE_PATH, TRIP_KINDS, archivePath, kindLabel, planItinerary, questionsFor, stepsToStops, suggestTrips,
@@ -277,6 +278,7 @@ export default function TripPlannerPanel({ fileContents, onSaveNote, onOpenNote 
         </div>
       )}
 
+      {busy && <AiWorking text={step === 'suggestions' ? 'Rota hazırlanıyor, yerler ve saatler kontrol ediliyor…' : 'Öneriler hazırlanıyor, hava ve tercihleriniz değerlendiriliyor…'} />}
       {error && <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{error}</div>}
     </div>
   );

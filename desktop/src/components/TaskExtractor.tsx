@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Check, Sparkles } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import AiWorking from './AiWorking';
 import {
   appendTasksToNote, dailyNotePath, dropExisting, generateTasks, prepareSource, type ExtractedTask
 } from '../services/taskExtractor';
@@ -98,6 +99,7 @@ export default function TaskExtractorPanel({ fileContents, onSaveNote }: {
         </button>
       </div>
 
+      {state === 'loading' && <AiWorking text="Metin okunuyor, görevler çıkarılıyor…" />}
       {state === 'error' && <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere' }}>{error}</div>}
       {state === 'saved' && <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#22c55e', overflowWrap: 'anywhere' }}>{chosen.length} görev eklendi: {target}</div>}
       {state === 'ready' && (

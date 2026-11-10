@@ -1842,6 +1842,7 @@ export default function CalendarView({
               .replace(/\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]/gi, '')
               .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '') // Görünmez proje bağlantısı — göreve eklenen ama gösterilmeyen etiket
               .replace(/\[status:[a-z0-9_-]+\]/gi, '') // DevOps Kanban durumu — sadece Kanban tahtasında görünür
+              .replace(/\[flag:[a-z]+\]/gi, '')
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '') // DevOps iş tipi — sadece Kanban tahtasında görünür
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // Strip capture timestamp
               // BUG DÜZELTMESİ: Bazı eski notlarda stripQuestTags'in tanıdığı ASCII

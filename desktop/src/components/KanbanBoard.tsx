@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { TimelineItem } from '../App';
-import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X } from 'lucide-react';
+import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X, Eye, Lock, Check } from 'lucide-react';
 import {
   type KanbanColumn,
   DEFAULT_KANBAN_COLUMNS,
@@ -33,6 +33,12 @@ const resolveStatus = (t: TimelineItem): string => {
   return 'backlog';
 };
 
+// Yerleşik sütunlara özel hafif animasyon sınıfları (bkz. style.css "KANBAN DURUM ANİMASYONLARI"). Kullanıcının eklediği
+// özel sütunlarda animasyon yoktur.
+const COLUMN_ANIM: Record<string, string> = {
+  inprogress: 'kb-live', test: 'kb-test', review: 'kb-review', blocked: 'kb-blocked', park: 'kb-park', done: 'kb-done'
+};
+
 export default function KanbanBoard({
   tasks, columns, onChangeTaskStatus, onOpenNote, onSaveColumns, isCustomized, onResetColumns, scopeLabel
 }: KanbanBoardProps) {
@@ -50,6 +56,17 @@ export default function KanbanBoard({
     const s = resolveStatus(t);
     tasksByStatus[keys.has(s) ? s : fallbackKey].push(t);
   });
+
+  // "Bitti"ye az önce taşınan kartlar: bir kez onay efekti oynar (ilk çizimde ve zaten Bitti'deki kartlarda oynamaz).
+  const prevColRef = useRef<Map<string, string>>(new Map());
+  const justDone = new Set<string>();
+  const currentCols = new Map<string, string>();
+  Object.keys(tasksByStatus).forEach(k => tasksByStatus[k].forEach(t => {
+    currentCols.set(t.id, k);
+    const was = prevColRef.current.get(t.id);
+    if (k === 'done' && was !== undefined && was !== 'done') justDone.add(t.id);
+  }));
+  useEffect(() => { prevColRef.current = currentCols; });
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedTaskId(id);
@@ -94,14 +111,14 @@ export default function KanbanBoard({
     setEditing(false);
   };
 
-  const renderCard = (task: TimelineItem) => (
+  const renderCard = (task: TimelineItem, colKey: string) => (
     <div
       key={task.id}
       draggable
       onDragStart={(e) => handleDragStart(e, task.id)}
-      className="kanban-card"
+      className={`kanban-card${COLUMN_ANIM[colKey] ? ` kb-anim ${COLUMN_ANIM[colKey]}` : ''}${justDone.has(task.id) ? ' kb-done-enter' : ''}`}
       style={{
-        background: 'var(--bg-tertiary)',
+        backgroundColor: 'var(--bg-tertiary)',
         padding: '12px',
         borderRadius: '8px',
         marginBottom: '10px',
@@ -117,7 +134,10 @@ export default function KanbanBoard({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
         {task.dateStr && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Clock size={12} />
+            {colKey === 'review' ? <span className="kb-eye"><Eye size={12} /></span>
+              : colKey === 'blocked' ? <span className="kb-lock"><Lock size={12} /></span>
+              : colKey === 'done' ? <span className="kb-check" style={{ display: 'inline-flex', color: '#4caf50' }}><Check size={12} /></span>
+              : <Clock size={12} />}
             <span>{task.dateStr}</span>
           </div>
         )}
@@ -228,11 +248,11 @@ export default function KanbanBoard({
             onDrop={(e) => handleDrop(e, col.key)}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: cssKanbanColor(col.color) || 'var(--text-primary)' }}>{col.title}</h3>
+              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: cssKanbanColor(col.color) || 'var(--text-primary)' }}>{col.key === 'inprogress' && <span className="kb-live-dot" />}{col.title}</h3>
               <span style={{ background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{tasksByStatus[col.key].length}</span>
             </div>
             <div style={{ flex: 1, overflowY: 'auto' }}>
-              {tasksByStatus[col.key].map(renderCard)}
+              {tasksByStatus[col.key].map(t => renderCard(t, col.key))}
             </div>
           </div>
         ))}

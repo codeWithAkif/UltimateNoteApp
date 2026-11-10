@@ -9235,3 +9235,118 @@ input:focus, textarea:focus, select:focus {
   transform-style: preserve-3d;
   backface-visibility: hidden;
 }
+
+/* ==========================================================================
+   KANBAN DURUM ANİMASYONLARI + YAPAY ZEKÂ BEKLEME ALANI
+   Hafif, yalnızca CSS (opaklık/kayma/dönme). "Hareketi azalt" ayarında hepsi kapanır.
+   ========================================================================== */
+@property --kb-a { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+
+.kanban-card.kb-anim { position: relative; overflow: hidden; }
+
+/* Devam Ediyor: kenarda dönen ışık halkası */
+.kanban-card.kb-live { box-shadow: 0 0 20px rgba(34, 211, 238, 0.08) !important; }
+.kanban-card.kb-live::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  padding: 1.5px;
+  background: conic-gradient(from var(--kb-a), transparent 0 62%, var(--accent-color) 82%, #22d3ee 96%, transparent);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: kb-spin 2.6s linear infinite;
+  pointer-events: none;
+}
+@keyframes kb-spin { to { --kb-a: 360deg; } }
+
+/* Test: radar / tarama çizgisi (kart boyundan bağımsız, tüm yüksekliği süpürür) */
+.kanban-card.kb-test {
+  background-image:
+    linear-gradient(rgba(168, 85, 247, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(168, 85, 247, 0.07) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+.kanban-card.kb-test::after,
+.ai-working::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent calc(100% - 46px), rgba(168, 85, 247, 0.45) calc(100% - 2px), transparent 100%);
+  transform: translateY(-100%);
+  animation: kb-scan 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes kb-scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+
+/* İncelemede: nefes alan sarı kenar + göz kırpan simge */
+.kanban-card.kb-review::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: #eab308;
+  animation: kb-breathe 3.2s ease-in-out infinite;
+}
+@keyframes kb-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.kb-eye { display: inline-flex; animation: kb-blink 4s infinite; }
+@keyframes kb-blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.1); } }
+
+/* Bloklu: kayan uyarı şeridi + titreyen kilit */
+.kanban-card.kb-blocked::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; opacity: 0.8;
+  background: repeating-linear-gradient(135deg, #ef4444 0 5px, #2a1417 5px 10px);
+  background-size: 14px 14px;
+  animation: kb-hazard 1.6s linear infinite;
+}
+@keyframes kb-hazard { to { background-position: 14px 0; } }
+.kb-lock { display: inline-flex; animation: kb-shake 4s infinite; }
+@keyframes kb-shake {
+  0%, 90%, 100% { transform: rotate(0); }
+  93% { transform: rotate(-14deg); }
+  96% { transform: rotate(12deg); }
+  98% { transform: rotate(-6deg); }
+}
+
+/* Park: çok yavaş sönüp parlayan kart (üzerine gelince tam görünür) */
+.kanban-card.kb-park { animation: kb-dim 5s ease-in-out infinite; }
+.kanban-card.kb-park:hover { animation-play-state: paused; opacity: 1; }
+.kanban-card.kb-park::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: #94a3b8; opacity: 0.5;
+}
+@keyframes kb-dim { 0%, 100% { opacity: 0.62; } 50% { opacity: 0.88; } }
+
+/* Bitti: sabit yeşil kenar; karta yeni taşındıysa bir kez onay işareti + yeşil süpürme */
+.kanban-card.kb-done::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: #4caf50; }
+.kanban-card.kb-done-enter::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, rgba(76, 175, 80, 0.25) 50%, transparent 70%);
+  transform: translateX(-120%);
+  animation: kb-sweep 1.4s ease-out 1 forwards;
+}
+@keyframes kb-sweep { to { transform: translateX(120%); } }
+.kanban-card.kb-done-enter .kb-check { animation: kb-pop 0.6s ease-out 1; }
+@keyframes kb-pop { 0% { transform: scale(0); } 55% { transform: scale(1.4); } 100% { transform: scale(1); } }
+
+/* Devam Ediyor sütun başlığındaki canlı nokta */
+.kb-live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #22d3ee; margin-right: 8px; vertical-align: middle;
+  animation: kb-ping 1.6s ease-out infinite;
+}
+@keyframes kb-ping { 0% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.55); } 100% { box-shadow: 0 0 0 8px rgba(34, 211, 238, 0); } }
+
+/* Asistan: yapay zekâ çalışırken bekleme alanı (aynı tarama çizgisi) */
+.ai-working {
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; padding: 12px 14px; font-size: 12.5px; color: var(--text-secondary);
+  background-color: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 10px;
+  background-image:
+    linear-gradient(rgba(34, 211, 238, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.06) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+.ai-working::after { background: linear-gradient(180deg, transparent calc(100% - 46px), rgba(34, 211, 238, 0.45) calc(100% - 2px), transparent 100%); }
+.ai-working > * { position: relative; z-index: 1; }
+.ai-working .ai-dot { width: 7px; height: 7px; border-radius: 50%; background: #22d3ee; flex: none; animation: kb-ping 1.6s ease-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kanban-card.kb-anim, .kanban-card.kb-anim::before, .kanban-card.kb-anim::after,
+  .kb-eye, .kb-lock, .kb-live-dot, .ai-working::after, .ai-working .ai-dot, .kanban-card .kb-check { animation: none !important; }
+}

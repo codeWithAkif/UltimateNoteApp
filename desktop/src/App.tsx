@@ -3742,6 +3742,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]/gi, '')
               .replace(/\[(?:project|proje|book|kitap):[^\]]+\]/gi, '')
               .replace(/\[status:[a-z0-9_-]+\]/gi, '')
+              .replace(/\[flag:[a-z]+\]/gi, '')
               .replace(/\[type:(?:bug|feature|chore)\]/gi, '')
               .replace(/\[session:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
               .replace(/\[plan:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}-\d{2}:\d{2})?\]/gi, '')
