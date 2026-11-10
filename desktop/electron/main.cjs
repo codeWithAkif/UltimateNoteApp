@@ -150,6 +150,14 @@ function createWindow() {
       );
     }
 
+    // Seçili metin için "Web araştırma": renderer'a gönderilir, sağda bir bölme (split) olarak aramayı açar.
+    if (hasSelection && params.mediaType !== 'image') {
+      const q = params.selectionText.trim().replace(/\s+/g, ' ').slice(0, 300);
+      const shortQ = q.length > 28 ? q.slice(0, 27) + '…' : q;
+      if (template.length > 0) template.push({ type: 'separator' });
+      template.push({ label: 'Web araştırma: “' + shortQ + '”', click: () => { if (mainWindow) mainWindow.webContents.send('web-research', q); } });
+    }
+
     if (template.length > 0) {
       Menu.buildFromTemplate(template).popup({ window: mainWindow });
     }

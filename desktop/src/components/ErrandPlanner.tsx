@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { MapPin, Plus, Route, ExternalLink, Trash2, Star } from 'lucide-react';
 import { isGeminiConfigured } from '../services/geminiMentor';
 import {
-  PROFILE_PATH, ROUTE_PAGE_PATH, buildStops, collectErrands, detailOf, generateErrandPlan, mapsRouteUrl, mapsSearchUrl,
+  PROFILE_PATH, ROUTE_PAGE_PATH, buildStops, collectErrands, detailOf, generateErrandPlan, mapsNearbyUrl, mapsRouteUrl, mapsSearchUrl,
   optionsByErrand, parseLocation, parsePlaces, removePlace, routeMarkdown, upsertLocation, upsertPlace,
   type Errand, type ErrandTaskInput, type PlaceOption, type SavedPlace
 } from '../services/errandPlanner';
@@ -217,7 +217,10 @@ export default function ErrandPlannerPanel({ tasks, fileContents, onSaveNote }: 
                   const sel = Math.min(choice[no] ?? 0, opts.length - 1);
                   return (
                     <div key={no} style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '10px 12px' }}>
-                      <div style={{ fontSize: '12.5px', fontWeight: 700, marginBottom: '6px', overflowWrap: 'anywhere' }}>{planned[no - 1]?.text}</div>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                        <div style={{ fontSize: '12.5px', fontWeight: 700, overflowWrap: 'anywhere', flex: '1 1 160px', minWidth: 0 }}>{planned[no - 1]?.text}</div>
+                        <a href={mapsNearbyUrl(opts[0]?.category || planned[no - 1]?.text || '', location)} target="_blank" rel="noopener noreferrer" style={{ ...btn, padding: '4px 9px' }} title="Gerçek yakınlık, puan ve açık/kapalı bilgisi için Haritalar'da ara"><ExternalLink size={12} /> Haritalar'da yakınımda ara</a>
+                      </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         {opts.map((o, i) => (
                           <label key={`${o.name}-${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '12.5px', padding: '5px 6px', borderRadius: '6px', background: i === sel ? 'var(--accent-glow)' : 'transparent' }}>

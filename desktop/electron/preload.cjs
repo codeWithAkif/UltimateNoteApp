@@ -34,6 +34,11 @@ contextBridge.exposeInMainWorld('electron', {
   googleDisconnect: () => ipcRenderer.invoke('google-disconnect'),
   googleCalendarPushEvent: (payload) => ipcRenderer.invoke('google-calendar-push-event', payload),
   googleCalendarDeleteEvent: (eventId) => ipcRenderer.invoke('google-calendar-delete-event', { eventId }),
+  onWebResearch: (callback) => {
+    const subscription = (event, text) => callback(text);
+    ipcRenderer.on('web-research', subscription);
+    return () => ipcRenderer.removeListener('web-research', subscription);
+  },
   onSyncStatusChanged: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('sync-status-changed', subscription);

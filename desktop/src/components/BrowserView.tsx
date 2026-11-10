@@ -18,6 +18,10 @@ interface BrowserViewProps {
   readNoteContent: (path: string) => Promise<string>;
   initialQuery?: string | null;
   onClearInitialQuery?: () => void;
+  // Sağ bölme (split) panelinde kullanım: dar üst çubuk, kapat düğmesi; sürükleme sırasında web sayfası fareyi yakalamasın.
+  embedded?: boolean;
+  onClose?: () => void;
+  dragging?: boolean;
 }
 
 export default function BrowserView({
@@ -26,7 +30,10 @@ export default function BrowserView({
   onSaveNote,
   readNoteContent,
   initialQuery,
-  onClearInitialQuery
+  onClearInitialQuery,
+  embedded = false,
+  onClose,
+  dragging = false
 }: BrowserViewProps) {
   const webviewRef = useRef<HTMLElement>(null);
   
@@ -46,6 +53,10 @@ export default function BrowserView({
     return 'https://www.google.com';
   });
 
+  // <webview src> yalnızca İLK adrestir ve bir daha değişmez. Eskiden src doğrudan currentUrl'e bağlıydı; sayfa yüklenince
+  // currentUrl = webview.getURL() olarak güncellenip src değiştiği için (Google adrese sonradan parametre ekler) webview kendini
+  // sonsuz döngüyle yeniden yüklüyordu. Sonraki gezinmeler loadURL ile yapılır.
+  const [initialSrc] = useState(currentUrl);
   const [urlInput, setUrlInput] = useState(currentUrl);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedText, setSelectedText] = useState('');
@@ -129,14 +140,23 @@ export default function BrowserView({
       }
     };
 
+    // Sayfa içi gezinmelerde (arama sonucu tıklama, tek sayfa uygulamaları) adres çubuğu güncel kalsın; src'ye dokunulmaz.
+    const handleNavigate = (e: any) => {
+      if (e && e.url && (e.isMainFrame === undefined || e.isMainFrame)) { setUrlInput(e.url); setCurrentUrl(e.url); }
+    };
+
     webview.addEventListener('did-start-loading', handleStartLoading);
     webview.addEventListener('did-stop-loading', handleStopLoading);
     webview.addEventListener('console-message', handleConsoleMessage);
+    webview.addEventListener('did-navigate', handleNavigate);
+    webview.addEventListener('did-navigate-in-page', handleNavigate);
 
     return () => {
       webview.removeEventListener('did-start-loading', handleStartLoading);
       webview.removeEventListener('did-stop-loading', handleStopLoading);
       webview.removeEventListener('console-message', handleConsoleMessage);
+      webview.removeEventListener('did-navigate', handleNavigate);
+      webview.removeEventListener('did-navigate-in-page', handleNavigate);
     };
   }, []);
 
@@ -387,15 +407,14 @@ export default function BrowserView({
       
       {/* Top Browser Bar */}
       <div style={{
-        height: 'var(--header-height)',
+        ...(embedded ? { minHeight: '44px', flexWrap: 'wrap', padding: '6px 10px', gap: '6px 8px' } : { height: 'var(--header-height)', padding: '0 16px', gap: '12px' }),
         borderBottom: '1px solid var(--border-color)',
         background: 'var(--bg-secondary)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 16px',
-        gap: '12px',
-        zIndex: 10
+        zIndex: 10,
+        flexShrink: 0
       }}>
         
         {/* Navigation Buttons */}
@@ -460,7 +479,8 @@ export default function BrowserView({
 
         {/* URL Input Bar */}
         <div style={{
-          flex: 1,
+          flex: embedded ? '1 1 120px' : 1,
+          minWidth: 0,
           display: 'flex',
           alignItems: 'center',
           background: 'var(--bg-tertiary)',
@@ -489,8 +509,12 @@ export default function BrowserView({
           />
         </div>
 
+        {embedded && onClose && (
+          <button onClick={onClose} className="nav-btn" title="Bölmeyi kapat" style={{ width: '32px', height: '32px', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.04)', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }}>×</button>
+        )}
+
         {/* Note Target Dropdown */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', ...(embedded ? { flex: '1 1 100%' } : {}) }}>
           <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', whiteSpace: 'nowrap' }}>Hedef Not:</span>
           <select
             value={selectedNotePath || ''}
@@ -502,7 +526,9 @@ export default function BrowserView({
               borderRadius: '6px',
               padding: '6px 12px',
               fontSize: '12px',
-              maxWidth: '180px',
+              maxWidth: embedded ? '100%' : '180px',
+              minWidth: 0,
+              flex: embedded ? 1 : undefined,
               cursor: 'pointer'
             }}
           >
@@ -524,8 +550,8 @@ export default function BrowserView({
       <div style={{ flex: 1, position: 'relative', background: '#ffffff', overflow: 'hidden' }}>
         <webview
           ref={webviewRef as any}
-          src={currentUrl}
-          style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff' }}
+          src={initialSrc}
+          style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff', pointerEvents: dragging ? 'none' : 'auto' }}
           allowpopups={true}
           useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         ></webview>

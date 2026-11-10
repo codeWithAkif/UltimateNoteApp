@@ -144,13 +144,19 @@ Google aramasını kullanarak (Google Haritalar sayfalarına ve işletmenin kend
 - GÜNLÜK işler (market, eczane, kuru temizleme, kargo, kırtasiye, genel hırdavat gibi her semtte bulunanlar): kullanıcının konumuna YAKIN yerleri seç, en yakından uzağa sırala.
 - ÖZEL işler (deri, kumaş, boncuk, elektronik komponent, yedek parça, boya/malzeme, müzik aleti, toptan ürün gibi yalnızca belirli dükkânlarda ya da çarşılarda bulunanlar): yakınlık ikinci planda. Ürünün gerçekten satıldığı uzmanlaşmış dükkânı ya da semt/çarşıyı tüm şehirde ara (kullanıcının semti dışında olabilir); ürünü satmayan yakın genel mağazayı önerme. Kullanıcı işte bir semt belirttiyse ("Fatih'ten") önce orayı ara.
 Aynı yer birden fazla işi karşılıyorsa o yeri ilgili her iş için ayrı SEÇENEK satırı olarak yaz (aynı ad ve adresle).
-Yer, adres, puan ya da saat UYDURMA: bir bilgiyi bulamadıysan o alana tek karakter "-" yaz. Puanı Google Haritalar'da görünen biçimde yaz (örn. 4,3). Çalışma saatini bugüne göre yaz (örn. 09:00-19:00 ya da Kapalı). Uzaklığı kullanıcının konumuna göre yaz (örn. 20 m, 1,2 km).
+Yer, adres, puan ya da saat UYDURMA: bir bilgiyi bulamadıysan o alana tek karakter "-" yaz. Puanı Google Haritalar'da görünen biçimde yaz (örn. 4,3). Çalışma saatini bugüne göre yaz (örn. 09:00-19:00 ya da Kapalı). Uzaklığı YALNIZCA bir kaynakta (Haritalar sayfası, işletme sitesi) açıkça yazıyorsa yaz (örn. 20 m, 1,2 km); kendin hesaplama, tahmin etme, yoksa "-" yaz. Not alanı en fazla 8 kelime olsun; telefon numarası, kaynak/site adı ya da yorum özeti YAZMA.
 
 Çıktıyı SADECE şu satır biçiminde ver, başka hiçbir metin, başlık ya da açıklama ekleme:
 SEÇENEK | <iş numarası> | <kısa küçük harfli kategori, örn. kuru temizleme> | <yer adı> | <semt ve açık adres> | <uzaklık> | <puan> | <çalışma saati> | <tek kısa not> | <kayıtlı: evet ya da hayır>
 Sonra gerekirse en fazla 2 satır:
 NOT | <önemli bir uyarı (kapalı olma, stok, uzak olma gibi)>
 Bir işe uygun yer bulamadıysan o iş için NOT satırında söyle.`;
+};
+
+// Telefon numaralarını ve "Tel:" ekini atar; çok uzun notları kısaltır (model bazen kaynak açıklaması sığdırıyor).
+const tidy = (s: string, max: number) => {
+  const t = (s || '').replace(/\b(?:tel|telefon)\s*[:.]?\s*[\d\s()+\-]{7,}/gi, '').replace(/\(?\b0?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/g, '').replace(/\s{2,}/g, ' ').replace(/[\s,;:-]+$/, '').trim();
+  return t.length > max ? t.slice(0, max - 1).trimEnd() + '…' : t;
 };
 
 const blankIfUnknown = (s: string) => {
@@ -170,9 +176,9 @@ export const parseErrandOptions = (text: string): ErrandPlan => {
       const errand = parseInt(no, 10);
       if (name && !isNaN(errand)) {
         options.push({
-          errand, category: (category || '').toLocaleLowerCase('tr'), name, address: blankIfUnknown(address),
+          errand, category: (category || '').toLocaleLowerCase('tr'), name, address: tidy(blankIfUnknown(address), 110),
           distance: blankIfUnknown(distance), rating: blankIfUnknown(rating), hours: blankIfUnknown(hours),
-          note: blankIfUnknown(note), saved: /^(evet|yes|true)/i.test((saved || '').trim())
+          note: tidy(blankIfUnknown(note), 70), saved: /^(evet|yes|true)/i.test((saved || '').trim())
         });
       }
     } else if (/^NOT\s*\|/i.test(line)) {
@@ -228,7 +234,7 @@ export const buildStops = (byErrand: Map<number, PlaceOption[]>, choice: Record<
     const key = `${normalizeTr(o.name)}|${normalizeTr(o.address)}`;
     const cur = stops.get(key);
     if (cur) { cur.errandNumbers.push(no); return; }
-    stops.set(key, { name: o.name, address: o.address, errandNumbers: [no], why: detailOf(o) || o.note, meters: distanceMeters(o.distance) });
+    stops.set(key, { name: o.name, address: o.address, errandNumbers: [no], why: detailOf(o), meters: distanceMeters(o.distance) });
   });
   const list = Array.from(stops.values());
   if (list.length > 1 && list.every(s => s.meters !== null)) list.sort((a, b) => a.meters! - b.meters!);
@@ -264,6 +270,10 @@ export const routeMarkdown = (o: {
   md += `\n> Yer bilgileri web aramasından geldi ve hatalı olabilir; çalışma saatini ve stoku gitmeden doğrulayın.\n`;
   return md;
 };
+
+// Kategoriye göre kullanıcının çevresinde Haritalar araması (gerçek yakınlık, puan ve açık/kapalı bilgisini Haritalar kendisi gösterir).
+export const mapsNearbyUrl = (category: string, location: string): string =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${category} ${location}`.trim())}`;
 
 export const mapsSearchUrl = (s: Stop, location: string): string =>
   `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${s.name} ${s.address || location}`.trim())}`;

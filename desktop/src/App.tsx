@@ -308,6 +308,14 @@ export default function App() {
     return localStorage.getItem('active_tab') || 'notfactory';
   });
   const [browserInitialQuery, setBrowserInitialQuery] = useState<string | null>(null);
+  // Seçili metne sağ tık > "Web araştırma": sağda yeniden boyutlandırılabilir bir web bölmesi (yalnızca masaüstü).
+  const [researchQuery, setResearchQuery] = useState<string | null>(null);
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [researchDragging, setResearchDragging] = useState(false);
+  const [researchWidth, setResearchWidth] = useState<number>(() => {
+    try { const n = parseInt(localStorage.getItem('research_panel_width') || '', 10); if (n >= 300) return n; } catch { /* yoksay */ }
+    return 460;
+  });
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Masaüstünde çalışan Always-on-Top mini widget modu durumunu takip eder.
@@ -416,6 +424,35 @@ export default function App() {
   const dismissPendingTranscript = () => {
     if (pendingTranscript) markTranscriptSeen(pendingTranscript);
     setPendingTranscript(null);
+  };
+
+  // Sağ tık > "Web araştırma" (Electron ana süreci gönderir): bölmeyi açar ve seçili metni arar.
+  useEffect(() => {
+    if (!isElectron || !window.electron?.onWebResearch) return;
+    return window.electron.onWebResearch((text: string) => {
+      if (!text || !text.trim()) return;
+      setResearchQuery(text.trim());
+      setResearchOpen(true);
+    });
+  }, []);
+  const researchWidthRef = useRef(researchWidth);
+  const startResearchDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setResearchDragging(true);
+    const startX = e.clientX, startW = researchWidth;
+    const move = (ev: MouseEvent) => {
+      const w = Math.max(300, Math.min(window.innerWidth - 420, startW + (startX - ev.clientX)));
+      researchWidthRef.current = w;
+      setResearchWidth(w);
+    };
+    const up = () => {
+      setResearchDragging(false);
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      try { localStorage.setItem('research_panel_width', String(Math.round(researchWidthRef.current))); } catch { /* yoksay */ }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
   };
 
   const handleRestartAndInstall = () => {
@@ -7103,7 +7140,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         )}
 
         {/* Content Panel Right */}
-        <main className="content-panel">
+        <main className="content-panel" style={{ minWidth: 0 }}>
           {activeTab === 'notfactory' && (
             <NoteFactoryView
               onProcessInput={handleProcessInput}
@@ -7944,6 +7981,31 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             />
           )}
         </main>
+
+        {/* Web araştırma bölmesi (sağ split): seçili metne sağ tık > Web araştırma ile açılır, sürükleyerek genişletilir. */}
+        {isElectron && researchOpen && (
+          <>
+            <div
+              role="separator"
+              title="Genişliği ayarlamak için sürükleyin"
+              onMouseDown={startResearchDrag}
+              style={{ width: '5px', flexShrink: 0, cursor: 'col-resize', background: researchDragging ? 'var(--accent-color)' : 'var(--border-color)' }}
+            />
+            <aside style={{ width: `${researchWidth}px`, flexShrink: 0, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+              <BrowserView
+                embedded
+                dragging={researchDragging}
+                notes={notes}
+                folders={folders}
+                onSaveNote={handleSaveNote}
+                readNoteContent={handleReadNoteContent}
+                initialQuery={researchQuery}
+                onClearInitialQuery={() => setResearchQuery(null)}
+                onClose={() => setResearchOpen(false)}
+              />
+            </aside>
+          </>
+        )}
       </div>
 
       {/* Premium Glassmorphic Modal for Creating a Folder */}
