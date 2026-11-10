@@ -1,4 +1,6 @@
-﻿import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
+﻿import QuickSlotsSettings from './components/QuickSlotsSettings';
+import { loadSlots, saveSlots, slotIndexFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -309,6 +311,11 @@ export default function App() {
   });
   const [browserInitialQuery, setBrowserInitialQuery] = useState<string | null>(null);
   // Seçili metne sağ tık > "Web araştırma": sağda yeniden boyutlandırılabilir bir web bölmesi (yalnızca masaüstü).
+  // Hızlı slotlar (Alt+1..9): belirli proje/görünüm, not, günlük, takvim hedefleri.
+  const [quickSlots, setQuickSlots] = useState<QuickSlot[]>(() => loadSlots());
+  const [projectNav, setProjectNav] = useState<ProjectNavRequest | null>(null);
+  const [calendarNav, setCalendarNav] = useState<CalendarNavRequest | null>(null);
+  const updateQuickSlots = (next: QuickSlot[]) => { setQuickSlots(next); saveSlots(next); };
   const [researchQuery, setResearchQuery] = useState<string | null>(null);
   const [researchOpen, setResearchOpen] = useState(false);
   const [researchDragging, setResearchDragging] = useState(false);
@@ -4350,9 +4357,37 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     loadAllData();
   }, []);
 
+  // Hızlı slotu çalıştır: hedefe göre sayfayı açar ve sayfanın içindeki hedefi (proje/görünüm, tarih/görünüm, not) seçer.
+  const runQuickSlot = (slot: QuickSlot) => {
+    const t = slot.target;
+    if (!t) return;
+    setSelectedFolder(null);
+    setSelectedTag(null);
+    if (t.type === 'project') {
+      setProjectNav({ project: t.project, view: t.view, nonce: Date.now() });
+      setActiveTab('projects');
+    } else if (t.type === 'calendar') {
+      setCalendarNav({ view: t.view, nonce: Date.now() });
+      setActiveTab('calendar');
+    } else if (t.type === 'diary') {
+      setActiveTab('diary');
+    } else if (t.type === 'note') {
+      if (notes.some(n => n.path === t.path)) handleSetActiveNotePath(t.path);
+      setActiveTab('notes');
+    }
+  };
+
   // Listen for global keyboard shortcuts
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Alt+1..9: hızlı slot (yazı yazarken de çalışır; atanmamış slotta hiçbir şey yapmaz, olay başkalarına kalır)
+      const slotIdx = slotIndexFromEvent(e);
+      if (slotIdx >= 0 && quickSlots[slotIdx]?.target) {
+        e.preventDefault();
+        runQuickSlot(quickSlots[slotIdx]);
+        return;
+      }
+
       // If user is inside an input or textarea, we shouldn't trigger shortcuts unless it's Ctrl or Alt modified
       const activeEl = document.activeElement;
       const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true');
@@ -4428,7 +4463,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [shortcuts, selectedFolder, handleCreateNote]);
+  }, [shortcuts, selectedFolder, handleCreateNote, quickSlots, notes]);
 
   // Handle shortcut recording key listener
   useEffect(() => {
@@ -7721,6 +7756,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           <div style={{ display: activeTab === 'calendar' ? 'block' : 'none', height: '100%' }}>
             <CalendarView
+              navRequest={calendarNav}
+              onNavHandled={() => setCalendarNav(null)}
               autoWriteReady={firstSyncSettled}
               clientsFolder={clientsFolder}
               notes={notes}
@@ -7774,6 +7811,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           {activeTab === 'projects' && (
             <ProjectsView
               timelineItems={timelineItems}
+              navRequest={projectNav}
+              onNavHandled={() => setProjectNav(null)}
               notes={notes}
               scannedContents={fileContents}
               onChangeTaskStatus={handleChangeTaskStatus}
@@ -9511,6 +9550,12 @@ grant execute on function get_db_size() to anon;`}
                   <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
                     Desktop uygulamasında hızlı gezinme ve işlem gerçekleştirmek için kısayol tuşlarını buradan özelleştirebilirsiniz. Değiştirmek istediğiniz kısayolun yanındaki "Değiştir" butonuna tıklayıp ardından yeni tuş kombinasyonuna basın.
                   </p>
+                  <QuickSlotsSettings
+                    slots={quickSlots}
+                    onChange={updateQuickSlots}
+                    projectNames={projectNamesFrom(notes, fileContents)}
+                    notePaths={notes.filter(n => n.type === 'note' && !n.path.split('/').some(seg => seg.startsWith('.'))).map(n => n.path).sort()}
+                  />
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {Object.entries(shortcuts).map(([key, item]) => {

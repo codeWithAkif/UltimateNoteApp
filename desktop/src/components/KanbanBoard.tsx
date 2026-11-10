@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { TimelineItem } from '../App';
-import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X, Eye, Lock, Check } from 'lucide-react';
+import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X, Eye, EyeOff, Lock, Check } from 'lucide-react';
 import {
   type KanbanColumn,
   DEFAULT_KANBAN_COLUMNS,
@@ -67,6 +67,8 @@ export default function KanbanBoard({
     if (k === 'done' && was !== undefined && was !== 'done') justDone.add(t.id);
   }));
   useEffect(() => { prevColRef.current = currentCols; });
+
+  const hiddenCols = columns.filter(c => c.hidden);
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedTaskId(id);
@@ -173,7 +175,7 @@ export default function KanbanBoard({
         <div style={{ margin: '10px 16px 0 16px', padding: '14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
             Sütunları ekleyin, yeniden adlandırın, sıralayın veya silin. "Backlog" ilk, "Bitti" son sütun olarak sabittir.
-            Silinen bir sütundaki görevler kaybolmaz, Backlog'da görünür.
+            Silinen bir sütundaki görevler kaybolmaz, Backlog'da görünür. Göz simgesiyle bir sütunu silmeden tahtada gizleyebilirsiniz.
           </div>
           {draft.map((col, i) => {
             const fixedFirst = i === 0;
@@ -201,6 +203,14 @@ export default function KanbanBoard({
                     />
                   ))}
                 </div>
+                <button
+                  type="button"
+                  style={{ ...smallBtn, ...(col.hidden ? { color: 'var(--accent-color)', borderColor: 'var(--accent-color)' } : {}) }}
+                  onClick={() => setDraft(draft.map((c, k) => { if (k !== i) return c; const { hidden, ...rest } = c; return hidden ? rest : { ...rest, hidden: true }; }))}
+                  title={col.hidden ? 'Sütun gizli: tahtada görünmez (göstermek için tıklayın)' : 'Sütunu tahtada gizle'}
+                >
+                  {col.hidden ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
                 <button type="button" style={smallBtn} disabled={fixedFirst || fixedLast || i <= 1} onClick={() => move(i, -1)} title="Yukarı / sola"><ArrowUp size={13} /></button>
                 <button type="button" style={smallBtn} disabled={fixedFirst || fixedLast || i >= draft.length - 2} onClick={() => move(i, 1)} title="Aşağı / sağa"><ArrowDown size={13} /></button>
                 <button
@@ -212,7 +222,7 @@ export default function KanbanBoard({
                 >
                   <Trash2 size={13} />
                 </button>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{col.key}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{col.key}{col.hidden ? ' · gizli' : ''}</span>
               </div>
             );
           })}
@@ -238,8 +248,26 @@ export default function KanbanBoard({
         </div>
       )}
 
+      {!editing && hiddenCols.length > 0 && onSaveColumns && (
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '8px 16px 0 16px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+          <EyeOff size={12} />
+          <span>Gizli sütunlar:</span>
+          {hiddenCols.map(c => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => onSaveColumns(normalizeKanbanColumns(columns.map(x => { if (x.key !== c.key) return x; const { hidden, ...rest } = x; return rest; })))}
+              title="Göstermek için tıklayın"
+              style={{ ...smallBtn, fontSize: '11.5px', padding: '2px 8px', gap: '4px' }}
+            >
+              <Eye size={11} /> {c.title} ({tasksByStatus[c.key]?.length ?? 0})
+            </button>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '16px', flex: 1, minHeight: 0, overflowX: 'auto', padding: '16px' }}>
-        {columns.map(col => (
+        {columns.filter(c => !c.hidden).map(col => (
           <div
             key={col.key}
             className="kanban-column"

@@ -1,4 +1,5 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+﻿import type { CalendarNavRequest } from '../quickSlots';
+import React, { useState, useEffect, useRef } from 'react';
 import NotesView from './NotesView';
 import { createPortal } from 'react-dom';
 import { 
@@ -183,6 +184,9 @@ interface NoteItem {
 }
 
 interface CalendarViewProps {
+  // Hızlı slot (Alt+rakam) yönlendirmesi: bugüne ve seçilen görünüme geç. Uygulandıktan sonra onNavHandled çağrılır.
+  navRequest?: CalendarNavRequest | null;
+  onNavHandled?: () => void;
   notes: NoteItem[];
   folders: string[];
   tags: string[];
@@ -602,6 +606,8 @@ const hexToRgbString = (hex: string): string => {
 };
 
 export default function CalendarView({
+  navRequest,
+  onNavHandled,
   notes,
   folders,
   tags,
@@ -704,6 +710,14 @@ export default function CalendarView({
   // artık HER platformda varsayılan olarak "Günlük" görünümüyle açılıyor.
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>('day');
   const [currentDate, setCurrentDate] = useState(new Date());
+  // Hızlı slot yönlendirmesi: bugüne ve istenen görünüme geç.
+  useEffect(() => {
+    if (!navRequest) return;
+    setViewMode(navRequest.view);
+    setCurrentDate(new Date());
+    onNavHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navRequest?.nonce]);
   
   // Scanned task states
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);

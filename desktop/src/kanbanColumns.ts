@@ -5,7 +5,8 @@
 // Renkler "#" OLMADAN saklanır (ör. "a855f7"): not içindeki "#a855f7" genel hashtag tarayıcısınca gerçek bir
 // etiket sanılıp kenar çubuğunu kirletirdi. 'accent' özel değeri tema vurgu rengini temsil eder.
 
-export type KanbanColumn = { key: string; title: string; color?: string };
+// hidden: sütun tahtada gösterilmez (Backlog dahil); görevleri silinmez, "Gizli sütunlar" şeridinden geri açılır.
+export type KanbanColumn = { key: string; title: string; color?: string; hidden?: boolean };
 
 export const KANBAN_CONFIG_PATH = 'Sistem/Kanban.md';
 
@@ -49,7 +50,7 @@ export const normalizeKanbanColumns = (list: any): KanbanColumn[] => {
       const key = c.key.toLowerCase();
       if (!/^[a-z0-9_-]+$/.test(key) || seen.has(key)) continue;
       const title = c.title.trim().slice(0, 40) || key;
-      const col: KanbanColumn = { key, title, ...(typeof c.color === 'string' && c.color ? { color: c.color.replace(/^#/, '') } : {}) };
+      const col: KanbanColumn = { key, title, ...(typeof c.color === 'string' && c.color ? { color: c.color.replace(/^#/, '') } : {}), ...(c.hidden === true ? { hidden: true } : {}) };
       seen.add(key);
       if (key === 'done') done = col; else out.push(col);
     }

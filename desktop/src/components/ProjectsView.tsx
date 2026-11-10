@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import type { ProjectNavRequest } from '../quickSlots';
+import React, { useState, useMemo, useEffect } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
 import { computeProjectHealth, type HealthItem, type HealthAction } from '../services/projectHealth';
@@ -12,6 +13,9 @@ interface NoteItem {
 }
 
 interface ProjectsViewProps {
+  // Hızlı slot (Alt+rakam) yönlendirmesi: belirli proje + görünüm. Uygulandıktan sonra onNavHandled çağrılır.
+  navRequest?: ProjectNavRequest | null;
+  onNavHandled?: () => void;
   timelineItems: TimelineItem[];
   notes: NoteItem[];
   scannedContents: Record<string, string>;
@@ -144,9 +148,17 @@ function ProjectTaskAdder({ onAdd, projectName }: { onAdd: (text: string) => Pro
   );
 }
 
-export default function ProjectsView({ timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded }: ProjectsViewProps) {
+export default function ProjectsView({ navRequest, onNavHandled, timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  // Hızlı slot yönlendirmesi (ilk çizimde ve her yeni istekte uygulanır).
+  useEffect(() => {
+    if (!navRequest) return;
+    setActiveTab(navRequest.view);
+    setSelectedProject(navRequest.view === 'clients' ? null : navRequest.project);
+    onNavHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navRequest?.nonce]);
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>('open');
   const [colorPickerOpenFor, setColorPickerOpenFor] = useState<string | null>(null);
 
