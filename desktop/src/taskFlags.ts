@@ -23,6 +23,33 @@ export const parseFlags = (text: string): TaskFlag[] => {
   return Array.from(out);
 };
 
+// Not editöründe [flag:...] ve [status:...] ham metin yerine ikonlu rozet (chip) olarak çizilir (bkz. NotesView.parseInlineStylesAndTags).
+export const FLAG_COLORS: Record<TaskFlag, string> = { promise: '#f59e0b', later: '#94a3b8', deep: '#818cf8', light: '#2dd4bf' };
+
+export interface ChipInfo { emoji: string; label: string; color: string; title: string }
+
+export const flagChip = (flag: TaskFlag): ChipInfo => {
+  const f = TASK_FLAGS.find(x => x.key === flag)!;
+  return { emoji: f.emoji, label: f.label, color: FLAG_COLORS[flag], title: f.title };
+};
+
+const STATUS_CHIPS: Record<string, { emoji: string; label: string; color: string }> = {
+  inprogress: { emoji: '⚙️', label: 'Devam ediyor', color: '#22d3ee' },
+  test: { emoji: '🧪', label: 'Test', color: '#a855f7' },
+  review: { emoji: '👀', label: 'İncelemede', color: '#eab308' },
+  blocked: { emoji: '⛔', label: 'Bloklu', color: '#ef4444' },
+  park: { emoji: '⏸️', label: 'Park', color: '#94a3b8' }
+};
+
+// Kanban durumu etiketi ([status:review]); bilinmeyen/özel sütun anahtarları da okunur bir rozete dönüşür.
+export const statusChip = (key: string): ChipInfo => {
+  const k = key.toLowerCase();
+  const known = STATUS_CHIPS[k];
+  if (known) return { ...known, title: 'Kanban durumu' };
+  const label = k.replace(/[-_]+/g, ' ');
+  return { emoji: '🏷️', label: label.charAt(0).toUpperCase() + label.slice(1), color: '#94a3b8', title: 'Kanban durumu' };
+};
+
 export const stripFlagTags = (text: string): string => text.replace(/\s*\[flag:(?:promise|later|deep|light)\]/gi, '');
 
 // Puan katkısı: söz verilen iş daha öne çıkar.

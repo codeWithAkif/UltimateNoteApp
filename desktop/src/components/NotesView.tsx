@@ -1,4 +1,4 @@
-import { TASK_FLAGS, parseFlags, toggleFlagInLine, flagScoreBonus, type TaskFlag } from '../taskFlags';
+import { TASK_FLAGS, parseFlags, toggleFlagInLine, flagScoreBonus, flagChip, statusChip, type TaskFlag } from '../taskFlags';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { perfRecorder } from '../services/perfRecorder';
 import { flushSync } from 'react-dom';
@@ -7272,7 +7272,7 @@ export default function NotesView({
   const parseInlineStylesAndTags = (text: string, lineIdx?: number): React.ReactNode[] => {
     if (!text) return [];
 
-    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]|\[(?:completed|tamamlanma):[^\]]+\]|\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]|\[(?:project|proje):[^\]]+\]|\[başlama:[^\]]+\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
+    const regex = /(==.*?==|\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)?|\[[^\]]*\]\([^)]*\)?|\[\^[a-zA-Z0-9_-]+\]|\*\*.*?\*\*|\*.*?\*|`.*?`|#[a-zA-Z0-9çıüşöğİÇIŞĞÜÖ_-]+|\[\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:priority|p):(?:critical|acil|high|yüksek|medium|orta|low|düşük)\]|\[due:\d{4}-\d{2}-\d{2}(?:\s\d{2}:\d{2})?\]|\[(?:plannedtime|time|window):\d{2}:\d{2}-\d{2}:\d{2}\]|\[repeat:(?:daily|günlük|weekly|haftalık|monthly|aylık)\]|\[(?:started|baslangic|başlangıç|başlama):[^\]]+\]|\[(?:completed|tamamlanma):[^\]]+\]|\[(?:outcome|dakiklik):(?:fast|ontime|late|incomplete)\]|\[flag:(?:promise|later|deep|light)\]|\[status:[a-z0-9_-]+\]|\[(?:project|proje):[^\]]+\]|\[başlama:[^\]]+\]|\[(?:harcama|gider|gelir|yatırım|yatirim|tasarruf|fiyat):\s*[^\]]+\])/gi;
     const parts = text.split(regex);
     const { map: footnoteMap } = getDetailedFootnotes();
 
@@ -7659,6 +7659,21 @@ export default function NotesView({
         return (
           <span key={i} className="preview-timestamp-badge" title="Dakiklik Durumu">
             {label}
+          </span>
+        );
+      }
+      if ((/^\[flag:/i.test(part) || /^\[status:/i.test(part)) && part.endsWith(']')) {
+        const isFlag = /^\[flag:/i.test(part);
+        const val = part.slice(part.indexOf(':') + 1, -1).toLowerCase();
+        const chip = isFlag ? flagChip(val as TaskFlag) : statusChip(val);
+        return (
+          <span
+            key={i}
+            className="preview-timestamp-badge"
+            title={chip.title}
+            style={{ background: `${chip.color}1f`, color: chip.color, border: `1px solid ${chip.color}40`, whiteSpace: 'nowrap' }}
+          >
+            {chip.emoji} {chip.label}
           </span>
         );
       }
