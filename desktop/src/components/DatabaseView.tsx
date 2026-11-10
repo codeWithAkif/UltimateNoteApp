@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Table, Kanban, Search, Tag, Folder, CheckCircle2, Circle, Hash, 
   FileText, Clock, Calendar, Plus, X, Eye, Grid, List, 
@@ -254,29 +254,34 @@ export default function DatabaseView({
   const activeView = views.find(v => v.id === activeViewId) || views[0] || { id: 'default-table', type: 'table' };
 
   // --- Filtreleme Mantığı ---
-  const filteredItems = items.filter(item => {
-    // Sidebar'dan seçilen etikete göre filtrele
-    if (selectedTag && !item.tags.includes(selectedTag.toLowerCase())) {
-      return false;
-    }
+  // PERFORMANS: süzme yalnızca girdi/filtre değişince yeniden hesaplanır (eskiden her render'da binlerce kayıt taranıyordu).
+  const filteredItems = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    const tag = selectedTag ? selectedTag.toLowerCase() : null;
+    return items.filter(item => {
+      // Sidebar'dan seçilen etikete göre filtrele
+      if (tag && !item.tags.includes(tag)) return false;
 
-    // Sidebar'dan seçilen klasöre göre filtrele
-    if (selectedFolder && item.folder !== selectedFolder) {
-      return false;
-    }
+      // Sidebar'dan seçilen klasöre göre filtrele
+      if (selectedFolder && item.folder !== selectedFolder) return false;
 
-    // Arama kelimesine göre filtrele
-    const matchesSearch = item.content.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          (item.folder && item.folder.toLowerCase().includes(searchQuery.toLowerCase())) ||
-                          item.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
-    
-    // Görev/Not tipine göre filtrele
-    const matchesType = typeFilter === 'all' || 
-                        (typeFilter === 'todo' && item.isTodo) || 
-                        (typeFilter === 'note' && !item.isTodo);
+      // Görev/Not tipine göre filtrele
+      if (!(typeFilter === 'all' || (typeFilter === 'todo' && item.isTodo) || (typeFilter === 'note' && !item.isTodo))) return false;
 
-    return matchesSearch && matchesType;
-  });
+      // Arama kelimesine göre filtrele
+      if (!q) return true;
+      return item.content.toLowerCase().includes(q) ||
+        (!!item.folder && item.folder.toLowerCase().includes(q)) ||
+        item.tags.some(t => t.toLowerCase().includes(q));
+    });
+  }, [items, selectedTag, selectedFolder, searchQuery, typeFilter]);
+
+  // PERFORMANS: tüm kayıtları tek seferde çizmek ekranı donduruyordu. Her görünümde ilk PAGE_SIZE kayıt çizilir; kaydırıp
+  // sona yaklaşınca PAGE_SIZE daha yüklenir. Görünüm/arama/filtre değişince başa dönülür.
+  const PAGE_SIZE = 60;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [activeViewId, searchQuery, typeFilter, selectedTag, selectedFolder]);
+  const cap = (arr: DbItem[]) => arr.slice(0, visibleCount);
 
   // --- Görünüm Ekleme / Silme Metotları ---
   const handleAddView = () => {
@@ -304,9 +309,9 @@ export default function DatabaseView({
   };
 
   // --- Kanban Görünümü İçin Alt Gruplar ---
-  const todoItems = filteredItems.filter(item => item.isTodo && !item.isCompleted);
-  const doneItems = filteredItems.filter(item => item.isTodo && item.isCompleted);
-  const noteItems = filteredItems.filter(item => !item.isTodo);
+  const todoItems = useMemo(() => filteredItems.filter(item => item.isTodo && !item.isCompleted), [filteredItems]);
+  const doneItems = useMemo(() => filteredItems.filter(item => item.isTodo && item.isCompleted), [filteredItems]);
+  const noteItems = useMemo(() => filteredItems.filter(item => !item.isTodo), [filteredItems]);
 
   // --- Takvim Görünümü İçin Hesaplamalar ---
   const getItemDateString = (item: DbItem): string => {
@@ -375,16 +380,26 @@ export default function DatabaseView({
   const weekDays = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 
   // --- Zaman Tüneli (Timeline) Görünümü Gruplaması ---
-  const groupedByDate: Record<string, DbItem[]> = {};
-  const sortedItemsForTimeline = [...filteredItems].sort((a, b) => b.dateStr.localeCompare(a.dateStr));
-  sortedItemsForTimeline.forEach(item => {
-    const d = item.dateStr || 'Tarihsiz';
-    if (!groupedByDate[d]) {
-      groupedByDate[d] = [];
+  const { groupedByDate, sortedTimelineDates } = useMemo(() => {
+    const grouped: Record<string, DbItem[]> = {};
+    [...filteredItems].sort((a, b) => b.dateStr.localeCompare(a.dateStr)).forEach(item => {
+      const d = item.dateStr || 'Tarihsiz';
+      if (!grouped[d]) grouped[d] = [];
+      grouped[d].push(item);
+    });
+    return { groupedByDate: grouped, sortedTimelineDates: Object.keys(grouped).sort((a, b) => b.localeCompare(a)) };
+  }, [filteredItems]);
+  // Zaman tünelinde günler bölünmeden, toplam kayıt sayısı visibleCount'u aşana kadar gün gösterilir.
+  const visibleTimelineDates = useMemo(() => {
+    const out: string[] = [];
+    let n = 0;
+    for (const d of sortedTimelineDates) {
+      out.push(d);
+      n += groupedByDate[d].length;
+      if (n >= visibleCount) break;
     }
-    groupedByDate[d].push(item);
-  });
-  const sortedTimelineDates = Object.keys(groupedByDate).sort((a, b) => b.localeCompare(a));
+    return out;
+  }, [sortedTimelineDates, groupedByDate, visibleCount]);
 
   // --- Öncelik Matrisi (Priority Matrix) Çeyrek Hesaplamaları ---
   const getPriorityQuadrant = (item: DbItem): 'critical' | 'high' | 'medium' | 'low' => {
@@ -395,10 +410,30 @@ export default function DatabaseView({
     return 'low';
   };
 
-  const criticalItems = filteredItems.filter(item => getPriorityQuadrant(item) === 'critical');
-  const highPriorityItems = filteredItems.filter(item => getPriorityQuadrant(item) === 'high');
-  const mediumPriorityItems = filteredItems.filter(item => getPriorityQuadrant(item) === 'medium');
-  const lowPriorityItems = filteredItems.filter(item => getPriorityQuadrant(item) === 'low');
+  const { criticalItems, highPriorityItems, mediumPriorityItems, lowPriorityItems } = useMemo(() => {
+    const q: Record<'critical' | 'high' | 'medium' | 'low', DbItem[]> = { critical: [], high: [], medium: [], low: [] };
+    filteredItems.forEach(item => q[getPriorityQuadrant(item)].push(item));
+    return { criticalItems: q.critical, highPriorityItems: q.high, mediumPriorityItems: q.medium, lowPriorityItems: q.low };
+  }, [filteredItems]);
+
+  // Aktif görünümde çizilmemiş kayıt var mı? (kaydırınca daha fazla yüklenir)
+  const moreAvailable = (() => {
+    switch (activeView.type) {
+      case 'table': case 'gallery': case 'list': return filteredItems.length > visibleCount;
+      case 'kanban': return Math.max(todoItems.length, noteItems.length, doneItems.length) > visibleCount;
+      case 'priority': return Math.max(criticalItems.length, highPriorityItems.length, mediumPriorityItems.length, lowPriorityItems.length) > visibleCount;
+      case 'timeline': return visibleTimelineDates.length < sortedTimelineDates.length;
+      default: return false;
+    }
+  })();
+  // Kaydırma olayları kabarcıklanmaz; capture ile her görünümün kendi kaydırma alanından yakalanır.
+  const handleBodyScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!moreAvailable) return;
+    const t = e.target as HTMLElement;
+    if (t && typeof t.scrollHeight === 'number' && t.scrollHeight - t.scrollTop - t.clientHeight < 800) {
+      setVisibleCount(c => c + PAGE_SIZE);
+    }
+  };
 
   return (
     <div className="db-container animate-fade">
@@ -406,7 +441,7 @@ export default function DatabaseView({
       <div className="db-toolbar">
         <div className="db-title-area">
           <h1>Not Deposu (Database)</h1>
-          <p className="subtitle">Tüm verilerinizi Notion benzeri yapılandırılmış görünümlerde yönetin.</p>
+          <p className="subtitle">Tüm verilerinizi Notion benzeri yapılandırılmış görünümlerde yönetin. <span style={{ opacity: 0.7 }}>· {filteredItems.length} kayıt{moreAvailable ? ' (kaydırdıkça yüklenir)' : ''}</span></p>
         </div>
 
         <div className="db-controls">
@@ -488,7 +523,7 @@ export default function DatabaseView({
       {/* ==========================================================================
          BÖLÜM 5: GÖRÜNÜM İÇERİKLERİNİN OLUŞTURULMASI (RENDER ACTIVE VIEW) - Kural 5
          ========================================================================== */}
-      <div className="db-body">
+      <div className="db-body" onScrollCapture={handleBodyScroll}>
         
         {/* --- 5.1: TABLO GÖRÜNÜMÜ (TABLE VIEW) --- */}
         {activeView.type === 'table' && (
@@ -510,7 +545,7 @@ export default function DatabaseView({
                     <td colSpan={6} className="table-empty">Eşleşen veri bulunamadı.</td>
                   </tr>
                 ) : (
-                  filteredItems.map(item => (
+                  cap(filteredItems).map(item => (
                     <tr key={item.id}>
                       <td className="cell-content">
                         {item.isTodo ? (
@@ -589,7 +624,7 @@ export default function DatabaseView({
                 {todoItems.length === 0 ? (
                   <div className="empty-col-card">Açık görev yok.</div>
                 ) : (
-                  todoItems.map(item => (
+                  cap(todoItems).map(item => (
                     <div key={item.id} className="kanban-card">
                       <div className="card-top">
                         <button className="todo-toggle-btn" onClick={() => onToggleTodo(item.id)}>
@@ -617,7 +652,7 @@ export default function DatabaseView({
                 {noteItems.length === 0 ? (
                   <div className="empty-col-card">Kayıtlı not yok.</div>
                 ) : (
-                  noteItems.map(item => (
+                  cap(noteItems).map(item => (
                     <div key={item.id} className="kanban-card note-card">
                       <div className="card-top">
                         <FileText size={16} className="card-icon text-accent" />
@@ -643,7 +678,7 @@ export default function DatabaseView({
                 {doneItems.length === 0 ? (
                   <div className="empty-col-card">Henüz tamamlanan görev yok.</div>
                 ) : (
-                  doneItems.map(item => (
+                  cap(doneItems).map(item => (
                     <div key={item.id} className="kanban-card done-card">
                       <div className="card-top">
                         <button className="todo-toggle-btn" onClick={() => onToggleTodo(item.id)}>
@@ -669,7 +704,7 @@ export default function DatabaseView({
             {filteredItems.length === 0 ? (
               <div className="table-empty">Eşleşen veri bulunamadı.</div>
             ) : (
-              filteredItems.map(item => (
+              cap(filteredItems).map(item => (
                 <div key={item.id} className="db-gallery-card">
                   <div className="db-gallery-header">
                     {item.isTodo ? (
@@ -728,7 +763,7 @@ export default function DatabaseView({
             {filteredItems.length === 0 ? (
               <div className="table-empty">Eşleşen veri bulunamadı.</div>
             ) : (
-              filteredItems.map(item => (
+              cap(filteredItems).map(item => (
                 <div key={item.id} className="db-list-row">
                   <div className="db-list-left">
                     {item.isTodo ? (
@@ -835,7 +870,7 @@ export default function DatabaseView({
             {sortedTimelineDates.length === 0 ? (
               <div className="table-empty">Eşleşen veri bulunamadı.</div>
             ) : (
-              sortedTimelineDates.map(date => (
+              visibleTimelineDates.map(date => (
                 <div key={date} className="db-timeline-v-group">
                   <div className="db-timeline-v-node"></div>
                   <div className="db-timeline-v-date">{date}</div>
@@ -893,7 +928,7 @@ export default function DatabaseView({
                 {criticalItems.length === 0 ? (
                   <div className="empty-col-card">Bu kategoride görev bulunmuyor.</div>
                 ) : (
-                  criticalItems.map(item => (
+                  cap(criticalItems).map(item => (
                     <div key={item.id} className="db-matrix-card" onClick={() => item.isTodo && onToggleTodo(item.id)}>
                       <div className="db-matrix-card-top">
                         {item.isTodo ? (
@@ -931,7 +966,7 @@ export default function DatabaseView({
                 {highPriorityItems.length === 0 ? (
                   <div className="empty-col-card">Bu kategoride görev bulunmuyor.</div>
                 ) : (
-                  highPriorityItems.map(item => (
+                  cap(highPriorityItems).map(item => (
                     <div key={item.id} className="db-matrix-card" onClick={() => item.isTodo && onToggleTodo(item.id)}>
                       <div className="db-matrix-card-top">
                         {item.isTodo ? (
@@ -969,7 +1004,7 @@ export default function DatabaseView({
                 {mediumPriorityItems.length === 0 ? (
                   <div className="empty-col-card">Bu kategoride görev bulunmuyor.</div>
                 ) : (
-                  mediumPriorityItems.map(item => (
+                  cap(mediumPriorityItems).map(item => (
                     <div key={item.id} className="db-matrix-card" onClick={() => item.isTodo && onToggleTodo(item.id)}>
                       <div className="db-matrix-card-top">
                         {item.isTodo ? (
@@ -1007,7 +1042,7 @@ export default function DatabaseView({
                 {lowPriorityItems.length === 0 ? (
                   <div className="empty-col-card">Bu kategoride görev bulunmuyor.</div>
                 ) : (
-                  lowPriorityItems.map(item => (
+                  cap(lowPriorityItems).map(item => (
                     <div key={item.id} className="db-matrix-card" onClick={() => item.isTodo && onToggleTodo(item.id)}>
                       <div className="db-matrix-card-top">
                         {item.isTodo ? (
