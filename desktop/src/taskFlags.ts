@@ -50,6 +50,57 @@ export const statusChip = (key: string): ChipInfo => {
   return { emoji: '🏷️', label: label.charAt(0).toUpperCase() + label.slice(1), color: '#94a3b8', title: 'Kanban durumu' };
 };
 
+// ---- Diğer satır içi etiketler: ham [etiket:değer] yerine okunur rozet (ya da iç kimlikse gizlenir) ----
+const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+const fmtDay = (iso: string): string => {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${parseInt(m[3], 10)} ${MONTHS[parseInt(m[2], 10) - 1] || ''}`.trim() : iso;
+};
+// "2026-07-02T09:00-18:00" -> "2 Tem 09:00-18:00"; saat yoksa yalnızca gün
+const fmtSlot = (v: string): string => {
+  const m = v.match(/^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}-\d{2}:\d{2}))?$/);
+  return m ? `${fmtDay(m[1])}${m[2] ? ' ' + m[2] : ''}` : v;
+};
+
+const DURUM_CHIPS: Record<string, { emoji: string; label: string; color: string }> = {
+  aktif: { emoji: '🟢', label: 'Aktif', color: '#22c55e' },
+  beklemede: { emoji: '⏸️', label: 'Beklemede', color: '#eab308' },
+  tamamlandi: { emoji: '✅', label: 'Tamamlandı', color: '#4caf50' },
+  arsiv: { emoji: '📦', label: 'Arşiv', color: '#94a3b8' }
+};
+
+// Bu adlardaki etiketler rozete çevrilir; 'hidden' = kullanıcıya anlamsız iç kimlik, hiç gösterilmez.
+export const INLINE_TAG_NAMES = ['type', 'session', 'plan', 'hours', 'gcal', 'gcalh', 'exid', 'srs', 'durum'] as const;
+
+export const inlineTagChip = (name: string, rawValue: string): ChipInfo | 'hidden' | null => {
+  const n = name.toLowerCase();
+  const v = rawValue.trim();
+  switch (n) {
+    case 'type': {
+      const t = v.toLowerCase();
+      if (t === 'bug') return { emoji: '🐞', label: 'Hata', color: '#ef4444', title: 'Görev türü' };
+      if (t === 'feature') return { emoji: '✨', label: 'Özellik', color: '#818cf8', title: 'Görev türü' };
+      if (t === 'chore') return { emoji: '🧹', label: 'Bakım', color: '#94a3b8', title: 'Görev türü' };
+      return null;
+    }
+    case 'session': return { emoji: '🗓️', label: `Oturum: ${fmtSlot(v)}`, color: '#38bdf8', title: 'Çalışma oturumu' };
+    case 'plan': return { emoji: '📌', label: `Plan: ${fmtSlot(v)}`, color: '#38bdf8', title: 'Planlanan zaman' };
+    case 'hours': return { emoji: '⏱️', label: `${v.replace('.', ',')} sa`, color: '#94a3b8', title: 'Harcanan/planlanan süre' };
+    case 'gcal': return { emoji: '📅', label: 'Takvimde', color: '#60a5fa', title: 'Google Takvim ile eşitlendi' };
+    case 'gcalh': case 'exid': return 'hidden';
+    case 'srs': {
+      const box = v.match(/box\s*(\d+)/i);
+      const day = v.match(/\d{4}-\d{2}-\d{2}/);
+      return { emoji: '🔁', label: `Ezber${box ? `: Kutu ${box[1]}` : ''}${day ? ` · ${fmtDay(day[0])}` : ''}`, color: '#a78bfa', title: 'Aralıklı tekrar (SRS)' };
+    }
+    case 'durum': {
+      const d = DURUM_CHIPS[v.toLowerCase()];
+      return d ? { ...d, title: 'Proje durumu' } : null;
+    }
+    default: return null;
+  }
+};
+
 export const stripFlagTags = (text: string): string => text.replace(/\s*\[flag:(?:promise|later|deep|light)\]/gi, '');
 
 // Puan katkısı: söz verilen iş daha öne çıkar.
