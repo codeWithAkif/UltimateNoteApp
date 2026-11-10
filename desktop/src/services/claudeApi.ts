@@ -74,7 +74,7 @@ export async function claudeJson<T>(prompt: string, schema: any): Promise<T> {
 export async function claudeGroundedText(prompt: string): Promise<string> {
   const data = await post({
     model: getClaudeModel(),
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [{ role: 'user', content: prompt }],
     tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
   });

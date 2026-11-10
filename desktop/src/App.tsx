@@ -63,9 +63,10 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain
 } from 'lucide-react';
 import { getClaudeApiKey, setClaudeApiKey, getClaudeModel, setClaudeModel, CLAUDE_MODEL_OPTIONS } from './services/claudeApi';
+import AssistantView from './components/AssistantView';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -2923,6 +2924,7 @@ export default function App() {
     // istiyorum" + referans ekran görüntüleri): Günlük de aynı ortak not altyapısını kullanır,
     // her gün Günlükler/YYYY-MM-DD.md altında gerçek bir nota karşılık gelir.
     { id: 'diary', label: 'Günlük', icon: NotebookPen },
+    { id: 'assistant', label: 'Asistan', icon: Brain },
   ];
   const titlebarToolItems = [
     { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
@@ -7711,6 +7713,18 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onRequestFocusCalendar={() => setActiveTab('calendar')}
             />
           </div>
+
+          {activeTab === 'assistant' && (
+            <AssistantView
+              fileContents={fileContents}
+              clientsFolder={clientsFolder}
+              onSaveNote={handleSaveNote}
+              onOpenNote={(path: string) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
+              }}
+            />
+          )}
 
           {activeTab === 'projects' && (
             <ProjectsView
