@@ -4062,9 +4062,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         
         const activeNotePaths = new Set(fileList.filter(n => n.type === 'note').map(n => n.path));
         const filteredRawTimeline = rawTimeline.filter(item => {
+          // note:: kayıtları her yüklemede notlardan yeniden üretilir (aşağıda fileTimelineItems); diskteki kopyaları atılır.
+          // Bu aynı zamanda önceden şişmiş metadata.json'u kendiliğinden temizler (didHeal -> yeniden yazılır).
+          if (typeof item.id === 'string' && item.id.startsWith('note::')) return false;
           const itemPath = getTimelineItemPath(item);
           if (!activeNotePaths.has(itemPath)) return false;
-          
+
           const fileContent = scannedContents[itemPath];
           if (!fileContent) return false;
           
@@ -4213,9 +4216,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       
       const activeNotePaths = new Set(parsedNotes.filter((n: any) => n.type === 'note').map((n: any) => n.path));
       const filteredRawTimeline = rawTimeline.filter(item => {
+        if (typeof item.id === 'string' && item.id.startsWith('note::')) return false; // bkz. yukarıdaki Electron dalı
         const itemPath = getTimelineItemPath(item);
         if (!activeNotePaths.has(itemPath)) return false;
-        
+
         const fileContent = scannedContents[itemPath];
         if (!fileContent) return false;
         
@@ -4513,7 +4517,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
   // Helper to Save Metadata
   const saveMetadata = async (newTimeline: TimelineItem[], newRecent: any[], newTags: string[], newCustomizations?: any, newMindmapLayouts?: any) => {
-    const cleanTimeline = newTimeline.filter(item => !item.id.startsWith('task::'));
+    // Türetilmiş kayıtlar (task:: ve note::) diske yazılmaz: her yüklemede notlardan yeniden üretilirler. note:: kayıtları
+    // eskiden yazılıyordu; sonraki yüklemede hem diskten okunup hem yeniden üretildiği için her kayıtta kopyalanıp
+    // metadata.json'u 10 MB'a (28.000+ kayıt, yalnızca ~500 benzersiz) şişirmişti.
+    const cleanTimeline = newTimeline.filter(item => !item.id.startsWith('task::') && !item.id.startsWith('note::'));
 
     const metaObj = {
       timeline: cleanTimeline,

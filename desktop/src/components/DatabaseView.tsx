@@ -376,6 +376,18 @@ export default function DatabaseView({
   };
 
   const calendarDays = getDaysInMonth(currentMonthDate);
+  // PERFORMANS: her gün hücresi için tüm kayıtları baştan taramak (42 hücre x binlerce kayıt) yerine tek geçişte gün -> kayıt dizini.
+  const itemsByDate = useMemo(() => {
+    const m = new Map<string, DbItem[]>();
+    filteredItems.forEach(item => {
+      const d = getItemDateString(item);
+      const arr = m.get(d);
+      if (arr) arr.push(item); else m.set(d, [item]);
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredItems]);
+  const CAL_CELL_MAX = 30; // bir günde çok kayıt varsa hücre başına çizim sınırı
   const monthNames = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
   const weekDays = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 
@@ -834,7 +846,8 @@ export default function DatabaseView({
               <div className="db-calendar-grid">
                 {calendarDays.map((day, idx) => {
                   const dateStr = formatDateISO(day.date);
-                  const dayItems = filteredItems.filter(item => getItemDateString(item) === dateStr);
+                  const allDayItems = itemsByDate.get(dateStr) || [];
+                  const dayItems = allDayItems.slice(0, CAL_CELL_MAX);
                   const isToday = formatDateISO(new Date()) === dateStr;
                   
                   return (
@@ -854,6 +867,9 @@ export default function DatabaseView({
                             {item.content.replace(/#\w+|\[.*?\]/g, '').trim() || 'İsimsiz Öğe'}
                           </div>
                         ))}
+                        {allDayItems.length > CAL_CELL_MAX && (
+                          <div style={{ fontSize: '10px', color: 'var(--text-muted)', padding: '2px 6px', flexShrink: 0 }}>+{allDayItems.length - CAL_CELL_MAX} kayıt daha</div>
+                        )}
                       </div>
                     </div>
                   );
