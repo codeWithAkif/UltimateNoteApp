@@ -3108,7 +3108,7 @@ export default function App() {
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Çok sayfalı ayarlar panelinde aktif olan sayfa/sekme adını tutar.
-  const [settingsTab, setSettingsTab] = useState<'sync' | 'ai' | 'appearance' | 'clients' | 'shortcuts' | 'trash' | 'about'>('sync');
+  const [settingsTab, setSettingsTab] = useState<'sync' | 'ai' | 'appearance' | 'files' | 'shortcuts' | 'trash' | 'about'>('sync');
   // Çöp Kutusu: yerel .trash/index.json içeriği + Supabase'de is_deleted=true olan
   // (yerelde kopyası olmayabilecek) notlar birleştirilerek gösterilir.
   const [localTrashEntries, setLocalTrashEntries] = useState<Array<{ id: string; originalPath: string; name: string; content: string; deletedAt: number }>>([]);
@@ -8955,12 +8955,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
               <button
                 type="button"
-                onClick={() => setSettingsTab('clients')}
+                onClick={() => setSettingsTab('files')}
                 style={{
-                  background: settingsTab === 'clients' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  background: settingsTab === 'files' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
                   border: 'none',
-                  color: settingsTab === 'clients' ? '#fff' : 'var(--text-muted)',
-                  borderLeft: settingsTab === 'clients' ? '3px solid var(--accent-color)' : '3px solid transparent',
+                  color: settingsTab === 'files' ? '#fff' : 'var(--text-muted)',
+                  borderLeft: settingsTab === 'files' ? '3px solid var(--accent-color)' : '3px solid transparent',
                   padding: '10px 12px',
                   borderRadius: '6px',
                   cursor: 'pointer',
@@ -8973,7 +8973,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
                   transition: 'all 0.2s'
                 }}
               >
-                <span>🧑‍💼</span> Clients
+                <span>📁</span> Dosyalar
               </button>
 
               <button
@@ -9466,33 +9466,6 @@ grant execute on function get_db_size() to anon;`}
                       />
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)', marginTop: '4px' }}>
-                      <label style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Şablon Klasörü Adı</label>
-                      <input 
-                        type="text" 
-                        value={templatesFolder}
-                        onChange={(e) => {
-                          const val = e.target.value.trim().replace(/\/|\\/g, ''); // Klasör adından slaşları temizle
-                          setTemplatesFolder(val || '.templates');
-                          localStorage.setItem('setting_templates_folder', val || '.templates');
-                        }}
-                        placeholder=".templates"
-                        style={{
-                          width: '100%',
-                          padding: '6px 10px',
-                          fontSize: '12px',
-                          background: '#1c1c24',
-                          border: '1px solid rgba(255,255,255,0.1)',
-                          borderRadius: '4px',
-                          color: '#fff',
-                          marginTop: '4px',
-                          outline: 'none'
-                        }}
-                      />
-                      <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        Şablon dosyalarının aranacağı ve oluşturulacağı klasörün adını girin (Örn: .templates veya Şablonlar).
-                      </span>
-                    </div>
                   </div>
 
                   <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
@@ -9501,17 +9474,17 @@ grant execute on function get_db_size() to anon;`}
                 </div>
               )}
 
-              {settingsTab === 'clients' && (
+              {settingsTab === 'files' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
                   <div>
-                    <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>Clients (Müşteriler) Ayarları</h3>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: '#fff' }}>Dosyalar</h3>
                     <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
-                      Proje Yönetimi ekranındaki "Yeni Müşteri" / "Yeni Proje" oluşturma özelliğinin klasör iskeletini belirler.
+                      Müşteri ve proje iskeletinin, ayrıca not şablonlarının kasada hangi klasörde duracağını belirler.
                     </p>
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
-                    <label style={{ fontSize: '12px', color: '#fff', fontWeight: '600' }}>Müşteriler Klasörü Adı</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <label style={{ fontSize: '13px', color: '#fff', fontWeight: '600' }}>Müşteriler klasörü adı</label>
                     <input
                       type="text"
                       value={clientsFolder}
@@ -9521,21 +9494,29 @@ grant execute on function get_db_size() to anon;`}
                         localStorage.setItem('setting_clients_folder', val || 'Müşteriler');
                       }}
                       placeholder="Müşteriler"
-                      style={{
-                        width: '100%',
-                        padding: '6px 10px',
-                        fontSize: '12px',
-                        background: '#1c1c24',
-                        border: '1px solid rgba(255,255,255,0.1)',
-                        borderRadius: '4px',
-                        color: '#fff',
-                        marginTop: '4px',
-                        outline: 'none'
-                      }}
+                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', marginTop: '4px', outline: 'none' }}
                     />
-                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                      Yeni bir müşteri oluşturduğunuzda kurulacak iskelet: <code>{clientsFolder || 'Müşteriler'}/MüşteriAdı/MüşteriAdı.md</code> (#müşteri etiketli).
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.5 }}>
+                      Proje Yönetimi'nde "Yeni Müşteri" oluşturduğunuzda kurulacak iskelet: <code>{clientsFolder || 'Müşteriler'}/MüşteriAdı/MüşteriAdı.md</code> (#müşteri etiketli).
                       Bir proje eklediğinizde: <code>{clientsFolder || 'Müşteriler'}/MüşteriAdı/Projeler/ProjeAdı.md</code> (#proje + müşteri etiketli).
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <label style={{ fontSize: '13px', color: '#fff', fontWeight: '600' }}>Şablon klasörü adı</label>
+                    <input
+                      type="text"
+                      value={templatesFolder}
+                      onChange={(e) => {
+                        const val = e.target.value.trim().replace(/\/|\\/g, ''); // Klasör adından slaşları temizle
+                        setTemplatesFolder(val || '.templates');
+                        localStorage.setItem('setting_templates_folder', val || '.templates');
+                      }}
+                      placeholder=".templates"
+                      style={{ width: '100%', padding: '6px 10px', fontSize: '12px', background: '#1c1c24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', marginTop: '4px', outline: 'none' }}
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.5 }}>
+                      Şablon dosyalarının aranacağı ve oluşturulacağı klasörün adı (örn. <code>.templates</code> ya da <code>Şablonlar</code>).
                     </span>
                   </div>
 

@@ -76,13 +76,23 @@ export default function KanbanBoard({
     e.dataTransfer.setData('text/plain', id);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  // Sürüklenen kartın üzerinde bulunduğu sütun: renk değiştirerek "buraya bırakabilirsiniz" der.
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+
+  const handleDragOver = (e: React.DragEvent, key: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+    if (dragOverKey !== key) setDragOverKey(key);
+  };
+
+  // Sütunun içindeki kartlara geçerken dragleave tetiklenir; yalnızca gerçekten sütundan çıkılınca vurgu kalkar.
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOverKey(null);
   };
 
   const handleDrop = (e: React.DragEvent, status: string) => {
     e.preventDefault();
+    setDragOverKey(null);
     if (draggedTaskId) {
       onChangeTaskStatus(draggedTaskId, status);
       setDraggedTaskId(null);
@@ -118,6 +128,7 @@ export default function KanbanBoard({
       key={task.id}
       draggable
       onDragStart={(e) => handleDragStart(e, task.id)}
+      onDragEnd={() => { setDraggedTaskId(null); setDragOverKey(null); }}
       className={`kanban-card${COLUMN_ANIM[colKey] ? ` kb-anim ${COLUMN_ANIM[colKey]}` : ''}${justDone.has(task.id) ? ' kb-done-enter' : ''}`}
       style={{
         backgroundColor: 'var(--bg-tertiary)',
@@ -267,12 +278,23 @@ export default function KanbanBoard({
       )}
 
       <div style={{ display: 'flex', gap: '16px', flex: 1, minHeight: 0, overflowX: 'auto', padding: '16px' }}>
-        {columns.filter(c => !c.hidden).map(col => (
+        {columns.filter(c => !c.hidden).map(col => {
+          const isOver = draggedTaskId !== null && dragOverKey === col.key;
+          const accent = cssKanbanColor(col.color) || 'var(--accent-color)';
+          return (
           <div
             key={col.key}
             className="kanban-column"
-            style={{ flex: '1', minWidth: '240px', display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', borderRadius: '12px', padding: '16px' }}
-            onDragOver={handleDragOver}
+            style={{
+              flex: '1', minWidth: '240px', display: 'flex', flexDirection: 'column', borderRadius: '12px', padding: '16px',
+              // Bırakma alanına girilince: sütun kendi renginde tonlanır ve kesikli çerçeve çıkar.
+              background: isOver ? `color-mix(in srgb, ${accent} 16%, var(--bg-secondary))` : 'var(--bg-secondary)',
+              outline: isOver ? `2px dashed ${accent}` : '2px dashed transparent',
+              outlineOffset: '-2px',
+              transition: 'background 0.15s ease, outline-color 0.15s ease'
+            }}
+            onDragOver={(e) => handleDragOver(e, col.key)}
+            onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, col.key)}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
@@ -283,7 +305,8 @@ export default function KanbanBoard({
               {tasksByStatus[col.key].map(t => renderCard(t, col.key))}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
