@@ -20,9 +20,9 @@ const fieldStyle: React.CSSProperties = {
   color: '#fff', fontSize: '12px', minWidth: 0, outline: 'none'
 };
 
-type Kind = 'none' | 'project' | 'note' | 'diary' | 'calendar';
+type Kind = 'none' | 'project' | 'note' | 'diary' | 'calendar' | 'lastNote';
 const kindOf = (t: SlotTarget | null): Kind => (t ? t.type : 'none');
-const KIND_LABELS: Record<Kind, string> = { none: 'Boş', project: 'Proje', note: 'Not', diary: 'Bugünün günlüğü', calendar: 'Takvim (bugün)' };
+const KIND_LABELS: Record<Kind, string> = { none: 'Boş', project: 'Proje', note: 'Not', diary: 'Bugünün günlüğü', calendar: 'Takvim (bugün)', lastNote: 'Son açılan not' };
 
 // Ayarlar > Kısayollar içindeki "Hızlı slotlar": Alt+1 ... Alt+9 ile belirli bir hedefe gitme.
 export default function QuickSlotsSettings({ slots, onChange, projectNames, notePaths }: {
@@ -36,6 +36,7 @@ export default function QuickSlotsSettings({ slots, onChange, projectNames, note
   const changeKind = (i: number, kind: Kind) => {
     if (kind === 'none') return setTarget(i, null);
     if (kind === 'diary') return setTarget(i, { type: 'diary' });
+    if (kind === 'lastNote') return setTarget(i, { type: 'lastNote' });
     if (kind === 'calendar') return setTarget(i, { type: 'calendar', view: 'day' });
     if (kind === 'note') return setTarget(i, { type: 'note', path: '' });
     return setTarget(i, { type: 'project', project: projectNames[0] || '', view: 'dashboard' });
@@ -46,7 +47,8 @@ export default function QuickSlotsSettings({ slots, onChange, projectNames, note
       <h3 style={{ margin: '4px 0 0 0', fontSize: '16px', color: '#fff' }}>Hızlı slotlar</h3>
       <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
         Her slota belirli bir hedef atayın: şu proje şu görünümde, şu not, bugünün günlüğü ya da takvim. Uygulamanın herhangi bir
-        yerindeyken (not yazarken de) Alt + rakam o hedefi açar. Bu ayar yalnızca bu cihazda saklanır.
+        yerindeyken (not yazarken de) Alt + rakam o hedefi açar. "Not" ve "Son açılan not" slotlarında Ctrl + Alt + rakam, notu sağda bölünmüş görünümde açar
+        ("Son açılan not"ta bir önceki not, açık notun yanına gelir). Bu ayar yalnızca bu cihazda saklanır.
       </p>
       {slots.map((slot, i) => {
         const t = slot.target;

@@ -8,6 +8,7 @@ export type SlotTarget =
   | { type: 'project'; project: string; view: ProjectView }
   | { type: 'note'; path: string }
   | { type: 'diary' }
+  | { type: 'lastNote' } // son açılan not (notun üzerindeyken bir öncekine geçer)
   | { type: 'calendar'; view: CalendarViewMode };
 
 export interface QuickSlot { target: SlotTarget | null }
@@ -18,10 +19,10 @@ const STORAGE_KEY = 'quick_slots_v1';
 export const PROJECT_VIEW_LABELS: Record<ProjectView, string> = { dashboard: 'Genel Bakış', kanban: 'Kanban', clients: 'Müşteriler' };
 export const CALENDAR_VIEW_LABELS: Record<CalendarViewMode, string> = { day: 'Günlük', threeDay: '3 Günlük', week: 'Haftalık', month: 'Aylık' };
 
-// İlk kurulum: Alt+1 bugünün günlüğü, Alt+2 takvim (bugün, günlük görünüm); gerisi boş (Ayarlar > Kısayollar'dan atanır).
+// İlk kurulum: Alt+1 bugünün günlüğü, Alt+2 takvim (bugün, günlük görünüm), Alt+4 son açılan not; gerisi boş (Ayarlar > Kısayollar'dan atanır).
 export const defaultSlots = (): QuickSlot[] =>
   Array.from({ length: SLOT_COUNT }, (_, i) => ({
-    target: i === 0 ? { type: 'diary' } as SlotTarget : i === 1 ? { type: 'calendar', view: 'day' } as SlotTarget : null
+    target: i === 0 ? { type: 'diary' } as SlotTarget : i === 1 ? { type: 'calendar', view: 'day' } as SlotTarget : i === 3 ? { type: 'lastNote' } as SlotTarget : null
   }));
 
 const VIEWS: ProjectView[] = ['dashboard', 'kanban', 'clients'];
@@ -40,6 +41,8 @@ export const normalizeSlots = (raw: any): QuickSlot[] => {
       out[i].target = { type: 'note', path: t.path };
     } else if (t.type === 'diary') {
       out[i].target = { type: 'diary' };
+    } else if (t.type === 'lastNote') {
+      out[i].target = { type: 'lastNote' };
     } else if (t.type === 'calendar') {
       out[i].target = { type: 'calendar', view: CAL_VIEWS.includes(t.view) ? t.view : 'day' };
     }
@@ -47,10 +50,19 @@ export const normalizeSlots = (raw: any): QuickSlot[] => {
   return out;
 };
 
+// Alt+4'e "Son açılan not" eklenmeden önce kaydedilmiş ayarlar için tek seferlik geçiş: Alt+4 boşsa ona atanır (dolu bir slota dokunulmaz).
+const MIGRATION_KEY = 'quick_slots_lastnote_v2';
+
 export const loadSlots = (): QuickSlot[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? normalizeSlots(JSON.parse(raw)) : defaultSlots();
+    if (!raw) { localStorage.setItem(MIGRATION_KEY, '1'); return defaultSlots(); }
+    const slots = normalizeSlots(JSON.parse(raw));
+    if (!localStorage.getItem(MIGRATION_KEY)) {
+      localStorage.setItem(MIGRATION_KEY, '1');
+      if (slots[3].target === null) { slots[3] = { target: { type: 'lastNote' } }; localStorage.setItem(STORAGE_KEY, JSON.stringify(slots)); }
+    }
+    return slots;
   } catch { return defaultSlots(); }
 };
 
@@ -64,6 +76,7 @@ export const describeTarget = (t: SlotTarget | null): string => {
     case 'project': return `${t.project} · ${PROJECT_VIEW_LABELS[t.view]}`;
     case 'note': return t.path.replace(/\.md$/i, '').split('/').pop() || t.path;
     case 'diary': return 'Bugünün günlüğü';
+    case 'lastNote': return 'Son açılan not';
     case 'calendar': return `Takvim · bugün · ${CALENDAR_VIEW_LABELS[t.view]}`;
   }
 };
@@ -79,6 +92,13 @@ export const projectNamesFrom = (notes: { name: string; path: string; type: stri
 // Yönlendirme istekleri: ProjectsView/CalendarView bunu uygular, sonra App temizler (sayfaya sonradan dönüşte tekrar uygulanmasın).
 export interface ProjectNavRequest { project: string; view: ProjectView; nonce: number }
 export interface CalendarNavRequest { view: CalendarViewMode; nonce: number }
+
+// Ctrl+Alt+rakam (ya da AltGr+rakam): aynı slotun "sağ bölmede aç" varyantı. Yalnızca Not ve Son açılan not hedeflerinde anlamlıdır.
+export const slotFromEvent = (e: { code?: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): { index: number; split: boolean } | null => {
+  if (!e.altKey || e.metaKey || e.shiftKey) return null;
+  const m = (e.code || '').match(/^(?:Digit|Numpad)([1-9])$/);
+  return m ? { index: parseInt(m[1], 10) - 1, split: e.ctrlKey } : null;
+};
 
 // Alt+rakam: "Digit1" ve "Numpad1" fiziksel tuşları (klavye düzeninden bağımsız); 1-9 -> 0-8, değilse -1.
 export const slotIndexFromEvent = (e: { code?: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): number => {

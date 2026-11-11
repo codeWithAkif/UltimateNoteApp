@@ -1,5 +1,5 @@
 ﻿import QuickSlotsSettings from './components/QuickSlotsSettings';
-import { loadSlots, saveSlots, slotIndexFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
+import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
@@ -4357,6 +4357,34 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     loadAllData();
   }, []);
 
+  // Son açılan notu aç: başka bir sayfadaysanız en son görüntülediğiniz notu açar; zaten o notun üzerindeyseniz bir öncekine geçer
+  // (iki not arasında gidip gelmek için). Silinmiş notlar atlanır. Geçmiş noteViewHistory'den gelir (son 8 görüntülenen not).
+  const openLastNote = () => {
+    const existing = noteViewHistory.filter(p => notes.some(n => n.path === p));
+    if (existing.length === 0) { setActiveTab('notes'); return; }
+    const onLatest = activeTab === 'notes' && activeNotePath === existing[0];
+    handleSetActiveNotePath(onLatest && existing.length > 1 ? existing[1] : existing[0]);
+    setActiveTab('notes');
+  };
+
+  // Ctrl+Alt+rakam: Not / Son açılan not slotunu bölünmüş görünümde açar. "Son açılan not": en son görüntülenen not solda (etkin
+  // panelde) kalır/açılır, bir önceki not onun SAĞINDA bölme olarak açılır. "Not": hedef not etkin panelin sağında açılır.
+  const runQuickSlotSplit = (slot: QuickSlot) => {
+    const t = slot.target;
+    if (!t) return;
+    if (t.type === 'note') {
+      if (!notes.some(n => n.path === t.path)) return;
+      setActiveTab('notes');
+      handleOpenTabOnRight(t.path, activePaneIdx);
+    } else if (t.type === 'lastNote') {
+      const existing = noteViewHistory.filter(p => notes.some(n => n.path === p));
+      if (existing.length === 0) { setActiveTab('notes'); return; }
+      setActiveTab('notes');
+      if (activeNotePath !== existing[0]) handleSetActiveNotePath(existing[0]);
+      if (existing.length > 1) handleOpenTabOnRight(existing[1], activePaneIdx);
+    }
+  };
+
   // Hızlı slotu çalıştır: hedefe göre sayfayı açar ve sayfanın içindeki hedefi (proje/görünüm, tarih/görünüm, not) seçer.
   const runQuickSlot = (slot: QuickSlot) => {
     const t = slot.target;
@@ -4371,6 +4399,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       setActiveTab('calendar');
     } else if (t.type === 'diary') {
       setActiveTab('diary');
+    } else if (t.type === 'lastNote') {
+      openLastNote();
     } else if (t.type === 'note') {
       if (notes.some(n => n.path === t.path)) handleSetActiveNotePath(t.path);
       setActiveTab('notes');
@@ -4381,11 +4411,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       // Alt+1..9: hızlı slot (yazı yazarken de çalışır; atanmamış slotta hiçbir şey yapmaz, olay başkalarına kalır)
-      const slotIdx = slotIndexFromEvent(e);
-      if (slotIdx >= 0 && quickSlots[slotIdx]?.target) {
-        e.preventDefault();
-        runQuickSlot(quickSlots[slotIdx]);
-        return;
+      const slotHit = slotFromEvent(e);
+      const hitSlot = slotHit ? quickSlots[slotHit.index] : undefined;
+      if (slotHit && hitSlot?.target) {
+        if (!slotHit.split) {
+          e.preventDefault();
+          runQuickSlot(hitSlot);
+          return;
+        }
+        // Ctrl+Alt+rakam yalnızca Not / Son açılan not slotlarında bölünmüş görünüm açar; diğerlerinde olay olduğu gibi bırakılır.
+        if (hitSlot.target.type === 'note' || hitSlot.target.type === 'lastNote') {
+          e.preventDefault();
+          runQuickSlotSplit(hitSlot);
+          return;
+        }
       }
 
       // If user is inside an input or textarea, we shouldn't trigger shortcuts unless it's Ctrl or Alt modified
@@ -4463,7 +4502,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [shortcuts, selectedFolder, handleCreateNote, quickSlots, notes]);
+  }, [shortcuts, selectedFolder, handleCreateNote, quickSlots, notes, noteViewHistory, activeNotePath, activeTab, activePaneIdx, panes]);
 
   // Handle shortcut recording key listener
   useEffect(() => {
