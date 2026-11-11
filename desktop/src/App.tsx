@@ -8827,8 +8827,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       {isSettingsModalOpen && (
         <div className="modal-overlay animate-fade" onClick={() => setIsSettingsModalOpen(false)} style={{ zIndex: 2000 }}>
           <div className="modal-content animate-pop" onClick={(e) => e.stopPropagation()} style={{
-            maxWidth: '650px',
-            width: '95%',
+            // Eskiden 650x460 px'ti ve içerik (Kısayollar, hızlı slotlar vb.) sıkışıyordu: ekrana göre büyütüldü.
+            maxWidth: '1000px',
+            width: '94%',
             padding: '0',
             display: 'flex',
             flexDirection: 'row',
@@ -8836,7 +8837,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             // Çöp Kutusu sekmesinde liste kısa sürede kaydırma gerektirdiği (aynı anda ~2
             // öğe görünüyordu) için o sekmede modalı belirgin şekilde daha uzun yapıyoruz;
             // diğer sekmelerin yerleşimini bozmamak için yalnızca 'trash' seçiliyken.
-            height: settingsTab === 'trash' ? '640px' : '460px',
+            height: 'min(780px, 88vh)',
             background: 'rgba(15, 23, 42, 0.95)',
             backdropFilter: 'blur(16px)',
             border: '1px solid rgba(255, 255, 255, 0.08)',
@@ -8870,8 +8871,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             </button>
             {/* Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
                 Çok sayfalı ayarlar paneli için sol taraftaki kategori/sekme barı. */}
-            <div className="settings-sidebar" style={{ 
-              width: '180px', 
+            <div className="settings-sidebar" style={{
+              width: '210px',
               background: 'rgba(255, 255, 255, 0.015)', 
               borderRight: '1px solid rgba(255, 255, 255, 0.05)', 
               display: 'flex', 
@@ -9050,8 +9051,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <div className="settings-content" style={{ 
               flex: 1, 
               display: 'flex', 
-              flexDirection: 'column', 
-              padding: '24px', 
+              flexDirection: 'column',
+              padding: '28px 36px',
               overflowY: 'auto',
               minHeight: 0
             }}>
