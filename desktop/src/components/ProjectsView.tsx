@@ -125,7 +125,6 @@ function ProjectTaskAdder({ onAdd, projectName }: { onAdd: (text: string) => Pro
         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
         placeholder="Görev ekle…"
         title={`${projectName} projesine görev ekle`}
-        maxLength={300}
         style={{
           flex: 1, minWidth: 0, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)',
           color: 'var(--text-primary)', borderRadius: '6px', padding: '6px 10px', fontSize: '12.5px'

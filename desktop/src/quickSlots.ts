@@ -82,7 +82,7 @@ export const describeTarget = (t: SlotTarget | null): string => {
 };
 
 // Kasadaki proje adları (#proje etiketli notlar) — ProjectsView ile aynı kural ve aynı ad (".md" olmadan).
-const PROJECT_TAG_REGEX = /(^|[\s,;(])#proje(?![0-9A-Za-zçğıöşüÇĞİÖŞÜ_-])/i;
+export const PROJECT_TAG_REGEX = /(^|[\s,;(])#proje(?![0-9A-Za-zçğıöşüÇĞİÖŞÜ_-])/i;
 export const projectNamesFrom = (notes: { name: string; path: string; type: string }[], contents: Record<string, string>): string[] =>
   notes
     .filter(n => n.type === 'note' && !n.path.split('/').some(seg => seg.startsWith('.')) && PROJECT_TAG_REGEX.test(contents[n.path] || ''))

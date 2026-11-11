@@ -1,4 +1,10 @@
 ﻿import QuickSlotsSettings from './components/QuickSlotsSettings';
+import SessionSummaryModal, { type SessionBlockResult } from './components/SessionSummaryModal';
+import {
+  recordSave, isIdle, summarizeSession, projectContextFrom, loadState, saveState, loadPending, savePending,
+  appendBlock, buildBlockLines, dayPathOf, dayHeaderOf, logPathOf, buildLogEntry, appendLog, ymdOf, hmOf,
+  type SessionState, type SessionSummary
+} from './sessionTracker';
 import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
@@ -65,7 +71,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History
 } from 'lucide-react';
 import { getClaudeApiKey, setClaudeApiKey, getClaudeModel, setClaudeModel, CLAUDE_MODEL_OPTIONS } from './services/claudeApi';
 import AssistantView from './components/AssistantView';
@@ -316,6 +322,16 @@ export default function App() {
   const [projectNav, setProjectNav] = useState<ProjectNavRequest | null>(null);
   const [calendarNav, setCalendarNav] = useState<CalendarNavRequest | null>(null);
   const updateQuickSlots = (next: QuickSlot[]) => { setQuickSlots(next); saveSlots(next); };
+
+  // Oturum özeti: kullanıcının kaydettiği notların baseline'ı tutulur; 30 dk boşluktan sonra oturum "bekleyen" olur ve
+  // "Geçen çalışmanız" penceresiyle takvime işlenebilir (bkz. sessionTracker.ts).
+  const sessionStateRef = useRef<SessionState | null>(loadState());
+  const sessionSaveTimerRef = useRef<any>(null);
+  const suppressSessionTrackRef = useRef(false); // oturum bloğunun kendi yazımları oturum sayılmasın
+  const [pendingSessions, setPendingSessions] = useState<SessionSummary[]>(() => loadPending());
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [sessionBannerHidden, setSessionBannerHidden] = useState(false);
+  const [sessionToast, setSessionToast] = useState<string | null>(null);
   const [researchQuery, setResearchQuery] = useState<string | null>(null);
   const [researchOpen, setResearchOpen] = useState(false);
   const [researchDragging, setResearchDragging] = useState(false);
@@ -4357,6 +4373,110 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     loadAllData();
   }, []);
 
+  // ---- Oturum özeti ----
+  const persistSessionStateSoon = () => {
+    if (sessionSaveTimerRef.current) return;
+    sessionSaveTimerRef.current = setTimeout(() => { sessionSaveTimerRef.current = null; saveState(sessionStateRef.current); }, 3000);
+  };
+
+  // Biten oturumu özetleyip "bekleyen" listesine ekler (net değişiklik yoksa hiçbir şey eklenmez).
+  const finalizeSessionToPending = (s: SessionState) => {
+    const summary = summarizeSession(s, fileContentsRef.current, projectContextFrom(notes, fileContentsRef.current));
+    if (!summary) return;
+    setPendingSessions(prev => { const next = [...prev, summary]; savePending(next); return next; });
+    setSessionBannerHidden(false);
+  };
+
+  // handleSaveNote'tan çağrılır: kullanıcının kaydettiği her notun önceki/yeni içeriğini oturuma işler.
+  const trackSessionSave = (path: string, before: string | undefined, after: string) => {
+    if (suppressSessionTrackRef.current) return;
+    const { state, finalized } = recordSave(sessionStateRef.current, path, before, after);
+    sessionStateRef.current = state;
+    persistSessionStateSoon();
+    if (finalized) finalizeSessionToPending(finalized);
+  };
+
+  // Boşta kalma denetimi: 30 dk hareketsizlikten sonra oturum bitirilir (uygulama açıkken dakikada bir bakılır).
+  useEffect(() => {
+    const check = () => {
+      const s = sessionStateRef.current;
+      if (s && isIdle(s) && Object.keys(fileContentsRef.current).length > 0) {
+        sessionStateRef.current = null;
+        saveState(null);
+        finalizeSessionToPending(s);
+      }
+    };
+    const timer = setInterval(check, 60000);
+    const first = setTimeout(check, 8000); // uygulama yeniden açıldığında önceki oturumu hemen sonlandır
+    return () => { clearInterval(timer); clearTimeout(first); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes]);
+
+  const showSessionToast = (text: string) => { setSessionToast(text); setTimeout(() => setSessionToast(null), 3500); };
+
+  // Çubuktaki düğme: bekleyen oturum varsa onu açar; yoksa şu anki oturumu bitirip özetler.
+  const openSessionSummary = () => {
+    if (pendingSessions.length > 0) { setSessionModalOpen(true); return; }
+    const s = sessionStateRef.current;
+    if (!s) { showSessionToast('Bu oturumda henüz bir değişiklik yok.'); return; }
+    const summary = summarizeSession(s, fileContentsRef.current, projectContextFrom(notes, fileContentsRef.current));
+    if (!summary) { showSessionToast('Bu oturumda kaydedilmiş net bir değişiklik yok.'); return; }
+    sessionStateRef.current = null;
+    saveState(null);
+    setPendingSessions(prev => { const next = [...prev, summary]; savePending(next); return next; });
+    setSessionModalOpen(true);
+  };
+
+  const sessionDeviceName = isBrowser ? 'web' : isElectron ? 'masaustu' : 'telefon';
+  const removePendingSession = (id: string) => setPendingSessions(prev => { const next = prev.filter(p => p.id !== id); savePending(next); return next; });
+
+  // Oturum kaydı: Sistem/Oturumlar/<gün>-<cihaz>.md (cihaz başına ayrı dosya, eşitlemede çakışmasın diye).
+  const writeSessionLog = async (date: string, entry: string) => {
+    const logPath = logPathOf(date, sessionDeviceName);
+    const existing = notes.some(n => n.path === logPath) ? await handleReadNoteContent(logPath) : undefined;
+    await handleSaveNote(logPath, appendLog(existing, date, entry));
+  };
+
+  const processSessionBlock = async (id: string, b: SessionBlockResult) => {
+    suppressSessionTrackRef.current = true;
+    try {
+      const dayPath = dayPathOf(b.date);
+      const existing = notes.some(n => n.path === dayPath) ? await handleReadNoteContent(dayPath) : undefined;
+      await handleSaveNote(dayPath, appendBlock(existing, dayHeaderOf(b.date), buildBlockLines(b)));
+      await writeSessionLog(b.date, buildLogEntry({ start: b.start, end: b.end, title: b.title, project: b.project || undefined, status: 'takvime işlendi', items: b.items }));
+    } finally {
+      suppressSessionTrackRef.current = false;
+    }
+    removePendingSession(id);
+    loadAllData();
+    showSessionToast('Takvime işlendi.');
+  };
+
+  const skipSession = async (id: string, items: string[], title: string, start: string, end: string, date: string) => {
+    suppressSessionTrackRef.current = true;
+    try {
+      await writeSessionLog(date, buildLogEntry({ start, end, title, status: 'atlandı', items }));
+    } finally {
+      suppressSessionTrackRef.current = false;
+    }
+    removePendingSession(id);
+  };
+
+  // Bekleyen tüm oturumları takvime yazmadan oturum kaydına "atlandı" olarak geçirir.
+  const skipAllSessions = async () => {
+    const all = pendingSessions;
+    suppressSessionTrackRef.current = true;
+    try {
+      for (const p of all) {
+        await writeSessionLog(ymdOf(p.start), buildLogEntry({ start: hmOf(p.start), end: hmOf(p.end), title: p.suggestedTitle, status: 'atlandı', items: p.items.map(i => i.text) }));
+      }
+    } finally {
+      suppressSessionTrackRef.current = false;
+    }
+    setPendingSessions(() => { savePending([]); return []; });
+    setSessionModalOpen(false);
+  };
+
   // Son açılan notu aç: başka bir sayfadaysanız en son görüntülediğiniz notu açar; zaten o notun üzerindeyseniz bir öncekine geçer
   // (iki not arasında gidip gelmek için). Silinmiş notlar atlanır. Geçmiş noteViewHistory'den gelir (son 8 görüntülenen not).
   const openLastNote = () => {
@@ -4848,6 +4968,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   // Hafif modda sürüm anlık görüntüsü alınmaz ve tam tarama planlanmaz; içerik yine diske yazılır,
   // senkrona gider ve `fileContents` anında güncellenir.
   const handleSaveNote = async (path: string, content: string, opts?: { lightweight?: boolean }) => {
+    trackSessionSave(path, fileContentsRef.current[path], content);
     if (!isBrowser) {
       // Sürüm Geçmişi (Version History): içerik gerçekten değiştiyse, üzerine
       // yazılmadan önceki hâli `.versions/<yol>.json` altında JSON anlık
@@ -6833,6 +6954,18 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             onClick={handleOpenReceiptScan}
           >
             <CameraIcon size={16} />
+          </button>
+
+          <button
+            className="titlebar-nav-icon"
+            title={pendingSessions.length > 0 ? `Geçen çalışmanız (${pendingSessions.length} bekleyen oturum)` : 'Oturum özeti: bu oturumda yaptıklarınızı takvime işleyin'}
+            onClick={openSessionSummary}
+            style={{ position: 'relative' }}
+          >
+            <History size={16} />
+            {pendingSessions.length > 0 && (
+              <span style={{ position: 'absolute', top: '-2px', right: '-2px', minWidth: '14px', height: '14px', padding: '0 3px', borderRadius: '7px', background: 'var(--accent-color)', color: '#fff', fontSize: '9px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box' }}>{pendingSessions.length}</span>
+            )}
           </button>
         </div>
 
@@ -11188,6 +11321,33 @@ grant execute on function get_db_size() to anon;`}
         </div>
       )}
 
+      {pendingSessions.length > 0 && !sessionModalOpen && !sessionBannerHidden && (
+        <div style={{ position: 'fixed', bottom: pendingTranscript ? '130px' : '24px', left: '24px', zIndex: 99998, maxWidth: 'min(380px, calc(100vw - 48px))', boxSizing: 'border-box', background: 'var(--bg-secondary)', border: '1px solid var(--accent-color)', borderRadius: '12px', padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700 }}>Geçen çalışmanızı takvime işleyelim mi?</div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '3px 0 10px' }}>
+            {pendingSessions.length} oturumda {pendingSessions.reduce((n, p) => n + p.items.length, 0)} hareket kaydedildi.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <button type="button" onClick={() => setSessionModalOpen(true)} style={{ background: 'var(--accent-color)', color: '#fff', border: 'none', borderRadius: '8px', padding: '7px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>Aç</button>
+            <button type="button" onClick={() => setSessionBannerHidden(true)} style={{ background: 'var(--bg-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '7px 12px', fontSize: '12px', cursor: 'pointer' }}>Sonra</button>
+          </div>
+        </div>
+      )}
+      {sessionToast && (
+        <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '10px 16px', fontSize: '12.5px', color: 'var(--text-primary)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>{sessionToast}</div>
+      )}
+      {sessionModalOpen && pendingSessions[0] && (
+        <SessionSummaryModal
+          key={pendingSessions[0].id}
+          session={pendingSessions[0]}
+          remaining={pendingSessions.length - 1}
+          projectNames={projectNamesFrom(notes, fileContents)}
+          onProcess={(b) => processSessionBlock(pendingSessions[0].id, b)}
+          onSkip={(items, title, start, end, date) => skipSession(pendingSessions[0].id, items, title, start, end, date)}
+          onSkipAll={skipAllSessions}
+          onClose={() => setSessionModalOpen(false)}
+        />
+      )}
       {pendingTranscript && (
         <div style={{ position: 'fixed', bottom: '24px', left: '24px', zIndex: 99998, maxWidth: 'min(380px, calc(100vw - 48px))', boxSizing: 'border-box', background: 'var(--bg-secondary)', border: '1px solid var(--accent-color)', borderRadius: '12px', padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
           <div style={{ fontSize: '13px', fontWeight: 700 }}>Yeni toplantı transkripti</div>
