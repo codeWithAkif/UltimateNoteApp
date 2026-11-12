@@ -6280,6 +6280,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           // File doesn't exist, we start new
           existingContent = headerText;
         }
+        trackSessionSave(relativePath, existingContent, existingContent + contentAppend);
         await platform.writeNote(relativePath, existingContent + contentAppend);
         handleLocalSave(relativePath, existingContent + contentAppend);
       } else {
@@ -6494,6 +6495,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               localStorage.removeItem(`active_note_focused_line_${relativePath}`);
               localStorage.removeItem(`active_note_caret_char_${relativePath}`);
 
+              // Kanban sürüklemesi handleSaveNote'u kullanmaz; oturum izleyicisine burada bildirilir.
+              trackSessionSave(relativePath, fileContent, newContent);
               if (!isBrowser) {
                 await platform.writeNote(relativePath, newContent);
               } else {
@@ -6611,6 +6614,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               localStorage.removeItem(`active_note_focused_line_${relativePath}`);
               localStorage.removeItem(`active_note_caret_char_${relativePath}`);
 
+              trackSessionSave(relativePath, fileContent, newContent);
               if (!isBrowser) {
                 await platform.writeNote(relativePath, newContent);
               } else {
