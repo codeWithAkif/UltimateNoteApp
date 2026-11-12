@@ -152,9 +152,15 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
         else push('projeler', `“${a.title}” görevini eklediniz`, project);
         return;
       }
-      if (!b.checked && a.checked) push('projeler', `“${a.title}” görevini tamamladınız`, project);
-      else if (b.checked && !a.checked) push('projeler', `“${a.title}” görevini yeniden açtınız`, project);
-      else if (b.status !== a.status) push('projeler', `“${a.title}” kartını ${statusLabel(a.status)} sütununa taşıdınız`, project);
+      // Nereden nereye: baseline'daki ve güncel sütun birlikte yazılır (arada birden çok taşıma olduysa yalnızca net sonuç).
+      if (!b.checked && a.checked) {
+        if (b.status === 'test') push('projeler', `“${a.title}” görevi test edildi ve tamamlandı (Test → Bitti)`, project);
+        else if (b.status === 'review') push('projeler', `“${a.title}” görevi incelendi ve tamamlandı (İncelemede → Bitti)`, project);
+        else if (b.status === 'backlog') push('projeler', `“${a.title}” görevini tamamladınız`, project);
+        else push('projeler', `“${a.title}” görevini ${statusLabel(b.status)} aşamasından tamamladınız (${statusLabel(b.status)} → Bitti)`, project);
+      }
+      else if (b.checked && !a.checked) push('projeler', `“${a.title}” görevini yeniden açtınız (Bitti → ${statusLabel(a.status)})`, project);
+      else if (b.status !== a.status) push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project);
       if ((b.due !== a.due || b.time !== a.time) && (a.due || a.time)) push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project);
     });
   });
