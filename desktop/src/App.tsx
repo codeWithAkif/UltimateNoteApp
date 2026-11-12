@@ -7995,18 +7995,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onSaveNote={handleSaveNote}
               onTasksAdded={() => { loadAllData(); }}
               clientsFolder={clientsFolder}
-              onOpenNote={(item) => {
-                if (item.note) {
-                  let relativePath = '';
-                  if (item.folder) {
-                    relativePath = `${item.folder}/${item.note.replace(/\s+/g, '_')}.md`;
-                  } else {
-                    relativePath = `${item.note.replace(/\s+/g, '_')}.md`;
-                  }
-                  handleSetActiveNotePath(relativePath);
-                  setActiveTab('notes');
-                }
-              }}
+              // Not yolu tahmin edilmez (boşluk -> alt çizgi varsayımı adında boşluk olan notlarda yanlış dosyaya gidiyordu):
+              // görevin kimliğindeki gerçek yol kullanılır, diğer ekranlardaki gibi.
+              onOpenNote={handleOpenTimelineNote}
             />
           )}
 
