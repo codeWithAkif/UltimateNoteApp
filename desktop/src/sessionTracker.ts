@@ -4,6 +4,7 @@
 // Yapay zekâ yok: cümleler kural tabanlıdır. Tüm işlevler saftır (ağ/disk yok), yalnızca load/save yardımcıları localStorage kullanır.
 
 import { PROJECT_TAG_REGEX } from './quickSlots';
+import { PROJECT_KICKOFF_CHECKLIST } from './projectTemplate';
 
 export interface SessionState {
   id: string;
@@ -142,10 +143,38 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
     return m;
   };
   const bt = taskMap(before), at = taskMap(after);
+
+  // Oturumda yeni oluşturulan not (baseline boş): toplu gelen görevleri tek cümlede topla. Kural yapısaldır, anlam çıkarmaz:
+  // - Başlangıç kontrol listesi satırları (ortak şablondan) en az 4 ise yalnızca onlar birleşir; sizin ayrıca eklediğiniz görevler tek tek kalır.
+  // - Şablon yoksa ve notta en az 4 görev varsa hepsi birleşir.
+  // Cümle görev sayısını ve notun ### başlıklarını söyler.
+  let collapsed = false;
+  const collapsedKeys = new Set<string>();
+  if (before.trim() === '') {
+    const tplKeys = new Set<string>();
+    PROJECT_KICKOFF_CHECKLIST.split('\n').forEach(l => { const t = parseTask(l); if (t) tplKeys.add(t.key); });
+    const allKeys: string[] = [];
+    at.forEach((arr, k) => arr.forEach(() => allKeys.push(k)));
+    const tplCount = allKeys.filter(k => tplKeys.has(k)).length;
+    let group: string[] | null = null;
+    if (tplCount >= 4) group = allKeys.filter(k => tplKeys.has(k));
+    else if (allKeys.length >= 4) group = allKeys;
+    if (group) {
+      collapsed = true;
+      group.forEach(k => collapsedKeys.add(k));
+      const heads = after.split('\n').map(l => l.match(/^#{2,6}\s+(.+?)\s*$/)).filter((m): m is RegExpMatchArray => !!m)
+        .map(m => m[1].replace(/\p{Extended_Pictographic}️?/gu, '').trim()).filter(h => h && !/Kontrol Listesi$/i.test(h));
+      const headText = heads.length >= 2 ? `, ${heads.length} başlık: ${heads.slice(0, 4).join(', ')}${heads.length > 4 ? '…' : ''}` : '';
+      const isProject = PROJECT_TAG_REGEX.test(after);
+      push(isProject ? 'projeler' : 'notlar', `“${name}” ${isProject ? 'projesini' : 'notunu'} oluşturdunuz (${group.length} görev${headText})`, projectOf(path, undefined, ctx) || (isProject ? name : undefined));
+    }
+  }
+
   at.forEach((afters, key) => {
     const befores = bt.get(key) || [];
     afters.forEach((a, i) => {
       const b = befores[i];
+      if (collapsed && !b && collapsedKeys.has(key)) return;
       const project = projectOf(path, a.project, ctx);
       if (!b) {
         if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project);
@@ -173,7 +202,7 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
     const c = beforeCount.get(l) || 0;
     if (c > 0) beforeCount.set(l, c - 1); else added.push(l);
   });
-  if (added.length > 0) {
+  if (added.length > 0 && !collapsed) {
     const sample = stripTags(added[0].replace(/^[#>\-*\s\d.]+/, '')).slice(0, 60);
     if (before.trim() === '') push('notlar', `“${name}” notunu oluşturdunuz (${added.length} satır)${sample ? ` — “${sample}…”` : ''}`, projectOf(path, undefined, ctx));
     else push('notlar', `“${name}” notuna ${added.length} satır eklediniz${sample ? ` — “${sample}…”` : ''}`, projectOf(path, undefined, ctx));
