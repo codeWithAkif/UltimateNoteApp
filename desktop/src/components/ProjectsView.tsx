@@ -359,9 +359,17 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
   // sessizce hiçbir şey yapmıyor ("tıklayınca bir şey olmadı"). Native prompt() yerine
   // uygulama içi küçük bir modal (aşağıda, createModal state'i) kullanıyoruz.
   const [createModal, setCreateModal] = useState<
-    { type: 'client' } | { type: 'project'; clientName: string } | null
+    { type: 'client' } | { type: 'project'; clientName: string; clientPath: string } | null
   >(null);
   const [createModalInput, setCreateModalInput] = useState('');
+  // Yeni projeye "Proje Başlangıç Kontrol Listesi" eklensin mi? Son seçim hatırlanır (varsayılan: evet).
+  const [withChecklist, setWithChecklist] = useState<boolean>(() => {
+    try { return localStorage.getItem('project_kickoff_checklist_v1') !== '0'; } catch { return true; }
+  });
+  const changeWithChecklist = (v: boolean) => {
+    setWithChecklist(v);
+    try { localStorage.setItem('project_kickoff_checklist_v1', v ? '1' : '0'); } catch { /* yoksay */ }
+  };
 
   // ============ İŞ PLANLA (esnek, tekrar-hesaplanabilir Gantt planlayıcı) ============
   // İSTEK (kullanıcı): "bir işin subtask'ları var, X iş günü içinde bitmesi lazım, işe
@@ -917,17 +925,22 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
   // İSTEK: "Yeni Proje" (bir müşteri kartından) — {clientsFolder}/{MüşteriAdı}/Projeler/{ProjeAdı}.md,
   // içine hem #proje HEM müşterinin slug'ı (#{musteri-adi}) etiketi yazılır — mevcut proje→müşteri
   // bağlama kuralıyla (CLIENT_COLOR_REGEX'in üstündeki getClientProjects mantığı) AYNI kural.
-  const handleCreateProject = async (clientName: string, name: string) => {
+  const handleCreateProject = async (clientName: string, clientPath: string, name: string) => {
     if (!onSaveNote) return;
     const cleanName = name.trim();
     if (!cleanName) return;
     const clientSlug = clientName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
-    const path = `${clientsFolder}/${clientName}/Projeler/${cleanName}.md`;
+    // Müşterinin GERÇEK klasörü: müşteri notunun bulunduğu klasör ("Zorlu Enerji/Zorlu_Enerji.md" -> "Zorlu Enerji").
+    // Not adı klasör adından farklı olabilir (boşluk/alt çizgi); eskiden not adından yol kurulup ikinci bir klasör açılıyordu.
+    // Not doğrudan kök klasörde duruyorsa (müşteri klasörü yok) eski kural geçerli.
+    const dir = clientPath.includes('/') ? clientPath.slice(0, clientPath.lastIndexOf('/')) : '';
+    const clientDir = dir && dir.toLowerCase() !== clientsFolder.toLowerCase() ? dir : `${clientsFolder}/${clientName}`;
+    const path = `${clientDir}/Projeler/${cleanName}.md`;
     if (notes.some(n => n.path.toLowerCase() === path.toLowerCase())) {
       alert(`"${cleanName}" adında bir proje zaten var.`);
       return;
     }
-    await onSaveNote(path, `# ${cleanName}\n\n#proje #${clientSlug}\n${PROJECT_KICKOFF_CHECKLIST}`);
+    await onSaveNote(path, `# ${cleanName}\n\n#proje #${clientSlug}\n${withChecklist ? PROJECT_KICKOFF_CHECKLIST : ''}`);
   };
 
   return (
@@ -1321,7 +1334,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                           {onSaveNote && (
                             <button
                               type="button"
-                              onClick={() => { setCreateModalInput(''); setCreateModal({ type: 'project', clientName: cleanClientName }); }}
+                              onClick={() => { setCreateModalInput(''); setCreateModal({ type: 'project', clientName: cleanClientName, clientPath: client.path }); }}
                               title="Bu müşteriye yeni proje ekle"
                               style={{
                                 display: 'flex', alignItems: 'center', gap: '4px',
@@ -1781,7 +1794,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                 if (createModal.type === 'client') {
                   await handleCreateClient(createModalInput);
                 } else {
-                  await handleCreateProject(createModal.clientName, createModalInput);
+                  await handleCreateProject(createModal.clientName, createModal.clientPath, createModalInput);
                 }
                 setCreateModal(null);
                 setCreateModalInput('');
@@ -1799,6 +1812,12 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                   color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box'
                 }}
               />
+              {createModal.type === 'project' && (
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', margin: '-4px 0 16px', fontSize: '12.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={withChecklist} onChange={(e) => changeWithChecklist(e.target.checked)} style={{ marginTop: '2px' }} />
+                  <span>Proje Başlangıç Kontrol Listesi eklensin (kapsam, mimari, güvenlik…)</span>
+                </label>
+              )}
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
                   type="button"
