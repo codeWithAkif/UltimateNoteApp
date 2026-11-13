@@ -20,6 +20,10 @@ export interface SessionItem {
   id: string; area: SessionArea; text: string; path: string; project?: string;
   title?: string; // görev başlığı (gruplu gösterimde)
   group?: string; // aynı türden öğelerin ortak etiketi ("Son kontrol → Bitti")
+  // Yapılandırılmış olgu (yapay zekâya yalnızca bunlar + görev başlığı gider; not içeriği gitmez):
+  kind?: 'done' | 'added' | 'added-done' | 'moved' | 'reopened' | 'cal';
+  from?: string; // önceki sütun/durum etiketi
+  to?: string;   // sonraki sütun/durum etiketi
 }
 export interface SessionSummary {
   id: string;
@@ -183,7 +187,7 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
   const items: SessionItem[] = [];
   const name = noteNameOf(path);
   let n = 0;
-  const push = (area: SessionArea, text: string, project?: string, extra?: { title?: string; group?: string }) =>
+  const push = (area: SessionArea, text: string, project?: string, extra?: { title?: string; group?: string; kind?: SessionItem['kind']; from?: string; to?: string }) =>
     items.push({ id: `${path}#${n++}`, area, text, path, project, ...extra });
 
   if (before === null) {
@@ -244,26 +248,26 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
       const project = projectOf(path, a.project, ctx);
       const base = { title: a.title };
       if (!b) {
-        if (a.checked) push('projeler', `“${a.title}” görevi eklendi ve tamamlandı`, project, { ...base, group: 'Eklendi ve tamamlandı' });
-        else if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvime eklenenler' });
-        else push('projeler', `“${a.title}” görevini eklediniz`, project, { ...base, group: 'Eklenen görevler' });
+        if (a.checked) push('projeler', `“${a.title}” görevi eklendi ve tamamlandı`, project, { ...base, group: 'Eklendi ve tamamlandı', kind: 'added-done' });
+        else if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvime eklenenler', kind: 'added' });
+        else push('projeler', `“${a.title}” görevini eklediniz`, project, { ...base, group: 'Eklenen görevler', kind: 'added' });
         return;
       }
       // Nereden nereye: baseline'daki ve güncel sütun birlikte yazılır (arada birden çok taşıma olduysa yalnızca net sonuç).
       if (!b.checked && a.checked) {
         const from = statusLabel(b.status);
-        if (b.status === 'test') push('projeler', `“${a.title}” görevi test edildi ve tamamlandı (Test → Bitti)`, project, { ...base, group: 'Test edildi ve tamamlandı (Test → Bitti)' });
-        else if (b.status === 'review') push('projeler', `“${a.title}” görevi incelendi ve tamamlandı (İncelemede → Bitti)`, project, { ...base, group: 'İncelendi ve tamamlandı (İncelemede → Bitti)' });
-        else if (b.status === 'backlog') push('projeler', `“${a.title}” görevini tamamladınız`, project, { ...base, group: 'Tamamlanan görevler' });
-        else push('projeler', `“${a.title}” görevini ${from} aşamasından tamamladınız (${from} → Bitti)`, project, { ...base, group: `${from} → Bitti` });
+        if (b.status === 'test') push('projeler', `“${a.title}” görevi test edildi ve tamamlandı (Test → Bitti)`, project, { ...base, group: 'Test edildi ve tamamlandı (Test → Bitti)', kind: 'done', from: 'Test', to: 'Bitti' });
+        else if (b.status === 'review') push('projeler', `“${a.title}” görevi incelendi ve tamamlandı (İncelemede → Bitti)`, project, { ...base, group: 'İncelendi ve tamamlandı (İncelemede → Bitti)', kind: 'done', from: 'İncelemede', to: 'Bitti' });
+        else if (b.status === 'backlog') push('projeler', `“${a.title}” görevini tamamladınız`, project, { ...base, group: 'Tamamlanan görevler', kind: 'done', from: 'Backlog', to: 'Bitti' });
+        else push('projeler', `“${a.title}” görevini ${from} aşamasından tamamladınız (${from} → Bitti)`, project, { ...base, group: `${from} → Bitti`, kind: 'done', from, to: 'Bitti' });
       } else if (b.checked && !a.checked) {
-        push('projeler', `“${a.title}” görevini yeniden açtınız (Bitti → ${statusLabel(a.status)})`, project, { ...base, group: `Yeniden açıldı (Bitti → ${statusLabel(a.status)})` });
+        push('projeler', `“${a.title}” görevini yeniden açtınız (Bitti → ${statusLabel(a.status)})`, project, { ...base, group: `Yeniden açıldı (Bitti → ${statusLabel(a.status)})`, kind: 'reopened', from: 'Bitti', to: statusLabel(a.status) });
       } else if (b.status !== a.status) {
-        push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project, { ...base, group: `${statusLabel(b.status)} → ${statusLabel(a.status)} sütununa taşındı` });
+        push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project, { ...base, group: `${statusLabel(b.status)} → ${statusLabel(a.status)} sütununa taşındı`, kind: 'moved', from: statusLabel(b.status), to: statusLabel(a.status) });
       }
       // Tamamlanmış bir bloğun/işin saatini sonradan düzeltmek (ör. oturum bloğunu uzatmak) iş sayılmaz.
       if ((b.due !== a.due || b.time !== a.time) && (a.due || a.time) && !(b.checked && a.checked)) {
-        push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvim zamanı değişti' });
+        push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvim zamanı değişti', kind: 'cal' });
       }
     });
   });

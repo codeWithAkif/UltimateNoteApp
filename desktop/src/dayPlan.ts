@@ -21,6 +21,7 @@ export const parseSlot = (ymd: string, slot: string): Interval | null => {
 
 export const meetingKey = (e: { dueDate: string; timeSlot: string; content: string }) => `${e.dueDate}|${e.timeSlot}|${e.content}`;
 
+export const normTitle = (s: string) => s.toLocaleLowerCase('tr').replace(/[^a-z0-9çğıöşü ]/g, ' ').replace(/\s+/g, ' ').trim();
 const norm = (s: string) => s.toLocaleLowerCase('tr').replace(/[^a-z0-9çğıöşü ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 // Toplantı başlığından proje tahmini: başlıkta proje adının (ya da ≥4 harfli bir sözcüğünün) geçmesi. Belirsizse boş döner.
@@ -46,7 +47,8 @@ export const meetingDrafts = (
   seen: Set<string>,
   projectNames: string[],
   nowMs: number,
-  daysBack: number = 2
+  daysBack: number = 2,
+  titleMap: Record<string, string> = {}
 ): { drafts: SessionSummary[]; keys: string[] } => {
   const drafts: SessionSummary[] = [];
   const keys: string[] = [];
@@ -59,7 +61,8 @@ export const meetingDrafts = (
     if (dur < 10 || dur > 6 * 60) return;
     const key = meetingKey(e);
     if (seen.has(key)) return;
-    const project = guessProject(e.content, projectNames);
+    // Daha önce bu başlık için seçtiğiniz proje hatırlanır; yoksa başlıktaki ad eşleşmesi denenir.
+    const project = titleMap[norm(e.content)] || guessProject(e.content, projectNames);
     drafts.push({
       id: `m:${key}`, start: iv.start, end: iv.end, items: [], kind: 'toplanti', ref: key,
       suggestedTitle: e.content, suggestedProject: project, minutes: Math.round(dur)
@@ -131,3 +134,43 @@ const PROJECTLESS_KEY = 'session_count_projectless_v1';
 export const loadIncludeProjectless = (): boolean => { try { return localStorage.getItem(PROJECTLESS_KEY) === '1'; } catch { return false; } };
 export const saveIncludeProjectless = (v: boolean) => { try { localStorage.setItem(PROJECTLESS_KEY, v ? '1' : '0'); } catch { /* yoksay */ } };
 
+
+// Başlık -> proje hafızası (toplantı başlığını bir kez bir projeye bağladığınızda sonraki toplantılarda kendiliğinden gelir).
+const TITLE_MAP_KEY = 'session_title_project_v1';
+export const loadTitleMap = (): Record<string, string> => {
+  try { const raw = localStorage.getItem(TITLE_MAP_KEY); const o = raw ? JSON.parse(raw) : {}; return o && typeof o === 'object' ? o : {}; } catch { return {}; }
+};
+export const rememberTitleProject = (title: string, project: string) => {
+  try {
+    const m = loadTitleMap();
+    if (project) m[normTitle(title)] = project; else delete m[normTitle(title)];
+    const keys = Object.keys(m);
+    if (keys.length > 300) keys.slice(0, keys.length - 300).forEach(k => delete m[k]);
+    localStorage.setItem(TITLE_MAP_KEY, JSON.stringify(m));
+  } catch { /* yoksay */ }
+};
+
+// Toplantı transkripti özetini bulur: "Toplantılar/<gün> <başlık>.md" notu (Teams transkript aracının yazdığı) ve içindeki "## Özet" bölümü.
+// Yapay zekâ gerekmez; özet zaten transkript aracı tarafından üretilmiş ve nota yazılmıştır.
+export const findTranscriptSummary = (contents: Record<string, string | undefined>, ymd: string, title: string): { path: string; lines: string[] } | null => {
+  const t = normTitle(title);
+  if (t.length < 3) return null;
+  for (const path of Object.keys(contents)) {
+    const m = path.match(/(?:^|\/)Toplantılar\/(\d{4}-\d{2}-\d{2}) (.+?)(?: \(\d+\))?\.md$/i);
+    if (!m || m[1] !== ymd) continue;
+    const nt = normTitle(m[2]);
+    if (!(nt.includes(t) || t.includes(nt)) || nt.length < 3) continue;
+    const text = contents[path] || '';
+    const all = text.split('\n');
+    const at = all.findIndex(l => /^##\s+Özet\s*$/.test(l.trim()));
+    if (at < 0) continue;
+    const lines: string[] = [];
+    for (let j = at + 1; j < all.length && lines.length < 6; j++) {
+      if (/^#{1,6}\s/.test(all[j])) break;
+      const l = all[j].replace(/^[-*>\s]+/, '').trim();
+      if (l) lines.push(l);
+    }
+    if (lines.length > 0) return { path, lines };
+  }
+  return null;
+};

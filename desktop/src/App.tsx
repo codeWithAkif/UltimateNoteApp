@@ -1,6 +1,10 @@
 ﻿import QuickSlotsSettings from './components/QuickSlotsSettings';
-import SessionSummaryModal, { type SessionBlockResult } from './components/SessionSummaryModal';
+import SessionSummaryModal, { type SessionBlockResult, type SessionAiBridge } from './components/SessionSummaryModal';
 import GapsModal, { type GapBlock } from './components/GapsModal';
+import ReportModal from './components/ReportModal';
+import {
+  makeAnonymizer, clientNamesFrom, aiNarrate, aiReport, aiGuessProject, type GuessCandidate, loadHideNames, saveHideNames, loadExtraNames, saveExtraNames, loadMaskProper, saveMaskProper, splitNames, loadBlockRecords, addBlockRecord, minutesBetween, type BlockRecord
+} from './sessionAI';
 import {
   recordSave, isIdle, diffSession, buildDrafts, buildDetails, projectForPath, shouldTrack, IDLE_MS, projectContextFrom, loadState, saveState, loadPending, savePending,
   appendBlock, buildBlockLines, dayPathOf, dayHeaderOf, logPathOf, buildLogEntry, appendLog, ymdOf, hmOf,
@@ -9,7 +13,7 @@ import {
 import { addMinute, buildRuns, findGaps, loadActivity, saveActivity, type ActivityLog, type Interval } from './activityLog';
 import {
   completedBlocksOfDay, meetingDrafts, parseSlot, loadMeetingsSeen, saveMeetingsSeen, loadGapsIgnored, saveGapsIgnored, loadCallsAdded, saveCallsAdded,
-  loadCallMap, saveCallMap, loadConsumed, saveConsumed, loadIncludeProjectless, saveIncludeProjectless, type DayBlock, type ExternalEvent
+  loadCallMap, saveCallMap, loadConsumed, saveConsumed, loadIncludeProjectless, saveIncludeProjectless, loadTitleMap, rememberTitleProject, findTranscriptSummary, type DayBlock, type ExternalEvent
 } from './dayPlan';
 import { type ParsedCall } from './teamsCalls';
 import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
@@ -4392,6 +4396,11 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   const currentProjectKeyRef = useRef<() => string>(() => '');
   const [includeProjectless, setIncludeProjectless] = useState<boolean>(() => loadIncludeProjectless());
   const [gapsModalOpen, setGapsModalOpen] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [hideAiNames, setHideAiNames] = useState<boolean>(() => loadHideNames());
+  const [aiExtraNames, setAiExtraNames] = useState<string>(() => loadExtraNames());
+  const [aiMaskProper, setAiMaskProper] = useState<boolean>(() => loadMaskProper());
+  const [blockRecords, setBlockRecords] = useState<BlockRecord[]>(() => loadBlockRecords());
   const [callMap, setCallMap] = useState<Record<string, string>>(() => loadCallMap());
 
   const persistSessionStateSoon = () => {
@@ -4472,7 +4481,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     let hidden: string[] = [];
     try { hidden = JSON.parse(localStorage.getItem('calendar_hidden_external_titles') || '[]'); } catch { hidden = []; }
     const seen = loadMeetingsSeen();
-    const { drafts, keys } = meetingDrafts(events, hidden, seen, projectNamesFrom(notes, fileContentsRef.current), Date.now());
+    const { drafts, keys } = meetingDrafts(events, hidden, seen, projectNamesFrom(notes, fileContentsRef.current), Date.now(), 2, loadTitleMap());
     if (drafts.length === 0) return 0;
     keys.forEach(k => seen.add(k));
     saveMeetingsSeen(seen);
@@ -4527,7 +4536,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   const openSessionSummary = () => {
     const added = collectDrafts(true) + collectMeetings();
     if (pendingSessions.length > 0 || added > 0) { setSessionModalOpen(true); return; }
-    showSessionToast('Bu oturumda henüz bir değişiklik ya da hareket yok.');
+    // Bekleyen taslak yoksa rapor penceresi açılır (günlük/haftalık özet ve e-posta taslağı).
+    setReportModalOpen(true);
   };
 
   const sessionDeviceName = isBrowser ? 'web' : isElectron ? 'masaustu' : 'telefon';
@@ -4557,8 +4567,17 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     }
   };
 
+  // İşlenen bloğu rapor için yapılandırılmış kayıt olarak sakla (süre uygulama tarafından hesaplanır; yapay zekâya yalnızca olgular gider).
+  const saveBlockRecord = (id: string, b: { date: string; start: string; end: string; project: string }, kind: BlockRecord['kind'], facts: BlockRecord['facts']) => {
+    addBlockRecord({ id, date: b.date, start: b.start, end: b.end, project: b.project, minutes: minutesBetween(b.start, b.end), kind, facts });
+    setBlockRecords(loadBlockRecords());
+  };
+
   const processSessionBlock = async (id: string, b: SessionBlockResult) => {
     await writeBlockAndLog(b, 'takvime işlendi');
+    saveBlockRecord(id, b, b.kind, b.facts);
+    const p = pendingSessions.find(x => x.id === id);
+    if (p && p.kind === 'toplanti' && b.project) rememberTitleProject(p.suggestedTitle, b.project);
     removePendingSession(id);
     loadAllData();
     showSessionToast('Takvime işlendi.');
@@ -4589,6 +4608,44 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     setSessionModalOpen(false);
   };
 
+  // Yapay zekâ köprüleri: müşteri/proje adları "gizle" açıkken jetonlanır (varsayılan), cevapta geri eşleştirilir (bkz. sessionAI.ts).
+  // extra: bu istekte geçen proje adları (notlardan türemeyen projeler de gizlensin; sızıntı olmasın).
+  const buildAnonymizer = (extra: (string | null | undefined)[] = []) => makeAnonymizer(
+    hideAiNames,
+    [...new Set([...projectNamesFrom(notes, fileContentsRef.current), ...extra.filter((x): x is string => !!x)])],
+    clientNamesFrom(notes.map(n => n.path), clientsFolder),
+    { people: splitNames(aiExtraNames), maskProper: aiMaskProper }
+  );
+  // Proje tahmini için her projeye örnek başlıklar: onayladığınız toplantı başlıkları ve bu projede işlenmiş görev başlıkları (en çok 8).
+  const guessCandidates = (names: string[]): GuessCandidate[] => {
+    const titleMap = loadTitleMap();
+    const recs = loadBlockRecords();
+    return names.map(name => {
+      const ex = new Set<string>();
+      Object.entries(titleMap).forEach(([t, p]) => { if (p === name) ex.add(t); });
+      recs.filter(r => r.project === name).slice(-12).reverse().forEach(r => r.facts.forEach(f => { if (ex.size < 8) ex.add(f.baslik); }));
+      return { proje: name, ornekler: [...ex].slice(0, 8) };
+    });
+  };
+  const changeHideAiNames = (v: boolean) => { setHideAiNames(v); saveHideNames(v); };
+  const aiPrivacy = {
+    hideNames: hideAiNames,
+    onHideNamesChange: changeHideAiNames,
+    extraNames: aiExtraNames,
+    onExtraNamesChange: (v: string) => { setAiExtraNames(v); saveExtraNames(v); },
+    maskProper: aiMaskProper,
+    onMaskProperChange: (v: boolean) => { setAiMaskProper(v); saveMaskProper(v); }
+  };
+  const sessionAi: SessionAiBridge = {
+    configured: isGeminiConfigured(),
+    ...aiPrivacy,
+    narrate: (o) => aiNarrate({ ...o, anon: buildAnonymizer([o.project]) }),
+    guessProject: (title) => {
+      const names = projectNamesFrom(notes, fileContentsRef.current);
+      return aiGuessProject(title, guessCandidates(names), buildAnonymizer(names));
+    }
+  };
+
   // Günün blokları (işlenmiş + bekleyen taslaklar): pencerede çakışma uyarısı için.
   const dayBlocksFor = useCallback((ymd: string): DayBlock[] => {
     const done = completedBlocksOfDay(fileContentsRef.current, ymd);
@@ -4615,6 +4672,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
   const addGapBlock = async (b: GapBlock) => {
     await writeBlockAndLog(b, b.status);
+    saveBlockRecord(`g:${b.date}:${b.start}-${b.end}`, b, /Teams/i.test(b.status) ? 'gorusme' : /toplantı/i.test(b.status) ? 'toplanti' : 'calisma', []);
     loadAllData();
     showSessionToast('Takvime işlendi.');
   };
@@ -4626,6 +4684,12 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   const ignoreGap = (ymd: string, g: Interval) => { const s = loadGapsIgnored(); s.add(`${ymd}|${g.start}|${g.end}`); saveGapsIgnored(s); };
   const callDone = (call: ParsedCall, project: string) => {
     const added = loadCallsAdded(); added.add(call.key); saveCallsAdded(added);
+    // Aramadaki kişi adı yapay zekâya gidecek metinlerde gizlenecekler listesine eklenir.
+    const known = splitNames(loadExtraNames());
+    if (!known.some(n => n.toLocaleLowerCase('tr') === call.person.toLocaleLowerCase('tr'))) {
+      const next = [...known, call.person].join(', ');
+      saveExtraNames(next); setAiExtraNames(next);
+    }
     if (project) { const next = { ...loadCallMap(), [call.person.toLocaleLowerCase('tr')]: project }; saveCallMap(next); setCallMap(next); }
   };
 
@@ -11492,11 +11556,25 @@ grant execute on function get_db_size() to anon;`}
           remaining={pendingSessions.length - 1}
           projectNames={projectNamesFrom(notes, fileContents)}
           dayBlocksFor={dayBlocksFor}
+          ai={sessionAi}
+          transcriptFor={(sess) => findTranscriptSummary(fileContentsRef.current, ymdOf(sess.start), sess.suggestedTitle)}
+          onOpenReport={() => setReportModalOpen(true)}
           onProcess={(b) => processSessionBlock(pendingSessions[0].id, b)}
           onSkip={(items, title, start, end, date) => skipSession(pendingSessions[0].id, items, title, start, end, date)}
           onSkipAll={skipAllSessions}
           onOpenGaps={() => setGapsModalOpen(true)}
           onClose={() => setSessionModalOpen(false)}
+        />
+      )}
+      {reportModalOpen && (
+        <ReportModal
+          records={blockRecords}
+          ai={{
+            configured: isGeminiConfigured(),
+            ...aiPrivacy,
+            report: (agg, scope, wantMail) => aiReport(agg, scope, wantMail, buildAnonymizer(agg.projeler.map(p => p.proje)))
+          }}
+          onClose={() => setReportModalOpen(false)}
         />
       )}
       {gapsModalOpen && (

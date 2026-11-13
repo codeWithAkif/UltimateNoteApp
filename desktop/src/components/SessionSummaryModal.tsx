@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarPlus, FileText, FolderKanban, Clock, X, AlertTriangle } from 'lucide-react';
+import { CalendarPlus, FileText, FolderKanban, Clock, X, AlertTriangle, Sparkles } from 'lucide-react';
 import { AREA_LABELS, buildDetails, hmOf, ymdOf, type SessionArea, type SessionItem, type SessionSummary } from '../sessionTracker';
 import { overlapsOf, parseSlot, type DayBlock } from '../dayPlan';
+import { recordFactsOf, type FactRecord } from '../sessionAI';
+import AiPrivacyControls, { type AiPrivacy } from './AiPrivacyControls';
 
 const overlay: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2300, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
@@ -27,7 +29,14 @@ const chip = (active: boolean): React.CSSProperties => ({
 });
 const label: React.CSSProperties = { fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--text-muted)', margin: '14px 0 6px' };
 
-export interface SessionBlockResult { title: string; project: string; date: string; start: string; end: string; details: string[]; items: string[] }
+export interface SessionBlockResult { title: string; project: string; date: string; start: string; end: string; details: string[]; items: string[]; kind: 'calisma' | 'toplanti'; facts: FactRecord[] }
+
+// Yapay zekâ köprüsü (App.tsx sağlar): anahtar var mı, adlar gizli mi, anlatı üret, proje tahmin et.
+export interface SessionAiBridge extends AiPrivacy {
+  configured: boolean;
+  narrate: (o: { project: string | null; minutes: number | null; start: string; end: string; kind: 'calisma' | 'toplanti'; items: SessionItem[] }) => Promise<{ summary: string; details: string[] }>;
+  guessProject: (title: string) => Promise<string | null>;
+}
 
 const AREA_ICONS: Record<SessionArea, React.ReactNode> = {
   notlar: <FileText size={13} />, takvim: <CalendarPlus size={13} />, projeler: <FolderKanban size={13} />
@@ -38,15 +47,18 @@ const hm = (ms: number) => hmOf(ms);
 // "Geçen çalışmanız" penceresi: bir (proje × seans) taslağı; yaptıklarınız onay kutularıyla gelir (aynı türden görevler tek başlık altında),
 // seçip başlık/saat girer, ayrıntıları düzenler ve takvime işlersiniz. Takvime yazma ve kayıt tutma App.tsx'te (onProcess/onSkip).
 // Arka plana tıklamak pencereyi kapatmaz: yalnızca çarpı ya da "Sonra" kapatır.
-export default function SessionSummaryModal({ session, remaining, projectNames, dayBlocksFor, onProcess, onSkip, onSkipAll, onOpenGaps, onClose }: {
+export default function SessionSummaryModal({ session, remaining, projectNames, dayBlocksFor, ai, transcriptFor, onProcess, onSkip, onSkipAll, onOpenGaps, onOpenReport, onClose }: {
   session: SessionSummary;
   remaining: number;
   projectNames: string[];
   dayBlocksFor: (ymd: string) => DayBlock[];
+  ai: SessionAiBridge;
+  transcriptFor?: (session: SessionSummary) => { path: string; lines: string[] } | null;
   onProcess: (b: SessionBlockResult) => Promise<void>;
   onSkip: (items: string[], title: string, start: string, end: string, date: string) => Promise<void>;
   onSkipAll: () => Promise<void>;
   onOpenGaps: () => void;
+  onOpenReport: () => void;
   onClose: () => void;
 }) {
   const isMeeting = session.kind === 'toplanti';
@@ -61,10 +73,18 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
   const [detailsDirty, setDetailsDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMsg, setAiMsg] = useState('');
+  const transcript = useMemo(() => (isMeeting && transcriptFor ? transcriptFor(session) : null), [session]);
+  const [useTranscript, setUseTranscript] = useState(false);
 
   const selected = useMemo(() => session.items.filter(i => checked.has(i.id)), [session, checked]);
   // Ayrıntılar elle düzenlenmediyse seçimle birlikte kendiliğinden yeniden kurulur.
-  useEffect(() => { if (!detailsDirty) setDetails(buildDetails(selected).join('\n')); }, [selected, detailsDirty]);
+  const autoDetails = useMemo(() => [
+    ...buildDetails(selected),
+    ...(useTranscript && transcript ? transcript.lines.map((l, i) => (i === 0 ? `Toplantı özeti: ${l}` : `  ${l}`)) : [])
+  ].join('\n'), [selected, useTranscript, transcript]);
+  useEffect(() => { if (!detailsDirty) setDetails(autoDetails); }, [autoDetails, detailsDirty]);
 
   const setMany = (ids: string[], on: boolean) => {
     const next = new Set(checked);
@@ -109,7 +129,7 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
       const summaryLines = summary.split('\n').map(l => l.trim()).filter(Boolean);
       const lead = summaryLines.length ? [`Özet: ${summaryLines[0]}`, ...summaryLines.slice(1)] : [];
       const all = [...lead, ...detailLines];
-      await onProcess({ title: title.trim(), project, date, start, end, details: all, items: all });
+      await onProcess({ title: title.trim(), project, date, start, end, details: all, items: all, kind: isMeeting ? 'toplanti' : 'calisma', facts: recordFactsOf(selected) });
     } catch (e: any) { setError(`Takvime işlenemedi: ${String(e?.message || e)}`); setBusy(false); }
   };
 
@@ -117,6 +137,26 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
     setBusy(true);
     try { await onSkip(detailLines, title.trim() || session.suggestedTitle, start, end, date); }
     catch (e: any) { setError(String(e?.message || e)); setBusy(false); }
+  };
+
+  const runNarrate = async () => {
+    setAiBusy(true); setAiMsg('');
+    try {
+      const r = await ai.narrate({ project: project || null, minutes: session.minutes || null, start, end, kind: isMeeting ? 'toplanti' : 'calisma', items: selected });
+      setSummary(r.summary);
+      setDetails(r.details.join('\n'));
+      setDetailsDirty(true);
+      setAiMsg('Yapay zekâ ile oluşturuldu. Gözden geçirip düzenleyin; "Yeniden oluştur" kural tabanlı ayrıntılara döner.');
+    } catch (e: any) { setAiMsg(String(e?.message || e)); }
+    finally { setAiBusy(false); }
+  };
+  const runGuess = async () => {
+    setAiBusy(true); setAiMsg('');
+    try {
+      const g = await ai.guessProject(title.trim() || session.suggestedTitle);
+      if (g) { setProject(g); setAiMsg(`Önerilen proje: ${g}`); } else setAiMsg('Yapay zekâ emin olamadı, projeyi siz seçin.');
+    } catch (e: any) { setAiMsg(String(e?.message || e)); }
+    finally { setAiBusy(false); }
   };
 
   const minutesText = session.minutes ? ` · ${session.minutes} dk aktif` : '';
@@ -209,6 +249,12 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
             {project && !projectNames.includes(project) && <option value={project}>{project}</option>}
             {projectNames.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
+          {!project && ai.configured && (
+            <button type="button" style={{ ...btn, padding: '6px 10px', opacity: aiBusy ? 0.5 : 1 }} disabled={aiBusy} onClick={runGuess}
+              title={ai.hideNames ? 'Başlığa bakarak proje önerir. Adlar gizli kalır: projeler jetonla, daha önce çalıştığınız görev başlıklarıyla birlikte gider' : 'Başlığa bakarak proje önerir (başlık, proje adları ve örnek görev başlıkları yapay zekâya gider)'}>
+              <Sparkles size={13} /> Projeyi tahmin et
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={field} />
@@ -241,6 +287,29 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
             <span>Bu saat aralığı şu bloklarla çakışıyor: {overlaps.map(b => `${b.title} (${hm(b.start)}–${hm(b.end)})`).join(', ')}. Saati düzeltebilir ya da yine de işleyebilirsiniz.</span>
           </div>
         )}
+
+        {transcript && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '10px', fontSize: '12.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={useTranscript} onChange={(e) => setUseTranscript(e.target.checked)} style={{ marginTop: '2px' }} />
+            <span>Toplantı transkript özetini ekle <span style={{ color: 'var(--text-muted)' }}>({transcript.path.split('/').pop()})</span></span>
+          </label>
+        )}
+
+        <div style={{ marginTop: '14px', padding: '10px 12px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+            <button type="button" style={{ ...btn, opacity: aiBusy || !ai.configured ? 0.6 : 1 }} disabled={aiBusy || !ai.configured} onClick={runNarrate}
+              title="Seçili görev olaylarını kısa bir anlatıya çevirir, görevleri temalara ayırır">
+              <Sparkles size={14} /> {aiBusy ? 'Çalışıyor…' : 'Yapay zekâ ile anlat'}
+            </button>
+          </div>
+          <div style={{ marginTop: '8px' }}><AiPrivacyControls p={ai} /></div>
+          <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>
+            {ai.configured
+              ? 'Yapay zekâya yalnızca görev başlıkları ve olay türleri gider (not içeriği, yazdığınız özet ve ayrıntı metni gitmez). Önce ücretsiz Gemini, olmazsa Claude kullanılır.'
+              : 'Yapay zekâ anahtarı ayarlı değil (Ayarlar > AI Mentor).'}
+          </div>
+          {aiMsg && <div style={{ fontSize: '12px', marginTop: '6px', color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>{aiMsg}</div>}
+        </div>
 
         <div style={label}>Genel özet (isteğe bağlı — bloğun ilk maddesi olur)</div>
         <textarea value={summary} onChange={(e) => setSummary(e.target.value)} rows={2} style={{ ...field, width: '100%', resize: 'vertical', lineHeight: 1.5 }} placeholder="Örn. PScope bülten ekranını bitirdim, kalanlar test aşamasında" />
@@ -278,6 +347,7 @@ export default function SessionSummaryModal({ session, remaining, projectNames, 
             </button>
           )}
           <button type="button" onClick={onOpenGaps} disabled={busy} style={btn} title="Hareketsiz geçen aralıklar ve Teams aramaları">Boşluklar ve aramalar</button>
+          <button type="button" onClick={onOpenReport} disabled={busy} style={btn} title="Günlük/haftalık rapor ve müşteri durum e-postası taslağı">Rapor ve e-posta</button>
           <button type="button" onClick={onClose} disabled={busy} style={btn}>Sonra</button>
           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Yazılacak: günlük notu ({date})</span>
         </div>
