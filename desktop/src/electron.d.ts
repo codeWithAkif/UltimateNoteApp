@@ -19,6 +19,7 @@ export interface ElectronAPI {
   saveGitCreds: (creds: { url: string; username: string; token: string; branch: string }) => Promise<{ success: boolean; error?: string }>;
   onSyncStatusChanged: (callback: (status: 'synced' | 'syncing' | 'offline' | 'error') => void) => () => void;
   searchOnlineMusic: (query: string) => Promise<any[]>;
+  fetchIcs?: (url: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
   resolveArchiveTrack: (identifier: string) => Promise<string>;
   resolveYoutubePlaylist: (playlistId: string) => Promise<any[]>;
   fileExists: (relativePath: string) => Promise<boolean>;

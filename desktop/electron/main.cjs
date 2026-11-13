@@ -574,6 +574,36 @@ ipcMain.handle('list-media-files', async () => {
   }
 });
 
+// IPC Handler: Takvim (ICS) bağlantısını uygulamanın kendi tarafında okur. Renderer'dan doğrudan fetch tarayıcı kurallarına
+// (CORS) takılabiliyor; eskiden bu durumda gizli takvim adresi üçüncü taraf bir vekile gönderiliyordu. Artık hiçbir yere gönderilmez.
+// Yalnızca https (webcal:// https'e çevrilir), en çok 5 yönlendirme, 15 sn zaman aşımı, 5 MB sınır.
+ipcMain.handle('fetch-ics', async (event, rawUrl) => {
+  const https = require('https');
+  let url = String(rawUrl || '').trim().replace(/^webcal:\/\//i, 'https://');
+  if (!/^https:\/\//i.test(url)) return { ok: false, error: 'Yalnızca https takvim bağlantıları desteklenir.' };
+  const get = (target, redirects) => new Promise((resolve) => {
+    let finished = false;
+    const done = (v) => { if (!finished) { finished = true; resolve(v); } };
+    const req = https.get(target, { headers: { 'User-Agent': 'UltimateNoteFactory/1.0', 'Accept': 'text/calendar, text/plain, */*' }, timeout: 15000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (redirects >= 5) return done({ ok: false, error: 'Çok fazla yönlendirme.' });
+        let next;
+        try { next = new URL(res.headers.location, target).toString(); } catch { return done({ ok: false, error: 'Geçersiz yönlendirme.' }); }
+        if (!/^https:\/\//i.test(next)) return done({ ok: false, error: 'Güvenli olmayan yönlendirme engellendi.' });
+        return get(next, redirects + 1).then(done);
+      }
+      if (res.statusCode !== 200) { res.resume(); return done({ ok: false, error: `Sunucu ${res.statusCode} döndürdü.` }); }
+      const chunks = []; let size = 0;
+      res.on('data', (c) => { size += c.length; if (size > 5 * 1024 * 1024) { req.destroy(); done({ ok: false, error: 'Takvim dosyası çok büyük.' }); } else chunks.push(c); });
+      res.on('end', () => done({ ok: true, text: Buffer.concat(chunks).toString('utf-8') }));
+    });
+    req.on('timeout', () => { req.destroy(); done({ ok: false, error: 'Zaman aşımı.' }); });
+    req.on('error', (err) => done({ ok: false, error: err.message }));
+  });
+  return get(url, 0);
+});
+
 // IPC Handler: Resolve YouTube Playlist items via RSS Feed
 ipcMain.handle('resolve-youtube-playlist', async (event, playlistId) => {
   return new Promise((resolve) => {

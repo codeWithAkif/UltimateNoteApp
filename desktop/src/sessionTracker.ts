@@ -1,21 +1,26 @@
-// Oturum izleyici: kullanıcının uygulamada yaptığı kaydetmelerden "bu oturumda ne yaptınız" özetini çıkarır ve onaylanan oturumu
-// takvim bloğu olarak günlük nota yazar. Veri kaynağı dosya değişiklik saati DEĞİL (otomatik yazımlar onu bozuyor): ilk kayıt öncesi
-// not içeriği (baseline) saklanır, oturum bitince baseline ile güncel içerik satır satır karşılaştırılır (net fark).
+// Oturum izleyici: kullanıcının uygulamada yaptığı kaydetmelerden "ne yaptınız" özetini çıkarır, etkinlik kaydındaki seanslarla (activityLog)
+// eşleştirip takvim bloğu taslakları üretir ve onaylanan bloğu günlük nota yazar. Veri kaynağı dosya değişiklik saati DEĞİL (otomatik
+// yazımlar onu bozuyor): ilk kayıt öncesi not içeriği (baseline) saklanır, oturum bitince baseline ile güncel içerik karşılaştırılır.
 // Yapay zekâ yok: cümleler kural tabanlıdır. Tüm işlevler saftır (ağ/disk yok), yalnızca load/save yardımcıları localStorage kullanır.
 
 import { PROJECT_TAG_REGEX } from './quickSlots';
 import { PROJECT_KICKOFF_CHECKLIST } from './projectTemplate';
+import { MINUTE, MIN_ACTIVE_ONLY_MIN, type Run } from './activityLog';
 
 export interface SessionState {
   id: string;
   start: number;
   lastActivity: number;
   baselines: Record<string, string | null>; // null = baseline çok büyüktü/bilinmiyor
-  touched: Record<string, { first: number; last: number }>;
+  touched: Record<string, { first: number; last: number; mins?: number[] }>; // mins: kaydetme dakikaları (seans eşleştirmesi için)
 }
 
 export type SessionArea = 'notlar' | 'takvim' | 'projeler';
-export interface SessionItem { id: string; area: SessionArea; text: string; path: string; project?: string }
+export interface SessionItem {
+  id: string; area: SessionArea; text: string; path: string; project?: string;
+  title?: string; // görev başlığı (gruplu gösterimde)
+  group?: string; // aynı türden öğelerin ortak etiketi ("Son kontrol → Bitti")
+}
 export interface SessionSummary {
   id: string;
   start: number;
@@ -23,6 +28,9 @@ export interface SessionSummary {
   items: SessionItem[];
   suggestedTitle: string;
   suggestedProject: string | null;
+  kind?: 'calisma' | 'toplanti';
+  minutes?: number; // net aktif dakika
+  ref?: string;     // toplantı taslağında takvim etkinliği anahtarı
 }
 
 export interface ProjectContext {
@@ -30,10 +38,11 @@ export interface ProjectContext {
   projectBySlug: Record<string, string>; // [project:slug] -> proje adı
 }
 
-export const IDLE_MS = 30 * 60 * 1000; // bu kadar boşluktan sonra oturum biter
+export const IDLE_MS = 30 * 60 * 1000; // bu kadar kaydetme boşluğundan sonra oturum biter
 const BASELINE_NOTE_CAP = 200_000;
 const BASELINE_TOTAL_CAP = 1_500_000;
-const MIN_BLOCK_MS = 15 * 60 * 1000;
+export const MIN_BLOCK_MS = 15 * 60 * 1000;
+const MINS_CAP = 400;
 
 export const AREA_LABELS: Record<SessionArea, string> = { notlar: 'Notlar', takvim: 'Takvim', projeler: 'Projeler ve görevler' };
 
@@ -61,7 +70,10 @@ export const recordSave = (
     s.baselines[path] = base.length > BASELINE_NOTE_CAP || total + base.length > BASELINE_TOTAL_CAP ? null : base;
   }
   const t = s.touched[path];
-  s.touched[path] = { first: t ? t.first : now, last: now };
+  const minute = Math.floor(now / MINUTE);
+  const prevMins = t?.mins || [];
+  const mins = prevMins.length && prevMins[prevMins.length - 1] === minute ? prevMins : [...prevMins, minute].slice(-MINS_CAP);
+  s.touched[path] = { first: t ? t.first : now, last: now, mins };
   s.lastActivity = now;
   return { state: s, finalized };
 };
@@ -76,6 +88,7 @@ const stripTags = (s: string) =>
 
 interface TaskLine { key: string; title: string; checked: boolean; status: string; project?: string; due?: string; time?: string }
 
+const TITLE_CAP = 160;
 const parseTask = (line: string): TaskLine | null => {
   const m = line.match(TASK_RE);
   if (!m) return null;
@@ -90,7 +103,7 @@ const parseTask = (line: string): TaskLine | null => {
   const status = mark.toLowerCase() === 'x' ? 'done' : statusTag ? statusTag.toLowerCase() : mark === '/' ? 'inprogress' : 'backlog';
   return {
     key: title.toLocaleLowerCase('tr'),
-    title: title.length > 90 ? title.slice(0, 87) + '…' : title,
+    title: title.length > TITLE_CAP ? title.slice(0, TITLE_CAP - 1) + '…' : title,
     checked: mark.toLowerCase() === 'x',
     status,
     project: ((raw.match(/\[(?:project|proje):([^\]]+)\]/i) || [])[1] || '').trim().toLowerCase() || undefined,
@@ -106,11 +119,51 @@ const statusLabel = (s: string) => STATUS_LABELS[s] || (s.charAt(0).toUpperCase(
 
 const noteNameOf = (path: string) => path.split('/').pop()!.replace(/\.md$/i, '');
 
+// İki başlık arasındaki benzerlik (bigram Dice, 0..1): yazım düzeltmesini "yeni görev" saymamak için.
+const dice = (a: string, b: string): number => {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const grams = (s: string) => { const m = new Map<string, number>(); for (let i = 0; i < s.length - 1; i++) { const k = s.slice(i, i + 2); m.set(k, (m.get(k) || 0) + 1); } return m; };
+  const A = grams(a), B = grams(b);
+  let inter = 0;
+  A.forEach((v, k) => { inter += Math.min(v, B.get(k) || 0); });
+  return (2 * inter) / ((a.length - 1) + (b.length - 1));
+};
+
+// ---------------- proje eşleştirme ----------------
+const norm = (s: string) => s.toLocaleLowerCase('tr').replace(/[^a-z0-9çğıöşü]/g, '');
+
+// Klasör/dosya adı ile proje adını gevşek eşleştirir ("Datahub" klasörü -> "Zorlu DataHub" projesi).
+export const matchProjectName = (seg: string, names: string[]): string | undefined => {
+  const n = norm(seg);
+  if (!n) return undefined;
+  let best: string | undefined, bestLen = -1;
+  for (const name of names) {
+    const m = norm(name);
+    if (!m) continue;
+    if (m === n) return name;
+    if (n.length >= 4 && m.length >= 4 && (m.includes(n) || n.includes(m))) {
+      const len = Math.min(m.length, n.length);
+      if (len > bestLen) { best = name; bestLen = len; }
+    }
+  }
+  return best;
+};
+
+// Bir notun hangi projeye ait olduğu: proje notunun kendisi, ya da Müşteriler/<müşteri>/Projeler/<proje>[.md|/...] altındaki herhangi bir not.
+export const projectForPath = (path: string, ctx: ProjectContext): string | undefined => {
+  if (ctx.projectByPath[path]) return ctx.projectByPath[path];
+  const m = path.match(/^(Müşteriler\/[^/]+)\/Projeler\/([^/]+)/i);
+  if (!m) return undefined;
+  const seg = m[2].replace(/\.md$/i, '');
+  const entries = Object.entries(ctx.projectByPath);
+  const sameClient = entries.filter(([p]) => p.toLocaleLowerCase('tr').startsWith(m[1].toLocaleLowerCase('tr') + '/')).map(([, name]) => name);
+  return matchProjectName(seg, sameClient) || matchProjectName(seg, entries.map(([, name]) => name)) || seg;
+};
+
 const projectOf = (path: string, slug: string | undefined, ctx: ProjectContext): string | undefined => {
   if (slug) return ctx.projectBySlug[slug] || slug;
-  if (ctx.projectByPath[path]) return ctx.projectByPath[path];
-  const m = path.match(/Müşteriler\/[^/]+\/Projeler\/([^/]+)\.md$/i);
-  return m ? m[1] : undefined;
+  return projectForPath(path, ctx);
 };
 
 const when = (due?: string, time?: string) => [due, time].filter(Boolean).join(' ');
@@ -130,10 +183,11 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
   const items: SessionItem[] = [];
   const name = noteNameOf(path);
   let n = 0;
-  const push = (area: SessionArea, text: string, project?: string) => items.push({ id: `${path}#${n++}`, area, text, path, project });
+  const push = (area: SessionArea, text: string, project?: string, extra?: { title?: string; group?: string }) =>
+    items.push({ id: `${path}#${n++}`, area, text, path, project, ...extra });
 
   if (before === null) {
-    push('notlar', `“${name}” notunda değişiklik yaptınız`, projectOf(path, undefined, ctx));
+    push('notlar', `“${name}” notunda değişiklik yaptınız`, projectForPath(path, ctx));
     return items;
   }
 
@@ -166,82 +220,176 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
         .map(m => m[1].replace(/\p{Extended_Pictographic}️?/gu, '').trim()).filter(h => h && !/Kontrol Listesi$/i.test(h));
       const headText = heads.length >= 2 ? `, ${heads.length} başlık: ${heads.slice(0, 4).join(', ')}${heads.length > 4 ? '…' : ''}` : '';
       const isProject = PROJECT_TAG_REGEX.test(after);
-      push(isProject ? 'projeler' : 'notlar', `“${name}” ${isProject ? 'projesini' : 'notunu'} oluşturdunuz (${group.length} görev${headText})`, projectOf(path, undefined, ctx) || (isProject ? name : undefined));
+      push(isProject ? 'projeler' : 'notlar', `“${name}” ${isProject ? 'projesini' : 'notunu'} oluşturdunuz (${group.length} görev${headText})`, projectForPath(path, ctx) || (isProject ? name : undefined));
     }
   }
+
+  // Eşleşmeyen eski görevler: başlığı değiştirilmiş (yazım düzeltmesi) bir görev "yeni görev" sayılmasın.
+  const pool: TaskLine[] = [];
+  bt.forEach((befores, key) => { const afters = at.get(key) || []; for (let i = afters.length; i < befores.length; i++) pool.push(befores[i]); });
+  const takeRenamed = (a: TaskLine): TaskLine | undefined => {
+    let bi = -1, best = 0;
+    pool.forEach((r, i) => { const s = dice(r.key, a.key); if (s >= 0.8 && s > best) { best = s; bi = i; } });
+    return bi >= 0 ? pool.splice(bi, 1)[0] : undefined;
+  };
 
   at.forEach((afters, key) => {
     const befores = bt.get(key) || [];
     afters.forEach((a, i) => {
-      const b = befores[i];
-      if (collapsed && !b && collapsedKeys.has(key)) return;
-      const project = projectOf(path, a.project, ctx);
+      let b: TaskLine | undefined = befores[i];
       if (!b) {
-        if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project);
-        else push('projeler', `“${a.title}” görevini eklediniz`, project);
+        if (collapsed && collapsedKeys.has(key)) return;
+        b = takeRenamed(a);
+      }
+      const project = projectOf(path, a.project, ctx);
+      const base = { title: a.title };
+      if (!b) {
+        if (a.checked) push('projeler', `“${a.title}” görevi eklendi ve tamamlandı`, project, { ...base, group: 'Eklendi ve tamamlandı' });
+        else if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvime eklenenler' });
+        else push('projeler', `“${a.title}” görevini eklediniz`, project, { ...base, group: 'Eklenen görevler' });
         return;
       }
       // Nereden nereye: baseline'daki ve güncel sütun birlikte yazılır (arada birden çok taşıma olduysa yalnızca net sonuç).
       if (!b.checked && a.checked) {
-        if (b.status === 'test') push('projeler', `“${a.title}” görevi test edildi ve tamamlandı (Test → Bitti)`, project);
-        else if (b.status === 'review') push('projeler', `“${a.title}” görevi incelendi ve tamamlandı (İncelemede → Bitti)`, project);
-        else if (b.status === 'backlog') push('projeler', `“${a.title}” görevini tamamladınız`, project);
-        else push('projeler', `“${a.title}” görevini ${statusLabel(b.status)} aşamasından tamamladınız (${statusLabel(b.status)} → Bitti)`, project);
+        const from = statusLabel(b.status);
+        if (b.status === 'test') push('projeler', `“${a.title}” görevi test edildi ve tamamlandı (Test → Bitti)`, project, { ...base, group: 'Test edildi ve tamamlandı (Test → Bitti)' });
+        else if (b.status === 'review') push('projeler', `“${a.title}” görevi incelendi ve tamamlandı (İncelemede → Bitti)`, project, { ...base, group: 'İncelendi ve tamamlandı (İncelemede → Bitti)' });
+        else if (b.status === 'backlog') push('projeler', `“${a.title}” görevini tamamladınız`, project, { ...base, group: 'Tamamlanan görevler' });
+        else push('projeler', `“${a.title}” görevini ${from} aşamasından tamamladınız (${from} → Bitti)`, project, { ...base, group: `${from} → Bitti` });
+      } else if (b.checked && !a.checked) {
+        push('projeler', `“${a.title}” görevini yeniden açtınız (Bitti → ${statusLabel(a.status)})`, project, { ...base, group: `Yeniden açıldı (Bitti → ${statusLabel(a.status)})` });
+      } else if (b.status !== a.status) {
+        push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project, { ...base, group: `${statusLabel(b.status)} → ${statusLabel(a.status)} sütununa taşındı` });
       }
-      else if (b.checked && !a.checked) push('projeler', `“${a.title}” görevini yeniden açtınız (Bitti → ${statusLabel(a.status)})`, project);
-      else if (b.status !== a.status) push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project);
-      if ((b.due !== a.due || b.time !== a.time) && (a.due || a.time)) push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project);
+      // Tamamlanmış bir bloğun/işin saatini sonradan düzeltmek (ör. oturum bloğunu uzatmak) iş sayılmaz.
+      if ((b.due !== a.due || b.time !== a.time) && (a.due || a.time) && !(b.checked && a.checked)) {
+        push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvim zamanı değişti' });
+      }
     });
   });
 
-  // Görev olmayan satırlar: eklenen satır sayısı (çoklu küme farkı)
-  const beforeCount = new Map<string, number>();
-  textLinesOf(before).forEach(l => beforeCount.set(l, (beforeCount.get(l) || 0) + 1));
-  const added: string[] = [];
-  textLinesOf(after).forEach(l => {
-    const c = beforeCount.get(l) || 0;
-    if (c > 0) beforeCount.set(l, c - 1); else added.push(l);
-  });
-  if (added.length > 0 && !collapsed) {
-    const sample = stripTags(added[0].replace(/^[#>\-*\s\d.]+/, '')).slice(0, 60);
-    if (before.trim() === '') push('notlar', `“${name}” notunu oluşturdunuz (${added.length} satır)${sample ? ` — “${sample}…”` : ''}`, projectOf(path, undefined, ctx));
-    else push('notlar', `“${name}” notuna ${added.length} satır eklediniz${sample ? ` — “${sample}…”` : ''}`, projectOf(path, undefined, ctx));
+  // Görev olmayan satırlar: eklenen satır sayısı (çoklu küme farkı). Günlük notlar kişisel yazıdır, oturum blokları da oraya yazılır: sayılmaz.
+  if (!/^Günlükler\//i.test(path)) {
+    const beforeCount = new Map<string, number>();
+    textLinesOf(before).forEach(l => beforeCount.set(l, (beforeCount.get(l) || 0) + 1));
+    const added: string[] = [];
+    textLinesOf(after).forEach(l => {
+      const c = beforeCount.get(l) || 0;
+      if (c > 0) beforeCount.set(l, c - 1); else added.push(l);
+    });
+    if (added.length > 0 && !collapsed) {
+      const sample = stripTags(added[0].replace(/^[#>\-*\s\d.]+/, '')).slice(0, 60);
+      if (before.trim() === '') push('notlar', `“${name}” notunu oluşturdunuz (${added.length} satır)${sample ? ` — “${sample}…”` : ''}`, projectForPath(path, ctx));
+      else push('notlar', `“${name}” notuna ${added.length} satır eklediniz${sample ? ` — “${sample}…”` : ''}`, projectForPath(path, ctx));
+    }
   }
   return items;
 };
 
-export const summarizeSession = (
-  s: SessionState,
-  currentContents: Record<string, string | undefined>,
-  ctx: ProjectContext
-): SessionSummary | null => {
+// Oturumdaki tüm notların net farkı.
+export const diffSession = (s: SessionState, currentContents: Record<string, string | undefined>, ctx: ProjectContext): SessionItem[] => {
   const items: SessionItem[] = [];
-  let first = Infinity, last = 0;
-  const touchCount: Record<string, number> = {};
   Object.keys(s.touched).forEach(path => {
     const cur = currentContents[path];
     if (cur === undefined) return; // silinmiş not
     const base = s.baselines[path];
     if (base !== undefined && base !== null && base === cur) return; // net değişiklik yok (yazıp geri aldı)
-    first = Math.min(first, s.touched[path].first);
-    last = Math.max(last, s.touched[path].last);
-    const found = diffNote(path, base === undefined ? null : base, cur, ctx);
-    found.forEach(i => { touchCount[i.project || `not:${noteNameOf(path)}`] = (touchCount[i.project || `not:${noteNameOf(path)}`] || 0) + 1; });
-    items.push(...found);
+    items.push(...diffNote(path, base === undefined ? null : base, cur, ctx));
   });
-  if (items.length === 0) return null;
-  const order: Record<SessionArea, number> = { notlar: 0, takvim: 1, projeler: 2 };
-  items.sort((a, b) => order[a.area] - order[b.area]);
-  const projects = Object.keys(touchCount).filter(k => !k.startsWith('not:')).sort((a, b) => touchCount[b] - touchCount[a]);
-  const noteTop = Object.keys(touchCount).filter(k => k.startsWith('not:')).sort((a, b) => touchCount[b] - touchCount[a])[0];
-  const suggestedProject = projects[0] || null;
-  const start = first === Infinity ? s.start : first;
-  const end = Math.max(last, start + MIN_BLOCK_MS);
-  return {
-    id: s.id, start, end, items,
-    suggestedProject,
-    suggestedTitle: suggestedProject ? `${suggestedProject} çalışması` : noteTop ? `${noteTop.slice(4).replace(/_/g, ' ')} çalışması` : 'Çalışma oturumu'
+  return items;
+};
+
+const AREA_ORDER: Record<SessionArea, number> = { notlar: 0, takvim: 1, projeler: 2 };
+
+// Bloğun altına yazılacak ayrıntı satırları: aynı türden öğeler tek başlık + alt maddeler olur ("Son kontrol → Bitti (7 görev)").
+// Alt maddeler iki boşlukla başlar (buildBlockLines bunu iç içe madde yapar).
+export const buildDetails = (items: SessionItem[]): string[] => {
+  const out: string[] = [];
+  const groups = new Map<string, SessionItem[]>();
+  const order: (SessionItem | string)[] = [];
+  items.forEach(i => {
+    if (i.group) {
+      const g = groups.get(i.group);
+      if (g) g.push(i); else { groups.set(i.group, [i]); order.push(i.group); }
+    } else order.push(i);
+  });
+  order.forEach(o => {
+    if (typeof o === 'string') {
+      const g = groups.get(o)!;
+      if (g.length >= 2) { out.push(`${o} (${g.length} görev)`); g.forEach(i => out.push(`  ${i.title || i.text}`)); }
+      else out.push(g[0].text);
+    } else out.push(o.text);
+  });
+  return out;
+};
+
+// ---------------- taslaklar ----------------
+// Diff öğelerini ve etkinlik seanslarını birleştirir: her (proje × seans) bir takvim bloğu taslağı olur. Öğe, kaydedildiği
+// dakikalara en çok denk gelen seansa atanır. Notta değişiklik olmayan seans en az 10 aktif dakika ise (okuma/gezinme) yine taslak olur.
+export const buildDrafts = (
+  items: SessionItem[],
+  touched: SessionState['touched'],
+  runs: Run[],
+  opt: { includeProjectless: boolean; idPrefix: string }
+): SessionSummary[] => {
+  const keep = (p?: string) => !!p || opt.includeProjectless;
+  const its = items.filter(i => keep(i.project));
+  const assigned = new Map<Run, SessionItem[]>();
+  const orphans: SessionItem[] = [];
+
+  for (const it of its) {
+    const p = it.project || '';
+    const rs = runs.filter(r => r.project === p);
+    if (rs.length === 0) { orphans.push(it); continue; }
+    const t = touched[it.path];
+    const mins = t?.mins || [];
+    let best = rs[0], bestScore = -Infinity;
+    for (const r of rs) {
+      const a = Math.floor(r.start / MINUTE), b = Math.ceil(r.end / MINUTE);
+      let score = mins.filter(m => m >= a && m <= b).length;
+      if (score === 0 && t) score = -Math.min(Math.abs(t.last - r.start), Math.abs(t.last - r.end)) / 1e12;
+      if (score > bestScore) { best = r; bestScore = score; }
+    }
+    const list = assigned.get(best);
+    if (list) list.push(it); else assigned.set(best, [it]);
+  }
+
+  const sortItems = (a: SessionItem[]) => a.slice().sort((x, y) => AREA_ORDER[x.area] - AREA_ORDER[y.area]);
+  const titleFor = (project: string, list: SessionItem[]) => {
+    if (project) return `${project} çalışması`;
+    const top = list[0] ? noteNameOf(list[0].path).replace(/_/g, ' ') : '';
+    return top ? `${top} çalışması` : 'Çalışma oturumu';
   };
+  const mk = (project: string, start: number, end: number, list: SessionItem[], minutes: number): SessionSummary => ({
+    id: `${opt.idPrefix}:${project || '_'}:${start}`,
+    start,
+    end: Math.max(end, start + MIN_BLOCK_MS),
+    items: sortItems(list),
+    suggestedProject: project || null,
+    suggestedTitle: titleFor(project, list),
+    kind: 'calisma',
+    minutes
+  });
+
+  const drafts: SessionSummary[] = [];
+  runs.forEach(r => {
+    if (!keep(r.project)) return;
+    const list = assigned.get(r) || [];
+    if (list.length === 0 && r.minutes < MIN_ACTIVE_ONLY_MIN) return;
+    drafts.push(mk(r.project, r.start, r.end, list, r.minutes));
+  });
+
+  // Etkinlik kaydı olmayan projelerin öğeleri (eski durum / hareket işareti alınamadı): dokunulan notların ilk-son anından blok.
+  const byProject = new Map<string, SessionItem[]>();
+  orphans.forEach(i => { const k = i.project || ''; const a = byProject.get(k); if (a) a.push(i); else byProject.set(k, [i]); });
+  byProject.forEach((list, project) => {
+    let first = Infinity, last = 0;
+    list.forEach(i => { const t = touched[i.path]; if (t) { first = Math.min(first, t.first); last = Math.max(last, t.last); } });
+    if (first === Infinity) { first = Date.now() - MIN_BLOCK_MS; last = Date.now(); }
+    drafts.push(mk(project, first, last, list, 0));
+  });
+
+  return drafts.sort((a, b) => a.start - b.start);
 };
 
 // ---------------- takvim bloğu / günlük / kayıt yazımı ----------------
@@ -268,7 +416,7 @@ export interface BlockInput {
   date: string;     // YYYY-MM-DD
   start: string;    // HH:mm
   end: string;      // HH:mm
-  details: string[];
+  details: string[]; // iki boşlukla başlayan satır alt madde olur
 }
 
 // Takvim bloğu: tamamlanmış (başlangıç/bitiş damgalı) bir görev satırı + girintili, onay kutusuz ayrıntı maddeleri.
@@ -277,7 +425,9 @@ export const buildBlockLines = (b: BlockInput): string[] => {
   const startISO = new Date(`${b.date}T${b.start}:00`).toISOString();
   const endISO = new Date(`${b.date}T${b.end}:00`).toISOString();
   const head = `- [x] ${clean(b.title) || 'Çalışma oturumu'}${b.project ? ` [project:${slugOf(b.project)}]` : ''} [due:${b.date}] [plannedtime:${b.start}-${b.end}] [started:${startISO}] [completed:${endISO}]`;
-  const details = b.details.map(clean).filter(Boolean).map(t => `    - ${t}`);
+  const details = b.details
+    .filter(t => clean(t) !== '')
+    .map(t => `${/^\s{2,}/.test(t) ? '        ' : '    '}- ${clean(t)}`);
   return [head, ...details];
 };
 
@@ -291,7 +441,7 @@ export const appendBlock = (dayContent: string | undefined, header: string, line
 export const logPathOf = (ymd: string, device: string) => `Sistem/Oturumlar/${ymd}-${device}.md`;
 
 export const buildLogEntry = (o: { start: string; end: string; title: string; project?: string; status: string; items: string[] }): string =>
-  `## ${o.start}-${o.end} · ${clean(o.title)} (${o.status})\n${o.project ? `Proje: ${o.project}\n` : ''}${o.items.map(t => `- ${clean(t)}`).join('\n')}\n`;
+  `## ${o.start}-${o.end} · ${clean(o.title)} (${o.status})\n${o.project ? `Proje: ${o.project}\n` : ''}${o.items.filter(t => clean(t) !== '').map(t => `${/^\s{2,}/.test(t) ? '  ' : ''}- ${clean(t)}`).join('\n')}\n`;
 
 export const appendLog = (existing: string | undefined, ymd: string, entry: string): string => {
   const base = existing && existing.trim() ? existing.replace(/\s+$/, '') : `# Oturum kaydı ${ymd}`;
@@ -312,7 +462,7 @@ export const loadPending = (): SessionSummary[] => {
   try { const raw = localStorage.getItem(PENDING_KEY); const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; } catch { return []; }
 };
 export const savePending = (p: SessionSummary[]) => {
-  try { localStorage.setItem(PENDING_KEY, JSON.stringify(p.slice(-20))); } catch { /* yoksay */ }
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(p.slice(-40))); } catch { /* yoksay */ }
 };
 
 // Kasadaki proje notlarından bağlam (#proje etiketli notlar): yol -> ad ve [project:slug] -> ad.

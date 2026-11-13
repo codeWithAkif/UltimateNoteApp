@@ -35,6 +35,8 @@ interface ProjectsViewProps {
   clientsFolder?: string;
   // Görev eklendikten sonra görevlerin (Kanban/ilerleme) hemen yenilenmesi için (App.tsx loadAllData).
   onTasksAdded?: () => void;
+  // Seçili projeyi üst bileşene bildirir (oturum özeti: Kanban/Genel Bakış'ta geçen süre bu projeye yazılsın).
+  onProjectContext?: (project: string | null) => void;
 }
 
 // Bir müşteri/proje notunun içeriğinden [renk:hex] ve [icon:emoji] etiketlerini okur.
@@ -148,9 +150,11 @@ function ProjectTaskAdder({ onAdd, projectName }: { onAdd: (text: string) => Pro
   );
 }
 
-export default function ProjectsView({ navRequest, onNavHandled, timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded }: ProjectsViewProps) {
+export default function ProjectsView({ navRequest, onNavHandled, timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded, onProjectContext }: ProjectsViewProps) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  useEffect(() => { onProjectContext?.(selectedProject); }, [selectedProject]);
+  useEffect(() => () => { onProjectContext?.(null); }, []);
   // Hızlı slot yönlendirmesi (ilk çizimde ve her yeni istekte uygulanır).
   useEffect(() => {
     if (!navRequest) return;

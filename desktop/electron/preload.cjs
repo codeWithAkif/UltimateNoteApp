@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electron', {
   getLastSyncError: () => ipcRenderer.invoke('get-last-sync-error'),
   saveGitCreds: (creds) => ipcRenderer.invoke('save-git-creds', creds),
   searchOnlineMusic: (query) => ipcRenderer.invoke('search-online-music', query),
+  fetchIcs: (url) => ipcRenderer.invoke('fetch-ics', url),
   resolveArchiveTrack: (identifier) => ipcRenderer.invoke('resolve-archive-track', identifier),
   resolveYoutubePlaylist: (playlistId) => ipcRenderer.invoke('resolve-youtube-playlist', playlistId),
   fileExists: (relativePath) => ipcRenderer.invoke('file-exists', relativePath),

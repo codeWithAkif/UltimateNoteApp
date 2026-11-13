@@ -184,6 +184,8 @@ interface NoteItem {
 }
 
 interface CalendarViewProps {
+  // Dış takvimlerden (Outlook/Google ICS) okunan etkinlikler: oturum özeti toplantıları buradan alır (CalendarView sürekli açık kalır).
+  onExternalEvents?: (events: { id: string; content: string; dueDate: string; timeSlot: string; source: 'google' | 'outlook' }[]) => void;
   // Hızlı slot (Alt+rakam) yönlendirmesi: bugüne ve seçilen görünüme geç. Uygulandıktan sonra onNavHandled çağrılır.
   navRequest?: CalendarNavRequest | null;
   onNavHandled?: () => void;
@@ -640,7 +642,8 @@ export default function CalendarView({
   onOpenNotePath,
   onRequestFocusCalendar,
   autoWriteReady = true,
-  clientsFolder = 'Müşteriler'
+  clientsFolder = 'Müşteriler',
+  onExternalEvents
 }: CalendarViewProps) {
   // Toplantı brifingi (yapay zekâ): başlatıcı listesi + seçilen toplantının brifing penceresi.
   const [briefingLauncherOpen, setBriefingLauncherOpen] = useState(false);
@@ -857,16 +860,17 @@ export default function CalendarView({
     content: string; source: 'google' | 'outlook'; dueDate: string; timeSlot: string;
   } | null>(null);
 
+  // Gizli takvim adresi hiçbir üçüncü tarafa gönderilmez (eskiden CORS'ta api.allorigins.win vekiline gidiyordu).
+  // Masaüstünde okuma uygulamanın kendi tarafında yapılır; tarayıcı/telefonda doğrudan fetch denenir, olmazsa hata verilir.
   const fetchICSFeed = async (url: string) => {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Direct fetch failed');
-      return await res.text();
-    } catch {
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const res = await fetch(proxyUrl);
-      return await res.text();
+    if (window.electron?.fetchIcs) {
+      const r = await window.electron.fetchIcs(url);
+      if (!r.ok || typeof r.text !== 'string') throw new Error(r.error || 'Takvim okunamadı');
+      return r.text;
     }
+    const res = await fetch(url.replace(/^webcal:\/\//i, 'https://'));
+    if (!res.ok) throw new Error(`Takvim okunamadı (${res.status})`);
+    return await res.text();
   };
 
   useEffect(() => {
@@ -908,6 +912,8 @@ export default function CalendarView({
       clearInterval(interval);
     };
   }, [connectedCalendars, calendarUrls]);
+
+  useEffect(() => { onExternalEvents?.(externalEvents); }, [externalEvents]);
 
   // Combined array for all calendar renderings
   const allMergedEvents: WorkspaceTask[] = [

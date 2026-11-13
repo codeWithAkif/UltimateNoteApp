@@ -1,12 +1,19 @@
 ﻿import QuickSlotsSettings from './components/QuickSlotsSettings';
 import SessionSummaryModal, { type SessionBlockResult } from './components/SessionSummaryModal';
+import GapsModal, { type GapBlock } from './components/GapsModal';
 import {
-  recordSave, isIdle, summarizeSession, projectContextFrom, loadState, saveState, loadPending, savePending,
+  recordSave, isIdle, diffSession, buildDrafts, buildDetails, projectForPath, shouldTrack, IDLE_MS, projectContextFrom, loadState, saveState, loadPending, savePending,
   appendBlock, buildBlockLines, dayPathOf, dayHeaderOf, logPathOf, buildLogEntry, appendLog, ymdOf, hmOf,
-  type SessionState, type SessionSummary
+  type SessionState, type SessionSummary, type SessionItem
 } from './sessionTracker';
+import { addMinute, buildRuns, findGaps, loadActivity, saveActivity, type ActivityLog, type Interval } from './activityLog';
+import {
+  completedBlocksOfDay, meetingDrafts, parseSlot, loadMeetingsSeen, saveMeetingsSeen, loadGapsIgnored, saveGapsIgnored, loadCallsAdded, saveCallsAdded,
+  loadCallMap, saveCallMap, loadConsumed, saveConsumed, loadIncludeProjectless, saveIncludeProjectless, type DayBlock, type ExternalEvent
+} from './dayPlan';
+import { type ParsedCall } from './teamsCalls';
 import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
 import InboxView from './components/InboxView';
 import NoteFactoryView from './components/NoteFactoryView';
@@ -4374,17 +4381,103 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   }, []);
 
   // ---- Oturum özeti ----
+  // Veri iki kaynaktan gelir: (1) not baseline'ları (ne değişti) ve (2) etkinlik kaydı (ne zaman, hangi projede, molalar hariç; bkz. activityLog.ts).
+  // İkisi birleşip (proje × seans) takvim bloğu taslakları olur; Outlook toplantıları da taslak olarak eklenir.
+  const activityRef = useRef<ActivityLog>(loadActivity());
+  const activitySaveTimerRef = useRef<any>(null);
+  const lastBeatMinuteRef = useRef(0);
+  const lastSaveMinuteRef = useRef(0);
+  const projectsViewProjectRef = useRef<string | null>(null);
+  const externalEventsRef = useRef<ExternalEvent[]>([]);
+  const currentProjectKeyRef = useRef<() => string>(() => '');
+  const [includeProjectless, setIncludeProjectless] = useState<boolean>(() => loadIncludeProjectless());
+  const [gapsModalOpen, setGapsModalOpen] = useState(false);
+  const [callMap, setCallMap] = useState<Record<string, string>>(() => loadCallMap());
+
   const persistSessionStateSoon = () => {
     if (sessionSaveTimerRef.current) return;
     sessionSaveTimerRef.current = setTimeout(() => { sessionSaveTimerRef.current = null; saveState(sessionStateRef.current); }, 3000);
   };
+  const persistActivitySoon = () => {
+    if (activitySaveTimerRef.current) return;
+    activitySaveTimerRef.current = setTimeout(() => { activitySaveTimerRef.current = null; saveActivity(activityRef.current); }, 20000);
+  };
 
-  // Biten oturumu özetleyip "bekleyen" listesine ekler (net değişiklik yoksa hiçbir şey eklenmez).
-  const finalizeSessionToPending = (s: SessionState) => {
-    const summary = summarizeSession(s, fileContentsRef.current, projectContextFrom(notes, fileContentsRef.current));
-    if (!summary) return;
-    setPendingSessions(prev => { const next = [...prev, summary]; savePending(next); return next; });
+  // O an hangi projede çalışıldığı: açık not (proje notu ya da proje klasörü altındaki not) ya da Proje Yönetimi'nde seçili proje.
+  // Projeye bağlanamayan her şey '' (projesiz) sayılır: boşluk hesabında "hareket var" demektir ama bloğa dönüşmez.
+  currentProjectKeyRef.current = (): string => {
+    if (activeTab === 'notes' && activeNotePath) return projectForPath(activeNotePath, projectContextFrom(notes, fileContentsRef.current)) || '';
+    if (activeTab === 'projects') return projectsViewProjectRef.current || '';
+    return '';
+  };
+
+  // Etkinlik işareti: pencere odaktayken fare/klavye/dokunma olduğunda dakikada en çok bir kez kaydedilir.
+  useEffect(() => {
+    const beat = () => {
+      if (document.hidden || !document.hasFocus()) return;
+      const now = Date.now();
+      const minute = Math.floor(now / 60000);
+      if (minute === lastBeatMinuteRef.current) return;
+      lastBeatMinuteRef.current = minute;
+      if (addMinute(activityRef.current, currentProjectKeyRef.current(), now)) persistActivitySoon();
+    };
+    const evs: (keyof WindowEventMap)[] = ['pointerdown', 'keydown', 'wheel', 'mousemove', 'touchstart'];
+    evs.forEach(e => window.addEventListener(e, beat, { passive: true }));
+    const flush = () => saveActivity(activityRef.current);
+    window.addEventListener('beforeunload', flush);
+    return () => { evs.forEach(e => window.removeEventListener(e, beat)); window.removeEventListener('beforeunload', flush); };
+  }, []);
+
+  const addPending = (drafts: SessionSummary[]) => {
+    if (drafts.length === 0) return;
+    setPendingSessions(prev => {
+      const known = new Set(prev.map(p => p.id));
+      const next = [...prev, ...drafts.filter(d => !known.has(d.id))].sort((a, b) => a.start - b.start);
+      savePending(next);
+      return next;
+    });
     setSessionBannerHidden(false);
+  };
+
+  // Bitmiş seansları ve oturum farkını taslağa çevirir. force=true: elle açıldığında devam eden oturum da şimdi bitirilir.
+  const collectDrafts = (force: boolean): number => {
+    const now = Date.now();
+    const ctx = projectContextFrom(notes, fileContentsRef.current);
+    let items: SessionItem[] = [];
+    let touched: SessionState['touched'] = {};
+    const s = sessionStateRef.current;
+    if (s && (force || isIdle(s, now))) {
+      items = diffSession(s, fileContentsRef.current, ctx);
+      touched = s.touched;
+      sessionStateRef.current = null;
+      saveState(null);
+    }
+    // Hareket seansları: sürmekte olan oturumun seansları o oturum bitene kadar bekler (öğeleri henüz bilinmiyor).
+    const consumed = loadConsumed();
+    const runs = buildRuns(activityRef.current, Math.max(consumed, now - 7 * 24 * 3600 * 1000), now);
+    let limit = force ? now + 10 * 60000 : now - IDLE_MS;
+    const active = sessionStateRef.current;
+    if (active && !force) limit = Math.min(limit, active.start - 1);
+    const eligible = runs.filter(r => r.end <= limit);
+    const drafts = buildDrafts(items, touched, eligible, { includeProjectless, idPrefix: `s${now}` });
+    if (eligible.length > 0) saveConsumed(Math.max(consumed, ...eligible.map(r => r.end)));
+    addPending(drafts);
+    return drafts.length;
+  };
+
+  // Takvimden (Outlook/Google) gelen, bitmiş toplantılar: her biri bir kez taslak olur (atlansa da tekrar sorulmaz).
+  const collectMeetings = (): number => {
+    const events = externalEventsRef.current;
+    if (events.length === 0) return 0;
+    let hidden: string[] = [];
+    try { hidden = JSON.parse(localStorage.getItem('calendar_hidden_external_titles') || '[]'); } catch { hidden = []; }
+    const seen = loadMeetingsSeen();
+    const { drafts, keys } = meetingDrafts(events, hidden, seen, projectNamesFrom(notes, fileContentsRef.current), Date.now());
+    if (drafts.length === 0) return 0;
+    keys.forEach(k => seen.add(k));
+    saveMeetingsSeen(seen);
+    addPending(drafts);
+    return drafts.length;
   };
 
   // handleSaveNote'tan çağrılır: kullanıcının kaydettiği her notun önceki/yeni içeriğini oturuma işler.
@@ -4393,60 +4486,79 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     const { state, finalized } = recordSave(sessionStateRef.current, path, before, after);
     sessionStateRef.current = state;
     persistSessionStateSoon();
-    if (finalized) finalizeSessionToPending(finalized);
+    // Kaydın yapıldığı notun projesi o dakikanın etkinliği sayılır (Kanban sürüklemesi gibi tek tıklık işler de kaydolsun).
+    if (shouldTrack(path)) {
+      const now = Date.now();
+      const minute = Math.floor(now / 60000);
+      if (minute !== lastSaveMinuteRef.current) {
+        lastSaveMinuteRef.current = minute;
+        const p = projectForPath(path, projectContextFrom(notes, fileContentsRef.current)) || '';
+        if (addMinute(activityRef.current, p, now)) persistActivitySoon();
+      }
+    }
+    if (finalized) {
+      // Önceki oturum idle olduğu için bitmişti: farkını taslağa çevir (yeni oturum zaten başladı).
+      const ctx = projectContextFrom(notes, fileContentsRef.current);
+      const items = diffSession(finalized, fileContentsRef.current, ctx);
+      const runs = buildRuns(activityRef.current, Math.max(loadConsumed(), Date.now() - 7 * 24 * 3600 * 1000), finalized.lastActivity + 30 * 60000);
+      const eligible = runs.filter(r => r.end <= Date.now() - IDLE_MS && r.start < (state ? state.start : Infinity));
+      const drafts = buildDrafts(items, finalized.touched, eligible, { includeProjectless, idPrefix: `s${Date.now()}` });
+      if (eligible.length > 0) saveConsumed(Math.max(loadConsumed(), ...eligible.map(r => r.end)));
+      addPending(drafts);
+    }
   };
 
-  // Boşta kalma denetimi: 30 dk hareketsizlikten sonra oturum bitirilir (uygulama açıkken dakikada bir bakılır).
+  // Boşta kalma denetimi: uygulama açıkken dakikada bir bitmiş seansları/oturumları ve takvim toplantılarını taslağa çevirir.
   useEffect(() => {
     const check = () => {
-      const s = sessionStateRef.current;
-      if (s && isIdle(s) && Object.keys(fileContentsRef.current).length > 0) {
-        sessionStateRef.current = null;
-        saveState(null);
-        finalizeSessionToPending(s);
-      }
+      if (Object.keys(fileContentsRef.current).length === 0) return;
+      collectDrafts(false);
+      collectMeetings();
     };
     const timer = setInterval(check, 60000);
     const first = setTimeout(check, 8000); // uygulama yeniden açıldığında önceki oturumu hemen sonlandır
     return () => { clearInterval(timer); clearTimeout(first); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes]);
+  }, [notes, includeProjectless]);
 
   const showSessionToast = (text: string) => { setSessionToast(text); setTimeout(() => setSessionToast(null), 3500); };
 
-  // Çubuktaki düğme: bekleyen oturum varsa onu açar; yoksa şu anki oturumu bitirip özetler.
+  // Çubuktaki düğme: devam eden oturumu şimdi bitirip taslakları hazırlar ve pencereyi açar.
   const openSessionSummary = () => {
-    if (pendingSessions.length > 0) { setSessionModalOpen(true); return; }
-    const s = sessionStateRef.current;
-    if (!s) { showSessionToast('Bu oturumda henüz bir değişiklik yok.'); return; }
-    const summary = summarizeSession(s, fileContentsRef.current, projectContextFrom(notes, fileContentsRef.current));
-    if (!summary) { showSessionToast('Bu oturumda kaydedilmiş net bir değişiklik yok.'); return; }
-    sessionStateRef.current = null;
-    saveState(null);
-    setPendingSessions(prev => { const next = [...prev, summary]; savePending(next); return next; });
-    setSessionModalOpen(true);
+    const added = collectDrafts(true) + collectMeetings();
+    if (pendingSessions.length > 0 || added > 0) { setSessionModalOpen(true); return; }
+    showSessionToast('Bu oturumda henüz bir değişiklik ya da hareket yok.');
   };
 
   const sessionDeviceName = isBrowser ? 'web' : isElectron ? 'masaustu' : 'telefon';
   const removePendingSession = (id: string) => setPendingSessions(prev => { const next = prev.filter(p => p.id !== id); savePending(next); return next; });
 
   // Oturum kaydı: Sistem/Oturumlar/<gün>-<cihaz>.md (cihaz başına ayrı dosya, eşitlemede çakışmasın diye).
+  const readNoteForAppend = async (path: string): Promise<string | undefined> => {
+    const cached = fileContentsRef.current[path];
+    if (cached !== undefined) return cached;
+    return notes.some(n => n.path === path) ? await handleReadNoteContent(path) : undefined;
+  };
   const writeSessionLog = async (date: string, entry: string) => {
     const logPath = logPathOf(date, sessionDeviceName);
-    const existing = notes.some(n => n.path === logPath) ? await handleReadNoteContent(logPath) : undefined;
-    await handleSaveNote(logPath, appendLog(existing, date, entry));
+    await handleSaveNote(logPath, appendLog(await readNoteForAppend(logPath), date, entry));
   };
 
-  const processSessionBlock = async (id: string, b: SessionBlockResult) => {
+  // Takvim bloğunu günlük nota yazar ve oturum kaydına işler (taslaktan, boşluktan ya da Teams aramasından gelen her blok buradan geçer).
+  const writeBlockAndLog = async (b: { title: string; project: string; date: string; start: string; end: string; details: string[] }, status: string) => {
     suppressSessionTrackRef.current = true;
     try {
       const dayPath = dayPathOf(b.date);
-      const existing = notes.some(n => n.path === dayPath) ? await handleReadNoteContent(dayPath) : undefined;
-      await handleSaveNote(dayPath, appendBlock(existing, dayHeaderOf(b.date), buildBlockLines(b)));
-      await writeSessionLog(b.date, buildLogEntry({ start: b.start, end: b.end, title: b.title, project: b.project || undefined, status: 'takvime işlendi', items: b.items }));
+      const existing = await readNoteForAppend(dayPath);
+      await handleSaveNote(dayPath, appendBlock(existing, dayHeaderOf(b.date), buildBlockLines({ ...b, project: b.project || undefined })));
+      await writeSessionLog(b.date, buildLogEntry({ start: b.start, end: b.end, title: b.title, project: b.project || undefined, status, items: b.details }));
     } finally {
       suppressSessionTrackRef.current = false;
     }
+  };
+
+  const processSessionBlock = async (id: string, b: SessionBlockResult) => {
+    await writeBlockAndLog(b, 'takvime işlendi');
     removePendingSession(id);
     loadAllData();
     showSessionToast('Takvime işlendi.');
@@ -4462,19 +4574,59 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     removePendingSession(id);
   };
 
-  // Bekleyen tüm oturumları takvime yazmadan oturum kaydına "atlandı" olarak geçirir.
+  // Bekleyen tüm taslakları takvime yazmadan oturum kaydına "atlandı" olarak geçirir.
   const skipAllSessions = async () => {
     const all = pendingSessions;
     suppressSessionTrackRef.current = true;
     try {
       for (const p of all) {
-        await writeSessionLog(ymdOf(p.start), buildLogEntry({ start: hmOf(p.start), end: hmOf(p.end), title: p.suggestedTitle, status: 'atlandı', items: p.items.map(i => i.text) }));
+        await writeSessionLog(ymdOf(p.start), buildLogEntry({ start: hmOf(p.start), end: hmOf(p.end), title: p.suggestedTitle, status: 'atlandı', items: buildDetails(p.items) }));
       }
     } finally {
       suppressSessionTrackRef.current = false;
     }
     setPendingSessions(() => { savePending([]); return []; });
     setSessionModalOpen(false);
+  };
+
+  // Günün blokları (işlenmiş + bekleyen taslaklar): pencerede çakışma uyarısı için.
+  const dayBlocksFor = useCallback((ymd: string): DayBlock[] => {
+    const done = completedBlocksOfDay(fileContentsRef.current, ymd);
+    const pend: DayBlock[] = pendingSessions.filter(p => ymdOf(p.start) === ymd)
+      .map(p => ({ id: p.id, title: p.suggestedTitle, start: p.start, end: p.end, source: p.kind === 'toplanti' ? 'toplanti' as const : 'bekleyen' as const }));
+    return [...done, ...pend].sort((a, b) => a.start - b.start);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSessions]);
+
+  // Hareketsiz geçen aralıklar: hareket seansları, işlenmiş bloklar, bekleyen taslaklar ve takvim toplantıları dışında kalan boşluklar.
+  const gapsFor = useCallback((ymd: string): Interval[] => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const dayStart = new Date(y, m - 1, d).getTime();
+    const runs = buildRuns(activityRef.current, dayStart, dayStart + 24 * 3600 * 1000);
+    const busy: Interval[] = [
+      ...runs.map(r => ({ start: r.start, end: r.end })),
+      ...completedBlocksOfDay(fileContentsRef.current, ymd).map(b => ({ start: b.start, end: b.end })),
+      ...pendingSessions.filter(p => ymdOf(p.start) === ymd).map(p => ({ start: p.start, end: p.end })),
+      ...externalEventsRef.current.filter(e => e.dueDate === ymd).map(e => parseSlot(e.dueDate, e.timeSlot)).filter((x): x is Interval => !!x)
+    ];
+    const ignored = loadGapsIgnored();
+    return findGaps(busy, ymd, Date.now()).filter(g => !ignored.has(`${ymd}|${g.start}|${g.end}`));
+  }, [pendingSessions]);
+
+  const addGapBlock = async (b: GapBlock) => {
+    await writeBlockAndLog(b, b.status);
+    loadAllData();
+    showSessionToast('Takvime işlendi.');
+  };
+  const logGapOnly = async (ymd: string, start: string, end: string, title: string, status: string) => {
+    suppressSessionTrackRef.current = true;
+    try { await writeSessionLog(ymd, buildLogEntry({ start, end, title, status, items: [] })); }
+    finally { suppressSessionTrackRef.current = false; }
+  };
+  const ignoreGap = (ymd: string, g: Interval) => { const s = loadGapsIgnored(); s.add(`${ymd}|${g.start}|${g.end}`); saveGapsIgnored(s); };
+  const callDone = (call: ParsedCall, project: string) => {
+    const added = loadCallsAdded(); added.add(call.key); saveCallsAdded(added);
+    if (project) { const next = { ...loadCallMap(), [call.person.toLocaleLowerCase('tr')]: project }; saveCallMap(next); setCallMap(next); }
   };
 
   // Son açılan notu aç: başka bir sayfadaysanız en son görüntülediğiniz notu açar; zaten o notun üzerindeyseniz bir öncekine geçer
@@ -7935,6 +8087,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               navRequest={calendarNav}
               onNavHandled={() => setCalendarNav(null)}
               autoWriteReady={firstSyncSettled}
+              onExternalEvents={(evts) => { externalEventsRef.current = evts; }}
               clientsFolder={clientsFolder}
               notes={notes}
               folders={folders}
@@ -7986,6 +8139,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'projects' && (
             <ProjectsView
+              onProjectContext={(p) => { projectsViewProjectRef.current = p; }}
               timelineItems={timelineItems}
               navRequest={projectNav}
               onNavHandled={() => setProjectNav(null)}
@@ -11320,7 +11474,7 @@ grant execute on function get_db_size() to anon;`}
         <div style={{ position: 'fixed', bottom: pendingTranscript ? '130px' : '24px', left: '24px', zIndex: 99998, maxWidth: 'min(380px, calc(100vw - 48px))', boxSizing: 'border-box', background: 'var(--bg-secondary)', border: '1px solid var(--accent-color)', borderRadius: '12px', padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
           <div style={{ fontSize: '13px', fontWeight: 700 }}>Geçen çalışmanızı takvime işleyelim mi?</div>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '3px 0 10px' }}>
-            {pendingSessions.length} oturumda {pendingSessions.reduce((n, p) => n + p.items.length, 0)} hareket kaydedildi.
+            {pendingSessions.length} blok taslağı hazır ({pendingSessions.filter(p => p.kind !== 'toplanti').length} çalışma, {pendingSessions.filter(p => p.kind === 'toplanti').length} toplantı).
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
             <button type="button" onClick={() => setSessionModalOpen(true)} style={{ background: 'var(--accent-color)', color: '#fff', border: 'none', borderRadius: '8px', padding: '7px 12px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>Aç</button>
@@ -11337,10 +11491,28 @@ grant execute on function get_db_size() to anon;`}
           session={pendingSessions[0]}
           remaining={pendingSessions.length - 1}
           projectNames={projectNamesFrom(notes, fileContents)}
+          dayBlocksFor={dayBlocksFor}
           onProcess={(b) => processSessionBlock(pendingSessions[0].id, b)}
           onSkip={(items, title, start, end, date) => skipSession(pendingSessions[0].id, items, title, start, end, date)}
           onSkipAll={skipAllSessions}
+          onOpenGaps={() => setGapsModalOpen(true)}
           onClose={() => setSessionModalOpen(false)}
+        />
+      )}
+      {gapsModalOpen && (
+        <GapsModal
+          days={[0, 1, 2].map(n => ymdOf(Date.now() - n * 24 * 3600 * 1000))}
+          gapsFor={gapsFor}
+          projectNames={projectNamesFrom(notes, fileContents)}
+          callMap={callMap}
+          callsAdded={loadCallsAdded()}
+          includeProjectless={includeProjectless}
+          onToggleProjectless={(v) => { setIncludeProjectless(v); saveIncludeProjectless(v); }}
+          onAddBlock={addGapBlock}
+          onLog={logGapOnly}
+          onIgnoreGap={ignoreGap}
+          onCallDone={callDone}
+          onClose={() => setGapsModalOpen(false)}
         />
       )}
       {pendingTranscript && (
