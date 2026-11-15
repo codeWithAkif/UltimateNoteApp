@@ -8377,6 +8377,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <LanguageView
               fileContents={fileContents}
               onSaveNote={handleSaveNote}
+              theme={theme}
             />
           )}
 
