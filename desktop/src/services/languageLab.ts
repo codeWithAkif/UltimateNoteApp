@@ -30,26 +30,82 @@ export interface LabText extends LabReading {
   level: LabLevel;
   kind: 'story' | 'dialogue' | 'source';
   topic: string;
+  seriesId?: string;
+  episode?: number;
 }
 
-export interface LanguageLabState {
-  language: string;
+export interface LabSeries {
+  id: string;
+  title: string;
+  premise: string;
+  summary: string;
+  episodes: number;
+  created: string;
+}
+
+export interface LangData {
   level: LabLevel;
   easyStreak: number;
   hardStreak: number;
   words: SavedWord[];
   log: LabLogEntry[];
   texts: LabText[];
+  series: LabSeries[];
   finishedCount: number;
   learnedCount: number;
 }
 
+export interface LabPlan { enabled: boolean; time: string; goalMinutes: number }
+
+export interface LanguageLabState extends LangData {
+  language: string;
+  stash: Record<string, LangData>;
+  plan: LabPlan;
+}
+
 export const MAX_TEXTS = 50;
 
-export const emptyLabState = (): LanguageLabState => ({
-  language: '', level: 'A1', easyStreak: 0, hardStreak: 0, words: [], log: [],
-  texts: [], finishedCount: 0, learnedCount: 0
+export const emptyLangData = (level: LabLevel = 'A1'): LangData => ({
+  level, easyStreak: 0, hardStreak: 0, words: [], log: [], texts: [], series: [], finishedCount: 0, learnedCount: 0
 });
+
+export const DEFAULT_PLAN: LabPlan = { enabled: false, time: '20:00', goalMinutes: 20 };
+
+export const emptyLabState = (): LanguageLabState => ({
+  language: '', ...emptyLangData(), stash: {}, plan: { ...DEFAULT_PLAN }
+});
+
+export const languageNames = (s: LanguageLabState): string[] =>
+  [s.language, ...Object.keys(s.stash)].filter(Boolean);
+
+const splitData = (s: LanguageLabState): LangData => {
+  const { language, stash, plan, ...data } = s;
+  return data;
+};
+
+export const switchLanguage = (s: LanguageLabState, name: string, level: LabLevel = 'A1'): LanguageLabState => {
+  const wanted = name.trim();
+  const existing = languageNames(s).find(n => n.toLowerCase() === wanted.toLowerCase());
+  if (existing === s.language) return s;
+  const stash = { ...s.stash };
+  if (s.language) stash[s.language] = splitData(s);
+  const key = existing ?? wanted;
+  const data = stash[key] ?? emptyLangData(level);
+  delete stash[key];
+  return { language: key, ...data, stash, plan: s.plan };
+};
+
+export const deleteLanguage = (s: LanguageLabState): LanguageLabState => {
+  const [next] = Object.keys(s.stash);
+  if (!next) return { ...emptyLabState(), plan: s.plan };
+  const stash = { ...s.stash };
+  const data = stash[next];
+  delete stash[next];
+  return { language: next, ...data, stash, plan: s.plan };
+};
+
+export const allLogs = (s: LanguageLabState): LabLogEntry[] =>
+  [...s.log, ...Object.values(s.stash).flatMap(d => d.log)];
 
 export const textOf = (r: LabReading): string =>
   r.sentences.map(x => x.text.trim() + (x.newLine ? '\n' : ' ')).join('');
@@ -73,7 +129,10 @@ export const parseLabState = (raw: string | undefined): LanguageLabState => {
   if (!m) return emptyLabState();
   try {
     const p = JSON.parse(m[1]);
-    return { ...emptyLabState(), ...p, level: LEVELS.includes(p.level) ? p.level : 'A1' };
+    const base = emptyLabState();
+    const stash: Record<string, LangData> = {};
+    for (const [k, v] of Object.entries(p.stash || {})) stash[k] = { ...emptyLangData(), ...(v as object) };
+    return { ...base, ...p, stash, plan: { ...base.plan, ...(p.plan || {}) }, level: LEVELS.includes(p.level) ? p.level : 'A1' };
   } catch {
     return emptyLabState();
   }
@@ -82,7 +141,7 @@ export const parseLabState = (raw: string | undefined): LanguageLabState => {
 export const serializeLabState = (s: LanguageLabState): string => {
   const known = s.words.length;
   const total = s.log.reduce((a, l) => a + l.minutes, 0);
-  return `# Dil Atölyesi\n\nHedef dil: ${s.language || '-'} · Seviye: ${s.level} · Kayıtlı kelime: ${known} · Devam eden içerik: ${s.texts.length} · Bitirilen: ${s.finishedCount} · Toplam input: ${total} dk\n\n\`\`\`json\n${JSON.stringify(s)}\n\`\`\`\n`;
+  return `# Dil Atölyesi\n\nHedef dil: ${s.language || '-'}${Object.keys(s.stash).length ? ` (+${Object.keys(s.stash).join(', ')})` : ''} · Seviye: ${s.level} · Kayıtlı kelime: ${known} · Devam eden içerik: ${s.texts.length} · Bitirilen: ${s.finishedCount} · Toplam input: ${total} dk\n\n\`\`\`json\n${JSON.stringify(s)}\n\`\`\`\n`;
 };
 
 export const todayKey = (): string => {
@@ -91,10 +150,37 @@ export const todayKey = (): string => {
 };
 
 export const minutesToday = (s: LanguageLabState): number =>
-  s.log.filter(l => l.date === todayKey()).reduce((a, l) => a + l.minutes, 0);
+  allLogs(s).filter(l => l.date === todayKey()).reduce((a, l) => a + l.minutes, 0);
+
+export const totalMinutes = (s: LanguageLabState): number => s.log.reduce((a, l) => a + l.minutes, 0);
+
+export const formatDuration = (min: number): string =>
+  min >= 60 ? `${Math.floor(min / 60)} sa ${min % 60} dk` : `${min} dk`;
+
+export const weekMinutes = (s: LanguageLabState): { date: string; label: string; minutes: number }[] => {
+  const names = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+  const logs = allLogs(s);
+  const out: { date: string; label: string; minutes: number }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    out.push({ date, label: names[d.getDay()], minutes: logs.filter(l => l.date === date).reduce((a, l) => a + l.minutes, 0) });
+  }
+  return out;
+};
+
+export const countOccurrences = (text: string, word: string): number => {
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try {
+    return (text.match(new RegExp(`(?<![\\p{L}\\p{M}])${esc}(?![\\p{L}\\p{M}])`, 'giu')) || []).length;
+  } catch {
+    return text.toLowerCase().includes(word.toLowerCase()) ? 1 : 0;
+  }
+};
 
 export const inputStreak = (s: LanguageLabState): number => {
-  const days = new Set(s.log.filter(l => l.minutes > 0).map(l => l.date));
+  const days = new Set(allLogs(s).filter(l => l.minutes > 0).map(l => l.date));
   let streak = 0;
   const d = new Date();
   if (!days.has(todayKey())) d.setDate(d.getDate() - 1);
@@ -170,6 +256,33 @@ export const generateReading = async (
 ${RULES}
 title hedef dilde olsun. Sadece JSON döndür.`;
   return clean(await callAIJson<LabReading>(prompt, READING_SCHEMA));
+};
+
+const SERIES_SCHEMA = {
+  ...READING_SCHEMA,
+  properties: { ...READING_SCHEMA.properties, summary: { type: 'string' } },
+  required: [...READING_SCHEMA.required, 'summary']
+};
+
+export const generateEpisode = async (
+  language: string,
+  level: LabLevel,
+  premise: string,
+  prevSummary: string,
+  episode: number,
+  reviewWords: SavedWord[]
+): Promise<LabReading & { summary: string }> => {
+  const review = reviewWords.length
+    ? `Şu kelimeleri metne doğal şekilde yedir (zorlama olmasın): ${reviewWords.map(w => w.word).join(', ')}.`
+    : '';
+  const story = prevSummary
+    ? `Hikâyenin şimdiye kadarki özeti: ${prevSummary}\nBu ${episode}. bölüm; hikâyeyi tutarlı biçimde devam ettir, aynı karakterleri kullan ve bölümü merak uyandıran bir yerde bitir.`
+    : `Bu hikâyenin 1. bölümü. Konu/kurgu: ${premise || 'ilgi çekici bir macera'}. Ana karakterleri ve mekânı tanıt.`;
+  const prompt = `Bir dil edinme uygulaması için ${language} dilinde ${level} seviyesinde, yaklaşık 150-200 kelimelik bölümlü bir hikâyenin ${episode}. bölümünü yaz. ${story} ${review}
+${RULES}
+title hedef dilde "bölüm adı" olsun. summary alanına bu bölüm dahil hikâyenin şimdiye kadarki özetini Türkçe yaz (karakter adları, yerler, olaylar; en fazla 120 kelime). Sadece JSON döndür.`;
+  const r = await callAIJson<LabReading & { summary: string }>(prompt, SERIES_SCHEMA);
+  return { ...clean(r), summary: unescapeAIText(r.summary || '') };
 };
 
 export const adaptSource = async (language: string, level: LabLevel, source: string): Promise<LabReading> => {

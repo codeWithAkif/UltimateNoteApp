@@ -52,6 +52,7 @@ import DashboardView from './components/DashboardView';
 import CityBuilderView from './components/CityBuilderView';
 import HunterView from './components/HunterView';
 import LanguageView from './components/LanguageView';
+import LanguageReminder, { LANGUAGE_REMINDER_NOTIFICATION_ID } from './components/LanguageReminder';
 import DiaryView from './components/DiaryView';
 import type { Track } from './components/MusicPlayerView';
 import { format } from 'date-fns';
@@ -3258,8 +3259,9 @@ export default function App() {
       });
 
       const pending = await LocalNotifications.getPending();
-      if (pending.notifications.length > 0) {
-        await LocalNotifications.cancel({ notifications: pending.notifications });
+      const stalePending = pending.notifications.filter(n => n.id !== LANGUAGE_REMINDER_NOTIFICATION_ID);
+      if (stalePending.length > 0) {
+        await LocalNotifications.cancel({ notifications: stalePending });
       }
 
       const activeTodos = tasks.filter(t => t.isTodo && !t.isCompleted);
@@ -8368,6 +8370,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onSaveNote={handleSaveNote}
             />
           )}
+
+          <LanguageReminder fileContents={fileContents} />
 
           {activeTab === 'language' && (
             <LanguageView
