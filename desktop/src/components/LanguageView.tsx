@@ -5,7 +5,7 @@ import { pcmBase64ToWavUrl, stripMarkdownForSpeech } from '../aiTeacher';
 import {
   LANGUAGE_LAB_NOTE_PATH, LEVELS, parseLabState, serializeLabState, todayKey,
   minutesToday, inputStreak, applyFeedback, pickReviewWords, generateReading, adaptSource,
-  explainWord, generatePlacement, levelFromPlacement,
+  explainWord, translateSentence, generatePlacement, levelFromPlacement,
   type LanguageLabState, type LabReading, type PlacementPassage, type SavedWord, type WordExplanation
 } from '../services/languageLab';
 
@@ -32,13 +32,18 @@ const tokenize = (text: string): Token[] => {
   return out;
 };
 
-const sentenceAt = (text: string, index: number): string => {
-  const ends = /[.!?。！？\n]/;
-  let a = index;
-  while (a > 0 && !ends.test(text[a - 1])) a--;
-  let b = index;
-  while (b < text.length && !ends.test(text[b])) b++;
-  return text.slice(a, Math.min(b + 1, text.length)).trim();
+interface Segment { start: number; end: number; text: string; tokens: Token[] }
+
+const splitSegments = (text: string, tokens: Token[]): Segment[] => {
+  const re = /[^.!?。！？\n]+[.!?。！？]*["'”’)]*\s*|[.!?。！？]+\s*|\n+/g;
+  const out: Segment[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const start = m.index;
+    const end = start + m[0].length;
+    out.push({ start, end, text: m[0], tokens: tokens.filter(t => t.start >= start && t.start < end) });
+  }
+  return out;
 };
 
 const card: React.CSSProperties = {
@@ -83,7 +88,9 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
   const [reviewUsed, setReviewUsed] = useState<SavedWord[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [picked, setPicked] = useState<{ word: string; sentence: string; exp: WordExplanation | null; loading: boolean } | null>(null);
+  const [picked, setPicked] = useState<{ word: string; sentence: string; segStart: number; exp: WordExplanation | null; loading: boolean; translation: string | null } | null>(null);
+  const translations = useRef<Map<string, string>>(new Map());
+  const [audioKey, setAudioKey] = useState<'full' | 'sentence' | null>(null);
   const [finished, setFinished] = useState(false);
   const [audioState, setAudioState] = useState<'idle' | 'loading' | 'playing'>('idle');
   const startRef = useRef(0);
@@ -94,6 +101,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
   const stopAudio = () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     setAudioState('idle');
+    setAudioKey(null);
   };
   useEffect(() => stopAudio, []);
 
@@ -131,16 +139,29 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     openReading(await adaptSource(state.language, state.level, sourceText), []);
   });
 
-  const onWordClick = (token: Token) => {
+  const onWordClick = (token: Token, seg: Segment) => {
     if (!reading) return;
-    const sentence = sentenceAt(reading.text, token.start);
+    const sentence = seg.text.trim();
     const key = token.text.toLowerCase();
     const g = reading.glossary.find(x => x.word.toLowerCase() === key);
-    if (g) { setPicked({ word: token.text, sentence, exp: { meaning: g.meaning, note: '' }, loading: false }); return; }
-    setPicked({ word: token.text, sentence, exp: null, loading: true });
-    explainWord(state.language, token.text, sentence)
-      .then(exp => setPicked(p => (p && p.word === token.text ? { ...p, exp, loading: false } : p)))
-      .catch(e => { setPicked(p => (p ? { ...p, loading: false } : p)); setError(String(e?.message || e)); });
+    const cached = translations.current.get(sentence) ?? null;
+    setPicked({
+      word: token.text, sentence, segStart: seg.start,
+      exp: g ? { meaning: g.meaning, note: '' } : null, loading: !g, translation: cached
+    });
+    if (!g) {
+      explainWord(state.language, token.text, sentence)
+        .then(exp => setPicked(p => (p && p.word === token.text && p.segStart === seg.start ? { ...p, exp, loading: false } : p)))
+        .catch(e => { setPicked(p => (p ? { ...p, loading: false } : p)); setError(String(e?.message || e)); });
+    }
+    if (cached === null) {
+      translateSentence(state.language, sentence)
+        .then(tr => {
+          translations.current.set(sentence, tr);
+          setPicked(p => (p && p.sentence === sentence ? { ...p, translation: tr } : p));
+        })
+        .catch(e => setError(String(e?.message || e)));
+    }
   };
 
   const saveWord = () => {
@@ -154,19 +175,19 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     setPicked(null);
   };
 
-  const playAudio = async () => {
-    if (!reading) return;
-    if (audioState === 'playing') { stopAudio(); return; }
-    setAudioState('loading'); setError('');
+  const playAudio = async (text: string, key: 'full' | 'sentence') => {
+    if (audioState !== 'idle' && audioKey === key) { stopAudio(); return; }
+    stopAudio();
+    setAudioKey(key); setAudioState('loading'); setError('');
     try {
-      const { audioBase64, mimeType } = await synthesizeSpeech(stripMarkdownForSpeech(reading.text).slice(0, 1800));
+      const { audioBase64, mimeType } = await synthesizeSpeech(stripMarkdownForSpeech(text).slice(0, 1800));
       const audio = new Audio(pcmBase64ToWavUrl(audioBase64, mimeType));
       audioRef.current = audio;
-      audio.addEventListener('ended', () => setAudioState('idle'));
+      audio.addEventListener('ended', () => { setAudioState('idle'); setAudioKey(null); });
       await audio.play();
       setAudioState('playing');
     } catch (e: any) {
-      setAudioState('idle');
+      setAudioState('idle'); setAudioKey(null);
       setError(String(e?.message || e));
     }
   };
@@ -183,7 +204,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     setFinished(true);
   };
 
-  const tokens = useMemo(() => (reading ? tokenize(reading.text) : []), [reading]);
+  const segments = useMemo(() => (reading ? splitSegments(reading.text, tokenize(reading.text)) : []), [reading]);
 
   if (!state.language) {
     return (
@@ -302,31 +323,41 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
           <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <b style={{ fontSize: 18 }}>{reading.title}</b>
-              <button style={btn(false, audioState === 'loading')} disabled={audioState === 'loading'} onClick={playAudio}>
-                {audioState === 'loading' ? 'Ses hazırlanıyor...' : audioState === 'playing' ? '⏹ Durdur' : '🔊 Dinle'}
+              <button style={btn(false, audioState === 'loading' && audioKey === 'full')} disabled={audioState === 'loading' && audioKey === 'full'} onClick={() => playAudio(reading.text, 'full')}>
+                {audioKey === 'full' && audioState === 'loading' ? 'Ses hazırlanıyor...' : audioKey === 'full' && audioState === 'playing' ? '⏹ Durdur' : '🔊 Tümünü dinle'}
               </button>
             </div>
             <div style={{ fontSize: 19, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>
-              {tokens.map((t, i) => t.isWord
-                ? <span key={i} onClick={() => onWordClick(t)} style={{ cursor: 'pointer', borderBottom: '1px dotted rgba(56,189,248,0.5)' }}>{t.text}</span>
-                : <span key={i}>{t.text}</span>)}
+              {segments.map(seg => (
+                <React.Fragment key={seg.start}>
+                  {seg.tokens.map((t, i) => t.isWord
+                    ? <span key={i} onClick={() => onWordClick(t, seg)} style={{ cursor: 'pointer', borderBottom: '1px dotted rgba(56,189,248,0.5)' }}>{t.text}</span>
+                    : <span key={i}>{t.text}</span>)}
+                  {picked && picked.segStart === seg.start && (
+                    <div style={{ ...card, background: 'rgba(14,165,233,0.1)', margin: '8px 0', fontSize: 16, lineHeight: 1.6, whiteSpace: 'normal' }}>
+                      <div style={{ fontWeight: 700, fontSize: 17 }}>{picked.word}</div>
+                      {picked.loading && <div style={{ opacity: 0.7 }}>Bakılıyor...</div>}
+                      {picked.exp && <>
+                        <div style={{ marginTop: 4 }}>{picked.exp.meaning}</div>
+                        {picked.exp.note && <div style={{ opacity: 0.75, marginTop: 4 }}>{picked.exp.note}</div>}
+                      </>}
+                      <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(148,163,184,0.2)' }}>
+                        <div style={{ opacity: 0.6, fontSize: 13 }}>Cümlenin anlamı</div>
+                        <div>{picked.translation ?? 'Çevriliyor...'}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                        <button style={btn(true, !picked.exp)} disabled={!picked.exp} onClick={saveWord}>Kelimelerime ekle</button>
+                        <button style={btn(false, audioKey === 'sentence' && audioState === 'loading')} disabled={audioKey === 'sentence' && audioState === 'loading'} onClick={() => playAudio(picked.sentence, 'sentence')}>
+                          {audioKey === 'sentence' && audioState === 'loading' ? 'Ses hazırlanıyor...' : audioKey === 'sentence' && audioState === 'playing' ? '⏹ Durdur' : '🔊 Cümleyi oku'}
+                        </button>
+                        <button style={btn()} onClick={() => { stopAudio(); setPicked(null); }}>Kapat</button>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
             </div>
             <div style={{ opacity: 0.6, fontSize: 13 }}>Bilmediğin kelimeye dokun, anlamı bu cümledeki hâliyle gör.</div>
-
-            {picked && (
-              <div style={{ ...card, background: 'rgba(14,165,233,0.1)' }}>
-                <div style={{ fontWeight: 700, fontSize: 17 }}>{picked.word}</div>
-                {picked.loading && <div style={{ opacity: 0.7 }}>Bakılıyor...</div>}
-                {picked.exp && <>
-                  <div style={{ marginTop: 4 }}>{picked.exp.meaning}</div>
-                  {picked.exp.note && <div style={{ opacity: 0.75, marginTop: 4 }}>{picked.exp.note}</div>}
-                </>}
-                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                  <button style={btn(true, !picked.exp)} disabled={!picked.exp} onClick={saveWord}>Kelimelerime ekle</button>
-                  <button style={btn()} onClick={() => setPicked(null)}>Kapat</button>
-                </div>
-              </div>
-            )}
 
             {!finished ? (
               <div>

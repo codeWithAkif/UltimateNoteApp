@@ -158,6 +158,19 @@ meaning: kısa Türkçe karşılık. note: en fazla bir cümle, bağlamı veya k
   return callAIJson<WordExplanation>(prompt, WORD_SCHEMA);
 };
 
+const TRANSLATION_SCHEMA = {
+  type: 'object',
+  properties: { translation: { type: 'string' } },
+  required: ['translation']
+};
+
+export const translateSentence = async (language: string, sentence: string): Promise<string> => {
+  const prompt = `${language} dilindeki şu cümlenin doğal Türkçe karşılığını ver: "${sentence}"
+Sadece çeviriyi translation alanına yaz, açıklama ekleme. Sadece JSON döndür.`;
+  const r = await callAIJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA);
+  return unescapeAIText(r.translation);
+};
+
 export interface PlacementPassage { level: LabLevel; text: string }
 
 const PLACEMENT_SCHEMA = {
