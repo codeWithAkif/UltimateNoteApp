@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { synthesizeSpeech, isGeminiConfigured } from '../services/geminiMentor';
-import { isClaudeConfigured } from '../services/claudeApi';
+import { synthesizeSpeech, getGeminiApiKey } from '../services/geminiMentor';
+import { getClip, putClip, pruneClips } from '../services/audioCache';
 import { pcmBase64ToWavUrl, stripMarkdownForSpeech } from '../aiTeacher';
 import {
   LANGUAGE_LAB_NOTE_PATH, LEVELS, parseLabState, serializeLabState, todayKey,
@@ -91,9 +91,11 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
   const [audioState, setAudioState] = useState<'idle' | 'loading' | 'playing'>('idle');
   const [audioKey, setAudioKey] = useState<'full' | 'sentence' | null>(null);
   const startRef = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const aiReady = isGeminiConfigured() || isClaudeConfigured();
+  const aiReady = !!getGeminiApiKey();
   const reading = useMemo(() => state.texts.find(t => t.id === openId) ?? null, [state.texts, openId]);
   const segments = useMemo(() => (reading ? buildSegments(reading) : []), [reading]);
 
@@ -103,6 +105,12 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     setAudioKey(null);
   };
   useEffect(() => stopAudio, []);
+
+  const textIdsKey = [...state.texts, ...Object.values(state.stash).flatMap(d => d.texts)].map(t => t.id).join(',');
+  useEffect(() => {
+    if (raw === undefined) return;
+    pruneClips(new Set(textIdsKey ? textIdsKey.split(',') : []));
+  }, [raw, textIdsKey]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setError(''); setNotice('');
@@ -197,13 +205,19 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     const key = token.text.toLowerCase();
     const saved = state.words.find(w => w.word.toLowerCase() === key);
     const g = reading.glossary.find(x => x.word.toLowerCase() === key);
+    const cacheKey = `${seg.key}:${key}`;
+    const cachedExp = reading.explained?.[cacheKey];
     const known = saved
       ? { meaning: saved.meaning, note: `Kayıtlı kelime · ${saved.seen} kez karşılaştın`, native: saved.native }
-      : g ? { meaning: g.meaning, note: '', native: g.native } : null;
+      : g ? { meaning: g.meaning, note: '', native: g.native } : cachedExp ?? null;
     setPicked({ word: token.text, segKey: seg.key, exp: known, loading: !known });
     if (!known) {
       explainWord(state.language, token.text, seg.text, seg.native)
-        .then(exp => setPicked(p => (p && p.word === token.text && p.segKey === seg.key ? { ...p, exp, loading: false } : p)))
+        .then(exp => {
+          setPicked(p => (p && p.word === token.text && p.segKey === seg.key ? { ...p, exp, loading: false } : p));
+          const cur = stateRef.current;
+          persist({ ...cur, texts: cur.texts.map(t => (t.id === reading.id ? { ...t, explained: { ...t.explained, [cacheKey]: exp } } : t)) });
+        })
         .catch(e => { setPicked(p => (p ? { ...p, loading: false } : p)); setError(String(e?.message || e)); });
     }
   };
@@ -224,15 +238,25 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     persist({ ...state, words: state.words.filter(x => x !== w), learnedCount: state.learnedCount + 1 });
   };
 
-  const playAudio = async (text: string, key: 'full' | 'sentence') => {
+  const playAudio = async (text: string, key: 'full' | 'sentence', clipKey: string) => {
+    if (!reading) return;
     if (audioState !== 'idle' && audioKey === key) { stopAudio(); return; }
     stopAudio();
     setAudioKey(key); setAudioState('loading'); setError('');
     try {
-      const { audioBase64, mimeType } = await synthesizeSpeech(stripMarkdownForSpeech(text).slice(0, 1800));
-      const audio = new Audio(pcmBase64ToWavUrl(audioBase64, mimeType));
+      const storeKey = `${reading.id}|${clipKey}`;
+      let blob = await getClip(storeKey);
+      if (!blob) {
+        const { audioBase64, mimeType } = await synthesizeSpeech(stripMarkdownForSpeech(text).slice(0, 1800));
+        const tmpUrl = pcmBase64ToWavUrl(audioBase64, mimeType);
+        blob = await (await fetch(tmpUrl)).blob();
+        URL.revokeObjectURL(tmpUrl);
+        await putClip(storeKey, blob);
+      }
+      const objUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objUrl);
       audioRef.current = audio;
-      audio.addEventListener('ended', () => { setAudioState('idle'); setAudioKey(null); });
+      audio.addEventListener('ended', () => { URL.revokeObjectURL(objUrl); setAudioState('idle'); setAudioKey(null); });
       await audio.play();
       setAudioState('playing');
     } catch (e: any) {
@@ -272,7 +296,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
             Gramer ve ezber yok. Seviyenin biraz üstünde, anlayabileceğin içeriğe bol bol maruz kalarak dili edinirsin.
             Hangi dili istersen seçebilirsin.
           </div>
-          {!aiReady && <div style={{ ...card, borderColor: '#f59e0b' }}>Önce Ayarlar &gt; AI Mentor bölümünden Gemini ya da Claude anahtarı ekle.</div>}
+          {!aiReady && <div style={{ ...card, borderColor: '#f59e0b' }}>Önce Ayarlar &gt; AI Mentor bölümünden Gemini anahtarı ekle.</div>}
           {!placement && (
             <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
@@ -439,7 +463,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
               <button
                 style={btn(false, audioState === 'loading' && audioKey === 'full')}
                 disabled={audioState === 'loading' && audioKey === 'full'}
-                onClick={() => playAudio(textOf(reading), 'full')}
+                onClick={() => playAudio(textOf(reading), 'full', 'full')}
               >
                 {audioKey === 'full' && audioState === 'loading' ? 'Ses hazırlanıyor...' : audioKey === 'full' && audioState === 'playing' ? '⏹ Durdur' : '🔊 Tümünü dinle'}
               </button>
@@ -472,7 +496,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
                         <button
                           style={btn(false, audioKey === 'sentence' && audioState === 'loading')}
                           disabled={audioKey === 'sentence' && audioState === 'loading'}
-                          onClick={() => playAudio(seg.native, 'sentence')}
+                          onClick={() => playAudio(seg.native, 'sentence', `s${seg.key}`)}
                         >
                           {audioKey === 'sentence' && audioState === 'loading' ? 'Ses hazırlanıyor...' : audioKey === 'sentence' && audioState === 'playing' ? '⏹ Durdur' : '🔊 Cümleyi oku'}
                         </button>

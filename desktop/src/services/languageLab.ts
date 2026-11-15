@@ -1,4 +1,7 @@
-import { callAIJson } from './geminiMentor';
+import { callGeminiOnly } from './geminiMentor';
+
+// Dil Atölyesi yalnızca Google Gemini kullanır (Claude yedeği yok).
+const callAIJson = <T>(prompt: string, schema: any): Promise<T> => callGeminiOnly<T>(prompt, schema);
 import { unescapeAIText } from '../aiTeacher';
 
 export const LANGUAGE_LAB_NOTE_PATH = 'Sistem/DilAtolyesi.md';
@@ -36,6 +39,7 @@ export interface LabText extends LabReading {
   topic: string;
   seriesId?: string;
   episode?: number;
+  explained?: Record<string, WordExplanation>;
 }
 
 export interface LabSeries {

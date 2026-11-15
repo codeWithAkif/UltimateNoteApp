@@ -58,7 +58,7 @@ const isFallbackWorthy = (e: any): boolean => {
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Gemini'nin "responseSchema" ile yapılandırılmış JSON çıktısı özelliğini kullanır —
 // serbest metin ayrıştırmaya güvenmek yerine her zaman geçerli JSON döndürmesini garanti eder.
-async function callGeminiOnly<T>(prompt: string, responseSchema: any): Promise<T> {
+export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Promise<T> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
