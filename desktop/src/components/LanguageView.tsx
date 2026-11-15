@@ -14,6 +14,7 @@ interface LanguageViewProps {
   fileContents: Record<string, string>;
   onSaveNote: (path: string, content: string, opts?: { lightweight?: boolean }) => Promise<void>;
   theme?: 'dark' | 'light';
+  loaded?: boolean;
 }
 
 interface Token { text: string; isWord: boolean; start: number }
@@ -83,7 +84,7 @@ const Icon = ({ name, size = 22, fill = 'none' }: { name: keyof typeof ICONS; si
 const TOPICS = ['Günlük hayat', 'Seyahat', 'Yemek', 'Teknoloji', 'İş hayatı', 'Macera hikâyesi'];
 const KIND_LABEL: Record<LabText['kind'], string> = { story: 'Hikâye', dialogue: 'Diyalog', source: 'Kendi kaynağım' };
 
-export default function LanguageView({ fileContents, onSaveNote, theme = 'dark' }: LanguageViewProps) {
+export default function LanguageView({ fileContents, onSaveNote, theme = 'dark', loaded = true }: LanguageViewProps) {
   const raw = fileContents[LANGUAGE_LAB_NOTE_PATH];
   const [override, setOverride] = useState<LanguageLabState | null>(null);
   const base = useMemo(() => parseLabState(raw), [raw]);
@@ -361,6 +362,14 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark' 
   const eyebrow: React.CSSProperties = { fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', color: P.primary };
   const h3: React.CSSProperties = { margin: 0, fontFamily: P.heading, fontSize: dark ? 19 : 20, fontWeight: dark ? 900 : 700 };
   const muted: React.CSSProperties = { color: P.muted, fontSize: 13, fontWeight: 600 };
+
+  if (!loaded && raw === undefined) {
+    return (
+      <div ref={setEl} style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: P.bg, color: P.muted, fontFamily: P.body, fontWeight: 700 }}>
+        Kayıtların yükleniyor...
+      </div>
+    );
+  }
 
   if (!state.language || adding) {
     return (

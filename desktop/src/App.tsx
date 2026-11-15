@@ -548,6 +548,7 @@ export default function App() {
   // Zaman Akışı'na her render'da yeni dizi gitmesin (alt görevler hariç, yalnızca veri değişince yeniden hesaplanır).
   const timelineItemsTopLevel = useMemo(() => timelineItems.filter(item => !item.isSubtask), [timelineItems]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const [filesLoaded, setFilesLoaded] = useState(false);
   // 60 saniyelik periyodik tarama (applyAutoStopUnfinishedToLine) her tetiklendiğinde GÜNCEL
   // fileContents'a erişebilmek için — effect'in bağımlılığı kasıtlı olarak dar tutulduğundan
   // (bkz. useEffect([notes.length > 0])), setInterval içindeki closure'ın state'i bayat
@@ -4099,6 +4100,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
         const rawTimeline: TimelineItem[] = metadataObj.timeline || [];
         const { tasks: scannedTasks, fileContents: scannedContents, alarms: scannedAlarms } = await scanTasksFromAllNotes(filteredList);
         setFileContents(scannedContents);
+        setFilesLoaded(true);
         
         const activeNotePaths = new Set(fileList.filter(n => n.type === 'note').map(n => n.path));
         const filteredRawTimeline = rawTimeline.filter(item => {
@@ -4253,6 +4255,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       const rawTimeline: TimelineItem[] = parsedMeta.timeline || [];
       const { tasks: scannedTasks, fileContents: scannedContents, alarms: scannedAlarms } = await scanTasksFromAllNotes(parsedNotes);
       setFileContents(scannedContents);
+      setFilesLoaded(true);
       
       const activeNotePaths = new Set(parsedNotes.filter((n: any) => n.type === 'note').map((n: any) => n.path));
       const filteredRawTimeline = rawTimeline.filter(item => {
@@ -8378,6 +8381,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               fileContents={fileContents}
               onSaveNote={handleSaveNote}
               theme={theme}
+              loaded={filesLoaded}
             />
           )}
 
