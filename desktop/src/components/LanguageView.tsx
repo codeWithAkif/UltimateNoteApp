@@ -5,7 +5,7 @@ import { pcmBase64ToWavUrl, stripMarkdownForSpeech } from '../aiTeacher';
 import {
   LANGUAGE_LAB_NOTE_PATH, LEVELS, parseLabState, serializeLabState, todayKey,
   minutesToday, inputStreak, applyFeedback, pickReviewWords, generateReading, adaptSource,
-  explainWord, generatePlacement, levelFromPlacement, makeLabText, addText, textOf,
+  explainWord, sentenceDisplay, generatePlacement, levelFromPlacement, makeLabText, addText, textOf,
   switchLanguage, deleteLanguage, languageNames, totalMinutes, formatDuration, weekMinutes, countOccurrences, generateEpisode,
   type LanguageLabState, type LabText, type LabSeries, type PlacementPassage, type SavedWord, type WordExplanation
 } from '../services/languageLab';
@@ -16,7 +16,7 @@ interface LanguageViewProps {
 }
 
 interface Token { text: string; isWord: boolean; start: number }
-interface Segment { key: number; text: string; translation: string; newLine: boolean; tokens: Token[] }
+interface Segment { key: number; text: string; native: string; translation: string; newLine: boolean; tokens: Token[] }
 
 const tokenize = (text: string): Token[] => {
   const Seg = (Intl as any).Segmenter;
@@ -35,9 +35,10 @@ const tokenize = (text: string): Token[] => {
 };
 
 const buildSegments = (t: LabText): Segment[] =>
-  t.sentences.map((s, i) => ({
-    key: i, text: s.text.trim(), translation: s.translation, newLine: !!s.newLine, tokens: tokenize(s.text.trim())
-  }));
+  t.sentences.map((s, i) => {
+    const shown = sentenceDisplay(s).trim();
+    return { key: i, text: shown, native: s.text.trim(), translation: s.translation, newLine: !!s.newLine, tokens: tokenize(shown) };
+  });
 
 const card: React.CSSProperties = {
   background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 12, padding: 16
@@ -197,11 +198,11 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     const saved = state.words.find(w => w.word.toLowerCase() === key);
     const g = reading.glossary.find(x => x.word.toLowerCase() === key);
     const known = saved
-      ? { meaning: saved.meaning, note: `Kayıtlı kelime · ${saved.seen} kez karşılaştın` }
-      : g ? { meaning: g.meaning, note: '' } : null;
+      ? { meaning: saved.meaning, note: `Kayıtlı kelime · ${saved.seen} kez karşılaştın`, native: saved.native }
+      : g ? { meaning: g.meaning, note: '', native: g.native } : null;
     setPicked({ word: token.text, segKey: seg.key, exp: known, loading: !known });
     if (!known) {
-      explainWord(state.language, token.text, seg.text)
+      explainWord(state.language, token.text, seg.text, seg.native)
         .then(exp => setPicked(p => (p && p.word === token.text && p.segKey === seg.key ? { ...p, exp, loading: false } : p)))
         .catch(e => { setPicked(p => (p ? { ...p, loading: false } : p)); setError(String(e?.message || e)); });
     }
@@ -214,7 +215,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
     const seg = segments.find(s => s.key === picked.segKey);
     persist({
       ...state,
-      words: [...state.words, { word: picked.word, meaning: picked.exp.meaning, context: seg?.text ?? '', seen: 0, added: todayKey() }]
+      words: [...state.words, { word: picked.word, meaning: picked.exp.meaning, context: seg?.text ?? '', native: picked.exp.native, contextNative: seg && seg.native !== seg.text ? seg.native : undefined, seen: 0, added: todayKey() }]
     });
     setPicked(null);
   };
@@ -243,7 +244,7 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
   const finish = (fb: 'easy' | 'ok' | 'hard') => {
     if (!reading) return;
     const minutes = Math.min(30, Math.max(1, Math.round((Date.now() - startRef.current) / 60000)));
-    const full = textOf(reading);
+    const full = reading.sentences.map(x => sentenceDisplay(x)).join(' ');
     const words = state.words.map(w => {
       const c = countOccurrences(full, w.word);
       return c ? { ...w, seen: w.seen + c } : w;
@@ -304,7 +305,9 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
             return (
               <div style={card}>
                 <div style={{ opacity: 0.7, marginBottom: 6 }}>Metin {i + 1}/{placement.length} — çeviri gerekmeden anladın mı?</div>
-                <div style={{ fontSize: 18, lineHeight: 1.6, marginBottom: 12 }}>{placement[i].text}</div>
+                <div style={{ fontSize: 18, lineHeight: 1.6, marginBottom: 12 }}>
+                  {placement[i].latin ? <><div>{placement[i].latin}</div><div style={{ opacity: 0.7 }}>{placement[i].text}</div></> : placement[i].text}
+                </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button style={btn(true)} onClick={() => setAnswers([...answers, true])}>Anladım</button>
                   <button style={btn()} onClick={() => setAnswers([...answers, false, ...Array(placement.length - i - 1).fill(false)])}>Anlamadım</button>
@@ -456,18 +459,20 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
                       {picked.loading && <div style={{ opacity: 0.7 }}>Bakılıyor...</div>}
                       {picked.exp && <>
                         <div style={{ marginTop: 4 }}>{picked.exp.meaning}</div>
+                        {picked.exp.native && picked.exp.native !== picked.word && <div style={{ fontSize: 22, marginTop: 4 }}>{picked.exp.native}</div>}
                         {picked.exp.note && <div style={{ opacity: 0.75, marginTop: 4 }}>{picked.exp.note}</div>}
                       </>}
                       <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(148,163,184,0.2)' }}>
                         <div style={{ opacity: 0.6, fontSize: 13 }}>Cümlenin anlamı</div>
                         <div>{seg.translation || '—'}</div>
+                        {seg.native !== seg.text && <div style={{ fontSize: 20, marginTop: 6 }}>{seg.native}</div>}
                       </div>
                       <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                         <button style={btn(true, !picked.exp || pickedSaved)} disabled={!picked.exp || pickedSaved} onClick={saveWord}>{pickedSaved ? 'Kayıtlı' : 'Kelimelerim\'e ekle'}</button>
                         <button
                           style={btn(false, audioKey === 'sentence' && audioState === 'loading')}
                           disabled={audioKey === 'sentence' && audioState === 'loading'}
-                          onClick={() => playAudio(seg.text, 'sentence')}
+                          onClick={() => playAudio(seg.native, 'sentence')}
                         >
                           {audioKey === 'sentence' && audioState === 'loading' ? 'Ses hazırlanıyor...' : audioKey === 'sentence' && audioState === 'playing' ? '⏹ Durdur' : '🔊 Cümleyi oku'}
                         </button>
@@ -557,8 +562,9 @@ export default function LanguageView({ fileContents, onSaveNote }: LanguageViewP
             {[...state.words].reverse().map(w => (
               <div key={w.word + w.added} style={{ borderBottom: '1px solid rgba(148,163,184,0.15)', paddingBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <div style={{ flex: 1 }}>
-                  <div><b>{w.word}</b> — {w.meaning}</div>
+                  <div><b>{w.word}</b>{w.native && w.native !== w.word ? ` (${w.native})` : ''} — {w.meaning}</div>
                   <div style={{ opacity: 0.65, fontSize: 14 }}>{w.context}</div>
+                  {w.contextNative && <div style={{ opacity: 0.65, fontSize: 14 }}>{w.contextNative}</div>}
                   <div style={{ opacity: 0.5, fontSize: 12 }}>{w.seen} kez karşılaştın</div>
                 </div>
                 <button style={btn()} onClick={() => learnWord(w)}>Öğrendim</button>

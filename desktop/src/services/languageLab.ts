@@ -10,18 +10,22 @@ export interface SavedWord {
   word: string;
   meaning: string;
   context: string;
+  native?: string;
+  contextNative?: string;
   seen: number;
   added: string;
 }
 
 export interface LabLogEntry { date: string; minutes: number; words: number }
 
-export interface LabSentence { text: string; translation: string; newLine?: boolean }
+export interface LabSentence { text: string; latin?: string; translation: string; newLine?: boolean }
+
+export const sentenceDisplay = (s: LabSentence): string => s.latin?.trim() || s.text;
 
 export interface LabReading {
   title: string;
   sentences: LabSentence[];
-  glossary: { word: string; meaning: string }[];
+  glossary: { word: string; meaning: string; native?: string }[];
 }
 
 export interface LabText extends LabReading {
@@ -216,7 +220,7 @@ const READING_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { text: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' } },
+        properties: { text: { type: 'string' }, latin: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' } },
         required: ['text', 'translation']
       }
     },
@@ -224,7 +228,7 @@ const READING_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { word: { type: 'string' }, meaning: { type: 'string' } },
+        properties: { word: { type: 'string' }, meaning: { type: 'string' }, native: { type: 'string' } },
         required: ['word', 'meaning']
       }
     }
@@ -236,11 +240,18 @@ const clean = (r: LabReading): LabReading => ({
   title: unescapeAIText(r.title),
   sentences: (Array.isArray(r.sentences) ? r.sentences : [])
     .filter(x => x && typeof x.text === 'string' && x.text.trim())
-    .map(x => ({ text: unescapeAIText(x.text), translation: unescapeAIText(x.translation || ''), newLine: !!x.newLine })),
-  glossary: Array.isArray(r.glossary) ? r.glossary : []
+    .map(x => ({
+      text: unescapeAIText(x.text),
+      latin: x.latin && x.latin.trim() ? unescapeAIText(x.latin) : undefined,
+      translation: unescapeAIText(x.translation || ''),
+      newLine: !!x.newLine
+    })),
+  glossary: Array.isArray(r.glossary)
+    ? r.glossary.map(g => ({ word: g.word, meaning: g.meaning, native: g.native && g.native.trim() ? g.native : undefined }))
+    : []
 });
 
-const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun.`;
+const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun. Hedef dil Latin alfabesi kullanmıyorsa (ör. Japonca, Korece, Çince, Arapça, Rusça, Hintçe): sentences öğesinde text alanına cümleyi dilin KENDİ yazısıyla, latin alanına aynı cümlenin Latin harfli okunuşunu (Japoncada romaji, Korecede romanizasyon, Çincede pinyin) kelimeler boşlukla ayrılmış şekilde yaz; glossary öğesinde word alanına kelimeyi latin alanındaki Latin yazılışıyla, native alanına aynı kelimeyi dilin kendi yazısıyla koy. Dil Latin alfabesi kullanıyorsa latin ve native alanlarını boş bırak.`;
 
 export const generateReading = async (
   language: string,
@@ -296,21 +307,22 @@ Sadece JSON döndür.`;
   return clean(await callAIJson<LabReading>(prompt, READING_SCHEMA));
 };
 
-export interface WordExplanation { meaning: string; note: string }
+export interface WordExplanation { meaning: string; note: string; native?: string }
 
 const WORD_SCHEMA = {
   type: 'object',
-  properties: { meaning: { type: 'string' }, note: { type: 'string' } },
+  properties: { meaning: { type: 'string' }, note: { type: 'string' }, native: { type: 'string' } },
   required: ['meaning', 'note']
 };
 
-export const explainWord = async (language: string, word: string, sentence: string): Promise<WordExplanation> => {
-  const prompt = `${language} dilinde "${word}" kelimesinin bu cümledeki anlamını Türkçe ver: "${sentence}"
-meaning: kısa Türkçe karşılık. note: en fazla bir cümle, bağlamı veya kullanımı anlatan Türkçe not (gramer terimi kullanma). Sadece JSON döndür.`;
+export const explainWord = async (language: string, word: string, sentence: string, nativeSentence = ''): Promise<WordExplanation> => {
+  const original = nativeSentence && nativeSentence !== sentence ? ` (dilin kendi yazısıyla: "${nativeSentence}")` : '';
+  const prompt = `${language} dilinde "${word}" kelimesinin bu cümledeki anlamını Türkçe ver: "${sentence}"${original}
+meaning: kısa Türkçe karşılık. native: kelimenin dilin KENDİ yazısıyla yazılışı (dil Latin alfabesi kullanıyorsa boş bırak). note: en fazla bir cümle, bağlamı veya kullanımı anlatan Türkçe not (gramer terimi kullanma). Sadece JSON döndür.`;
   return callAIJson<WordExplanation>(prompt, WORD_SCHEMA);
 };
 
-export interface PlacementPassage { level: LabLevel; text: string }
+export interface PlacementPassage { level: LabLevel; text: string; latin?: string }
 
 const PLACEMENT_SCHEMA = {
   type: 'object',
@@ -319,7 +331,7 @@ const PLACEMENT_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { level: { type: 'string' }, text: { type: 'string' } },
+        properties: { level: { type: 'string' }, text: { type: 'string' }, latin: { type: 'string' } },
         required: ['level', 'text']
       }
     }
@@ -328,11 +340,11 @@ const PLACEMENT_SCHEMA = {
 };
 
 export const generatePlacement = async (language: string): Promise<PlacementPassage[]> => {
-  const prompt = `${language} dilinde seviye tespiti için 5 kısa metin yaz (her biri 1-2 cümle), giderek zorlaşan: A1, A2, B1, B2, C1 seviyelerinde, bu sırayla. Her metnin level alanı seviyesi olsun. Sadece JSON döndür.`;
+  const prompt = `${language} dilinde seviye tespiti için 5 kısa metin yaz (her biri 1-2 cümle), giderek zorlaşan: A1, A2, B1, B2, C1 seviyelerinde, bu sırayla. Her metnin level alanı seviyesi olsun. Dil Latin alfabesi kullanmıyorsa text alanına dilin kendi yazısıyla, latin alanına Latin harfli okunuşunu (romaji, pinyin vb.) yaz; kullanıyorsa latin alanını boş bırak. Sadece JSON döndür.`;
   const r = await callAIJson<{ passages: PlacementPassage[] }>(prompt, PLACEMENT_SCHEMA);
   return r.passages
     .filter(p => LEVELS.includes(p.level))
-    .map(p => ({ level: p.level, text: unescapeAIText(p.text) }));
+    .map(p => ({ level: p.level, text: unescapeAIText(p.text), latin: p.latin && p.latin.trim() ? unescapeAIText(p.latin) : undefined }));
 };
 
 export const levelFromPlacement = (understood: boolean[], passages: PlacementPassage[]): LabLevel => {
