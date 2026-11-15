@@ -16,6 +16,22 @@ export interface SavedWord {
 
 export interface LabLogEntry { date: string; minutes: number; words: number }
 
+export interface LabSentence { text: string; translation: string; newLine?: boolean }
+
+export interface LabReading {
+  title: string;
+  sentences: LabSentence[];
+  glossary: { word: string; meaning: string }[];
+}
+
+export interface LabText extends LabReading {
+  id: string;
+  created: string;
+  level: LabLevel;
+  kind: 'story' | 'dialogue' | 'source';
+  topic: string;
+}
+
 export interface LanguageLabState {
   language: string;
   level: LabLevel;
@@ -23,11 +39,31 @@ export interface LanguageLabState {
   hardStreak: number;
   words: SavedWord[];
   log: LabLogEntry[];
+  texts: LabText[];
+  finishedCount: number;
+  learnedCount: number;
 }
 
+export const MAX_TEXTS = 50;
+
 export const emptyLabState = (): LanguageLabState => ({
-  language: '', level: 'A1', easyStreak: 0, hardStreak: 0, words: [], log: []
+  language: '', level: 'A1', easyStreak: 0, hardStreak: 0, words: [], log: [],
+  texts: [], finishedCount: 0, learnedCount: 0
 });
+
+export const textOf = (r: LabReading): string =>
+  r.sentences.map(x => x.text.trim() + (x.newLine ? '\n' : ' ')).join('');
+
+export const makeLabText = (r: LabReading, level: LabLevel, kind: LabText['kind'], topic: string): LabText => ({
+  ...r, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+  created: todayKey(), level, kind, topic
+});
+
+export const addText = (s: LanguageLabState, t: LabText): { state: LanguageLabState; dropped: boolean } => {
+  const texts = [t, ...s.texts];
+  const dropped = texts.length > MAX_TEXTS;
+  return { state: { ...s, texts: texts.slice(0, MAX_TEXTS) }, dropped };
+};
 
 const JSON_BLOCK = /```json\n([\s\S]*?)\n```/;
 
@@ -46,7 +82,7 @@ export const parseLabState = (raw: string | undefined): LanguageLabState => {
 export const serializeLabState = (s: LanguageLabState): string => {
   const known = s.words.length;
   const total = s.log.reduce((a, l) => a + l.minutes, 0);
-  return `# Dil Atölyesi\n\nHedef dil: ${s.language || '-'} · Seviye: ${s.level} · Kayıtlı kelime: ${known} · Toplam input: ${total} dk\n\n\`\`\`json\n${JSON.stringify(s)}\n\`\`\`\n`;
+  return `# Dil Atölyesi\n\nHedef dil: ${s.language || '-'} · Seviye: ${s.level} · Kayıtlı kelime: ${known} · Devam eden içerik: ${s.texts.length} · Bitirilen: ${s.finishedCount} · Toplam input: ${total} dk\n\n\`\`\`json\n${JSON.stringify(s)}\n\`\`\`\n`;
 };
 
 export const todayKey = (): string => {
@@ -86,17 +122,18 @@ export const applyFeedback = (s: LanguageLabState, fb: 'easy' | 'ok' | 'hard'): 
 export const pickReviewWords = (s: LanguageLabState, n = 5): SavedWord[] =>
   [...s.words].sort((a, b) => a.seen - b.seen).slice(0, n);
 
-export interface LabReading {
-  title: string;
-  text: string;
-  glossary: { word: string; meaning: string }[];
-}
-
 const READING_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    text: { type: 'string' },
+    sentences: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { text: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' } },
+        required: ['text', 'translation']
+      }
+    },
     glossary: {
       type: 'array',
       items: {
@@ -106,16 +143,18 @@ const READING_SCHEMA = {
       }
     }
   },
-  required: ['title', 'text', 'glossary']
+  required: ['title', 'sentences', 'glossary']
 };
 
 const clean = (r: LabReading): LabReading => ({
   title: unescapeAIText(r.title),
-  text: unescapeAIText(r.text),
+  sentences: (Array.isArray(r.sentences) ? r.sentences : [])
+    .filter(x => x && typeof x.text === 'string' && x.text.trim())
+    .map(x => ({ text: unescapeAIText(x.text), translation: unescapeAIText(x.translation || ''), newLine: !!x.newLine })),
   glossary: Array.isArray(r.glossary) ? r.glossary : []
 });
 
-const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy.`;
+const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun.`;
 
 export const generateReading = async (
   language: string,
@@ -156,19 +195,6 @@ export const explainWord = async (language: string, word: string, sentence: stri
   const prompt = `${language} dilinde "${word}" kelimesinin bu cümledeki anlamını Türkçe ver: "${sentence}"
 meaning: kısa Türkçe karşılık. note: en fazla bir cümle, bağlamı veya kullanımı anlatan Türkçe not (gramer terimi kullanma). Sadece JSON döndür.`;
   return callAIJson<WordExplanation>(prompt, WORD_SCHEMA);
-};
-
-const TRANSLATION_SCHEMA = {
-  type: 'object',
-  properties: { translation: { type: 'string' } },
-  required: ['translation']
-};
-
-export const translateSentence = async (language: string, sentence: string): Promise<string> => {
-  const prompt = `${language} dilindeki şu cümlenin doğal Türkçe karşılığını ver: "${sentence}"
-Sadece çeviriyi translation alanına yaz, açıklama ekleme. Sadece JSON döndür.`;
-  const r = await callAIJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA);
-  return unescapeAIText(r.translation);
 };
 
 export interface PlacementPassage { level: LabLevel; text: string }
