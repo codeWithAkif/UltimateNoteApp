@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { synthesizeSpeech, getGeminiApiKey } from '../services/geminiMentor';
+import { getGeminiApiKey } from '../services/geminiMentor';
+import { synthesizeLesson } from '../services/lessonSpeech';
+import { buildTurns, assignVoices, singleTurnPlan } from '../services/lessonVoices';
+import { alignTurns, proportionalStarts, sentenceAt } from '../services/readAlign';
 import { getClip, putClip, pruneClips } from '../services/audioCache';
-import { pcmBase64ToWavUrl, stripMarkdownForSpeech } from '../aiTeacher';
+import { stripMarkdownForSpeech } from '../aiTeacher';
 import {
   LANGUAGE_LAB_NOTE_PATH, LEVELS, parseLabState, serializeLabState, todayKey,
   minutesToday, inputStreak, applyFeedback, pickReviewWords, generateReading, adaptSource,
   explainWord, sentenceDisplay, generatePlacement, levelFromPlacement, makeLabText, addText, textOf,
-  switchLanguage, deleteLanguage, languageNames, totalMinutes, formatDuration, weekMinutes, countOccurrences, generateEpisode,
+  switchLanguage, deleteLanguage, languageNames, totalMinutes, formatDuration, weekMinutes, countOccurrences, generateEpisode, annotateReading,
   type LanguageLabState, type LabText, type LabSeries, type PlacementPassage, type SavedWord, type WordExplanation
 } from '../services/languageLab';
 
@@ -123,6 +126,9 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
   const stateRef = useRef(state);
   stateRef.current = state;
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // "Tümünü dinle" sırasında o an okunan cümle (renklendirilir) ve çalma anını izleyen animasyon döngüsü.
+  const [activeSeg, setActiveSeg] = useState<number>(-1);
+  const rafRef = useRef<number | null>(null);
 
   const aiReady = !!getGeminiApiKey();
   const [showGen, setShowGen] = useState(false);
@@ -148,10 +154,17 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
   const segments = useMemo(() => (reading ? buildSegments(reading) : []), [reading]);
 
   const stopAudio = () => {
+    if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     setAudioState('idle');
     setAudioKey(null);
+    setActiveSeg(-1);
   };
+  // Okunan cümle görünür alanın dışına çıkarsa kaydır.
+  useEffect(() => {
+    if (activeSeg < 0) return;
+    document.querySelector(`[data-seg="${activeSeg}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeSeg]);
   useEffect(() => stopAudio, []);
 
   const textIdsKey = [...state.texts, ...Object.values(state.stash).flatMap(d => d.texts)].map(t => t.id).join(',');
@@ -287,29 +300,81 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
     persist({ ...state, words: state.words.filter(x => x !== w), learnedCount: state.learnedCount + 1 });
   };
 
-  const playAudio = async (text: string, key: 'full' | 'sentence', clipKey: string) => {
+  // Ses dosyasındaki cümle başlangıçlarını bulur (sessizliklere yaslı); ses çözülemezse süreye göre orantılı tahmin.
+  const computeStarts = async (blob: Blob, texts: string[], audio: HTMLAudioElement): Promise<number[]> => {
+    try {
+      const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AC();
+      const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+      try { ctx.close?.(); } catch { /* yoksay */ }
+      return alignTurns(buf.getChannelData(0), buf.sampleRate, texts).starts;
+    } catch {
+      const d = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : texts.join(' ').length / 14;
+      return proportionalStarts(texts, d).starts;
+    }
+  };
+
+  const playAudio = async (_text: string, key: 'full' | 'sentence', clipKey: string) => {
     if (!reading) return;
     if (audioState !== 'idle' && audioKey === key) { stopAudio(); return; }
     stopAudio();
     setAudioKey(key); setAudioState('loading'); setError('');
     try {
-      const storeKey = `${reading.id}|${clipKey}`;
+      // Konuşan kişi / duygu bilgisi yoksa (eski içerik) bir kez çıkarılır ve içerikle birlikte kaydedilir.
+      let current = reading;
+      if (!current.sentences.some(x => x.tone || x.speaker) && getGeminiApiKey()) {
+        try {
+          const annotated = await annotateReading(stateRef.current.language, current.sentences);
+          if (annotated.some(x => x.tone || x.speaker)) {
+            current = { ...current, sentences: annotated };
+            const id = current.id;
+            const updated = current;
+            persist({ ...stateRef.current, texts: stateRef.current.texts.map(t => (t.id === id ? updated : t)) });
+          }
+        } catch { /* analiz olmadan da okunur (öneklerden konuşmacı çıkarılır) */ }
+      }
+      const turns = buildTurns(current.sentences, current.kind, stripMarkdownForSpeech);
+      const plan = assignVoices(turns);
+      const sentenceIdx = key === 'sentence' ? parseInt(clipKey.replace(/^\D+/, ''), 10) : -1;
+      const sel = key === 'full' ? turns.filter(t => t.text) : turns.filter(t => t.index === sentenceIdx && t.text);
+      if (sel.length === 0) throw new Error('Seslendirilecek metin yok.');
+
+      // Çok sesli içerik ayrı anahtarla saklanır (eski tek sesli kayıtlar yeniden kullanılmaz).
+      const suffix = key === 'full' ? (plan.multi ? 'full3' : 'full') : `${plan.multi ? 'm' : ''}${clipKey}`;
+      const storeKey = `${reading.id}|${suffix}`;
       let blob = await getClip(storeKey);
       if (!blob) {
-        const { audioBase64, mimeType } = await synthesizeSpeech(stripMarkdownForSpeech(text).slice(0, 1800));
-        const tmpUrl = pcmBase64ToWavUrl(audioBase64, mimeType);
-        blob = await (await fetch(tmpUrl)).blob();
-        URL.revokeObjectURL(tmpUrl);
+        const usePlan = key === 'full' ? plan : singleTurnPlan(plan, sel[0]);
+        blob = (await synthesizeLesson(sel, usePlan)).blob;
         await putClip(storeKey, blob);
       }
       const objUrl = URL.createObjectURL(blob);
       const audio = new Audio(objUrl);
       audioRef.current = audio;
-      audio.addEventListener('ended', () => { URL.revokeObjectURL(objUrl); setAudioState('idle'); setAudioKey(null); });
+      audio.addEventListener('ended', () => {
+        URL.revokeObjectURL(objUrl);
+        if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+        setActiveSeg(-1); setAudioState('idle'); setAudioKey(null);
+      });
+      let starts: number[] | null = null;
+      if (key === 'full') starts = await computeStarts(blob, sel.map(t => t.text), audio);
+      if (audioRef.current !== audio) return; // bu arada durduruldu
       await audio.play();
       setAudioState('playing');
+      if (starts) {
+        const idxMap = sel.map(t => t.index);
+        const st = starts;
+        const tick = () => {
+          if (audioRef.current !== audio) return;
+          const i = sentenceAt(st, audio.currentTime);
+          const seg = i >= 0 ? idxMap[i] : -1;
+          setActiveSeg(prev => (prev === seg ? prev : seg));
+          rafRef.current = requestAnimationFrame(tick);
+        };
+        rafRef.current = requestAnimationFrame(tick);
+      }
     } catch (e: any) {
-      setAudioState('idle'); setAudioKey(null);
+      setAudioState('idle'); setAudioKey(null); setActiveSeg(-1);
       setError(String(e?.message || e));
     }
   };
@@ -696,6 +761,7 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
       <div style={{ fontFamily: P.read, fontSize: wide ? 26 : 22, lineHeight: wide ? 1.75 : 1.65, fontWeight: dark ? 700 : 600, whiteSpace: 'pre-wrap', maxWidth: 760 }}>
         {segments.map(seg => (
           <React.Fragment key={seg.key}>
+            <span data-seg={seg.key} style={activeSeg === seg.key ? { background: `${P.primary}33`, boxShadow: `0 0 0 3px ${P.primary}33`, borderRadius: 8, transition: 'background 0.2s' } : undefined}>
             {seg.tokens.map((t, i) => {
               if (!t.isWord) return <span key={i}>{t.text}</span>;
               const isSaved = savedSet.has(t.text.toLowerCase());
@@ -708,6 +774,7 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
                 }}>{t.text}</span>
               );
             })}
+            </span>
             {!dark ? null : picked && picked.segKey === seg.key && wordPanel(seg)}
             {seg.newLine ? '\n' : ' '}
           </React.Fragment>

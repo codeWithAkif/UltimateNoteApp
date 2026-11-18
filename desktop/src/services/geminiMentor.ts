@@ -18,7 +18,7 @@ const GEMINI_MODEL_STORAGE = 'gemini_model';
 // kotası dolunca kullanıcı kod değiştirmeden başka (henüz kotası dolmamış) bir flash
 // modeline geçebilsin diye.
 const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export const getGeminiApiKey = (): string | null => {
   return localStorage.getItem(GEMINI_KEY_STORAGE);
@@ -312,7 +312,7 @@ Sadece JSON döndür.`;
 // (kullanıcının Ayarlar'dan seçtiği genel metin modeli DEĞİL — TTS için ayrı model gerekir).
 const TTS_MODEL = 'gemini-2.5-flash-preview-tts';
 
-export const synthesizeSpeech = async (text: string): Promise<{ audioBase64: string; mimeType: string }> => {
+export const synthesizeSpeech = async (text: string, voiceName: string = 'Kore'): Promise<{ audioBase64: string; mimeType: string }> => {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
@@ -328,7 +328,7 @@ export const synthesizeSpeech = async (text: string): Promise<{ audioBase64: str
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+            voiceConfig: { prebuiltVoiceConfig: { voiceName } }
           }
         }
       })

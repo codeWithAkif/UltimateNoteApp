@@ -21,7 +21,9 @@ export interface SavedWord {
 
 export interface LabLogEntry { date: string; minutes: number; words: number }
 
-export interface LabSentence { text: string; latin?: string; translation: string; newLine?: boolean }
+// speaker/tone/gender: sesli okuma içindir. speaker konuşan kişi (anlatıcı ise boş ya da 'Anlatıcı'), tone cümlenin söyleniş duygusu (İngilizce kısa ifade),
+// gender konuşanın cinsiyeti ('f' | 'm'). Eski içeriklerde yoktur; ilk "Tümünü dinle"de bir kez çıkarılıp kaydedilir (bkz. annotateReading).
+export interface LabSentence { text: string; latin?: string; translation: string; newLine?: boolean; speaker?: string; tone?: string; gender?: 'f' | 'm' }
 
 export const sentenceDisplay = (s: LabSentence): string => s.latin?.trim() || s.text;
 
@@ -224,7 +226,7 @@ const READING_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { text: { type: 'string' }, latin: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' } },
+        properties: { text: { type: 'string' }, latin: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' }, speaker: { type: 'string' }, tone: { type: 'string' }, gender: { type: 'string' } },
         required: ['text', 'translation']
       }
     },
@@ -240,6 +242,18 @@ const READING_SCHEMA = {
   required: ['title', 'sentences', 'glossary']
 };
 
+// Sesli okuma alanlarını doğrular: boş/geçersiz olanlar hiç yazılmaz (eski içeriklerle aynı biçim kalır).
+const cleanVoiceFields = (x: { speaker?: string; tone?: string; gender?: string }): Partial<LabSentence> => {
+  const out: Partial<LabSentence> = {};
+  const sp = typeof x.speaker === 'string' ? x.speaker.trim().slice(0, 40) : '';
+  const tone = typeof x.tone === 'string' ? x.tone.trim().slice(0, 80) : '';
+  const g = typeof x.gender === 'string' ? x.gender.trim().toLowerCase() : '';
+  if (sp) out.speaker = sp;
+  if (tone) out.tone = tone;
+  if (g === 'f' || g === 'm') out.gender = g;
+  return out;
+};
+
 const clean = (r: LabReading): LabReading => ({
   title: unescapeAIText(r.title),
   sentences: (Array.isArray(r.sentences) ? r.sentences : [])
@@ -248,14 +262,15 @@ const clean = (r: LabReading): LabReading => ({
       text: unescapeAIText(x.text),
       latin: x.latin && x.latin.trim() ? unescapeAIText(x.latin) : undefined,
       translation: unescapeAIText(x.translation || ''),
-      newLine: !!x.newLine
+      newLine: !!x.newLine,
+      ...cleanVoiceFields(x)
     })),
   glossary: Array.isArray(r.glossary)
     ? r.glossary.map(g => ({ word: g.word, meaning: g.meaning, native: g.native && g.native.trim() ? g.native : undefined }))
     : []
 });
 
-const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun. Hedef dil Latin alfabesi kullanmıyorsa (ör. Japonca, Korece, Çince, Arapça, Rusça, Hintçe): sentences öğesinde text alanına cümleyi dilin KENDİ yazısıyla, latin alanına aynı cümlenin Latin harfli okunuşunu (Japoncada romaji, Korecede romanizasyon, Çincede pinyin) kelimeler boşlukla ayrılmış şekilde yaz; glossary öğesinde word alanına kelimeyi latin alanındaki Latin yazılışıyla, native alanına aynı kelimeyi dilin kendi yazısıyla koy. Dil Latin alfabesi kullanıyorsa latin ve native alanlarını boş bırak.`;
+const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun. Hedef dil Latin alfabesi kullanmıyorsa (ör. Japonca, Korece, Çince, Arapça, Rusça, Hintçe): sentences öğesinde text alanına cümleyi dilin KENDİ yazısıyla, latin alanına aynı cümlenin Latin harfli okunuşunu (Japoncada romaji, Korecede romanizasyon, Çincede pinyin) kelimeler boşlukla ayrılmış şekilde yaz; glossary öğesinde word alanına kelimeyi latin alanındaki Latin yazılışıyla, native alanına aynı kelimeyi dilin kendi yazısıyla koy. Dil Latin alfabesi kullanıyorsa latin ve native alanlarını boş bırak. Sesli okuma için her öğede ayrıca speaker (o cümleyi söyleyen kişinin adı; anlatıcı ise 'Anlatıcı'), tone (cümlenin söyleniş duygusu: İngilizce 2-5 sözcük, örn. 'cheerful and friendly', 'surprised', 'worried, speaking quietly', 'angry', 'sad', 'calm storytelling'; yalnızca ses tonunu anlat, yaş/cinsiyet/aksan yazma) ve gender (konuşan kişi kadınsa 'f', erkekse 'm'; anlatıcı için boş) alanlarını doldur.`;
 
 export const generateReading = async (
   language: string,
@@ -358,4 +373,42 @@ export const levelFromPlacement = (understood: boolean[], passages: PlacementPas
     best = passages[i].level;
   }
   return best;
+};
+
+
+// Eski içerikler için: her cümlenin konuşanını, söyleniş tonunu ve konuşanın cinsiyetini tek istekte çıkarır (sonuç içerikle birlikte kaydedilir,
+// bir daha sorulmaz). Yalnızca cümle metni ve Türkçe çevirisi gönderilir.
+const ANNOTATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    lines: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { i: { type: 'integer' }, speaker: { type: 'string' }, tone: { type: 'string' }, gender: { type: 'string' } },
+        required: ['i', 'speaker', 'tone']
+      }
+    }
+  },
+  required: ['lines']
+};
+
+export const annotateReading = async (language: string, sentences: LabSentence[]): Promise<LabSentence[]> => {
+  const list = sentences.map((x, i) => `${i}. ${x.text.trim()}  [Türkçe: ${x.translation}]`).join('\n');
+  const prompt = `Aşağıda ${language} dilinde bir hikâye ya da diyalogun numaralı cümleleri var. Sesli okuma için her cümleyi etiketle:
+- speaker: o cümleyi söyleyen kişinin adı (metinde yazdığı gibi); cümle anlatıcıya aitse "Anlatıcı". Satır başındaki "Ad:" önekinden ya da bağlamdan anla; önek olmayan devam cümlesi aynı kişiye aittir.
+- tone: cümlenin nasıl söylenmesi gerektiği, İngilizce 2-5 sözcük (örn. "cheerful and friendly", "surprised", "worried, speaking quietly", "angry", "sad", "excited", "calm storytelling"). Yalnızca ses tonu/duygu; yaş, cinsiyet, aksan yazma.
+- gender: konuşan kişi kadınsa "f", erkekse "m"; anlatıcı veya belirsizse boş metin.
+Her cümle için tam bir öğe döndür (i = cümle numarası).
+
+${list}
+
+Sadece JSON döndür.`;
+  const r = await callAIJson<{ lines: { i: number; speaker: string; tone: string; gender?: string }[] }>(prompt, ANNOTATE_SCHEMA);
+  const byIndex = new Map<number, { speaker: string; tone: string; gender?: string }>();
+  (Array.isArray(r?.lines) ? r.lines : []).forEach(l => { if (Number.isInteger(l?.i)) byIndex.set(l.i, l); });
+  return sentences.map((x, i) => {
+    const l = byIndex.get(i);
+    return l ? { ...x, ...cleanVoiceFields(l) } : x;
+  });
 };
