@@ -20,6 +20,11 @@ export interface ElectronAPI {
   onSyncStatusChanged: (callback: (status: 'synced' | 'syncing' | 'offline' | 'error') => void) => () => void;
   searchOnlineMusic: (query: string) => Promise<any[]>;
   fetchIcs?: (url: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  claudeAgentPlan?: (req: { runId: string; dir: string; prompt: string; attachments?: string[]; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number }>;
+  claudeAgentCancel?: (runId: string) => Promise<{ ok: boolean }>;
+  onClaudeAgentProgress?: (callback: (data: { runId?: string; text: string }) => void) => () => void;
+  pickProjectFolder?: () => Promise<{ canceled: boolean; info?: { ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string } }>;
+  inspectProjectFolder?: (dir: string) => Promise<{ ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string }>;
   claudeCliRun?: (req: { prompt: string; schema?: any; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; structured?: any; text?: string; error?: string; ms: number }>;
   claudeCliStatus?: () => Promise<{ available: boolean; version?: string; loggedIn?: boolean; authMethod?: string; error?: string }>;
   resolveArchiveTrack: (identifier: string) => Promise<string>;

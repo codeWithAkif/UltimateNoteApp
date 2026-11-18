@@ -1,10 +1,21 @@
 import type { ProjectNavRequest } from '../quickSlots';
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import type { TimelineItem } from '../App';
 import KanbanBoard from './KanbanBoard';
 import { computeProjectHealth, type HealthItem, type HealthAction } from '../services/projectHealth';
 import { KANBAN_CONFIG_PATH, parseKanbanConfig, serializeKanbanConfig, columnsForProject, type KanbanColumn } from '../kanbanColumns';
 import { PROJECT_KICKOFF_CHECKLIST } from '../projectTemplate';
+import ProjectFolderRow from './ProjectFolderRow';
+import TaskAttachmentsModal from './TaskAttachmentsModal';
+import ClaudeTaskModal from './ClaudeTaskModal';
+import { isClaudeTaskSupported, isAskEnabled, isClaudeReady, setAskEnabled } from '../services/claudeTask';
+import { getProjectFolder, inspectProjectFolder } from '../services/projectFolders';
+import { platform } from '../services/platform';
+import { shrinkImage, blobToDataUrl } from '../services/imageShrink';
+import {
+  parseTaskId, parseAttachments, taskLineMatches, insertAttachmentLines, removeAttachmentLine, validateFile, attachmentFolder, attachmentPath,
+  isManagedAttachmentPath, safeFileName, type Attachment
+} from '../services/taskAttachments';
 import { Briefcase, Folder, BarChart, LayoutDashboard, Target, Users, User, Plus, Gauge, Trash2, CheckCircle2, Circle } from 'lucide-react';
 
 interface NoteItem {
@@ -154,6 +165,99 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   useEffect(() => { onProjectContext?.(selectedProject); }, [selectedProject]);
+
+  // ---- Görev ekleri (bkz. services/taskAttachments.ts) ----
+  const [attachTask, setAttachTask] = useState<TimelineItem | null>(null);
+  const [claudeTask, setClaudeTask] = useState<{ task: TimelineItem; project: string; dir: string; folderName?: string; branch?: string; attachments: string[] } | null>(null);
+  const [claudeNotice, setClaudeNotice] = useState('');
+  const scannedRef = useRef(scannedContents);
+  scannedRef.current = scannedContents;
+  const linesCache = useRef(new Map<string, { src: string; lines: string[] }>());
+  const linesOf = (path: string): string[] | null => {
+    const src = scannedRef.current[path];
+    if (src === undefined) return null;
+    const c = linesCache.current.get(path);
+    if (c && c.src === src) return c.lines;
+    const lines = src.split('\n');
+    linesCache.current.set(path, { src, lines });
+    return lines;
+  };
+  const attachmentsOf = (task: TimelineItem): Attachment[] => {
+    const ref = parseTaskId(task.id);
+    const lines = ref ? linesOf(ref.path) : null;
+    return ref && lines ? parseAttachments(lines, ref.idx) : [];
+  };
+  const projectOfTaskLine = (line: string, task: TimelineItem): string =>
+    (line.match(/\[project:([^\]]+)\]/i) || [])[1] || selectedProject || task.note || 'proje';
+
+  // ---- "Claude başlasın mı?" (bkz. services/claudeTask.ts) ----
+  const noticeLater = (t: string) => { setClaudeNotice(t); setTimeout(() => setClaudeNotice(''), 5000); };
+  const projectNameForTask = (line: string): string | null => {
+    const slug = ((line.match(/\[project:([^\]]+)\]/i) || [])[1] || '').trim().toLocaleLowerCase('tr');
+    const names = projectNotes.map(n => n.name.replace('.md', ''));
+    const bySlug = slug ? names.find(n => n.toLocaleLowerCase('tr').replace(/\s+/g, '-') === slug) : undefined;
+    return bySlug || selectedProject || null;
+  };
+  // manual=false: kart Devam Ediyor'a geçti (yalnızca klasörü seçilmiş, sorusu açık projelerde sorulur); manual=true: karttaki ✨ düğmesi (nedenini söyler).
+  const askClaudeFor = async (task: TimelineItem, manual: boolean) => {
+    if (!isClaudeTaskSupported()) { if (manual) noticeLater('Claude görevi yalnızca masaüstü uygulamasında çalışır.'); return; }
+    const ref = parseTaskId(task.id);
+    const line = ref ? (linesOf(ref.path) || [])[ref.idx] || '' : '';
+    const project = ref ? projectNameForTask(line) : null;
+    if (!project) { if (manual) noticeLater('Görevin projesi belirlenemedi.'); return; }
+    const dir = getProjectFolder(project);
+    if (!dir) { if (manual) noticeLater(`"${project}" için önce proje kartından "Klasör seç…" ile kod klasörünü seçin.`); return; }
+    if (!manual && !isAskEnabled(project)) return;
+    if (!(await isClaudeReady())) { if (manual) noticeLater('Claude Code bu bilgisayarda kurulu değil ya da giriş yapılmamış (Ayarlar > AI Mentor > Claude Code (yerel) > Kontrol et).'); return; }
+    const info = await inspectProjectFolder(dir);
+    if (!info.ok) { if (manual) noticeLater(info.error || 'Proje klasörü kullanılamıyor.'); return; }
+    setClaudeTask({ task, project, dir, folderName: info.name, branch: info.branch, attachments: attachmentsOf(task).map(a => a.path) });
+  };
+  const handleStatusChange = (id: string, newStatus: string) => {
+    const task = timelineItems.find(t => t.id === id);
+    const prev = task ? (task.kanbanStatus || (task.isCompleted ? 'done' : task.status === 'in-progress' ? 'inprogress' : 'backlog')) : '';
+    onChangeTaskStatus(id, newStatus);
+    if (task && newStatus === 'inprogress' && prev === 'backlog') void askClaudeFor(task, false);
+  };
+
+  const addAttachments = async (task: TimelineItem, files: File[]): Promise<string | null> => {
+    if (!onSaveNote) return 'Kaydetme kullanılamıyor.';
+    const ref = parseTaskId(task.id);
+    const lines0 = ref ? linesOf(ref.path) : null;
+    if (!ref || !lines0) return 'Bu görev bir nota bağlı değil, ek eklenemez.';
+    if (!taskLineMatches(lines0[ref.idx], task.content)) return 'Görev satırı notta değişmiş görünüyor. Listeyi yenileyip tekrar deneyin.';
+    const folder = attachmentFolder(projectOfTaskLine(lines0[ref.idx], task), parseAttachments(lines0, ref.idx));
+    const entries: { name: string; path: string }[] = [];
+    const problems: string[] = [];
+    for (const f of files) {
+      const bad = validateFile(f.name, f.size);
+      if (bad) { problems.push(bad); continue; }
+      try {
+        const blob = await shrinkImage(f);
+        const p = attachmentPath(folder, f.name);
+        await platform.writeNote(p, await blobToDataUrl(blob));
+        entries.push({ name: safeFileName(f.name), path: p });
+      } catch (e: any) { problems.push(`"${f.name}" yazılamadı: ${String(e?.message || e)}`); }
+    }
+    if (entries.length > 0) {
+      // Dosyalar yazılırken not değişmiş olabilir: güncel içerikle yeniden doğrula, olmazsa yazılanları geri al.
+      const lines = linesOf(ref.path);
+      if (!lines || !taskLineMatches(lines[ref.idx], task.content)) {
+        await Promise.all(entries.map(e => platform.deletePath(e.path).catch(() => undefined)));
+        return 'Görev satırı bu sırada değişti, ek eklenmedi. Tekrar deneyin.';
+      }
+      await onSaveNote(ref.path, insertAttachmentLines(lines, ref.idx, entries).join('\n'));
+    }
+    return problems.length ? problems.join(' ') : null;
+  };
+  const removeAttachment = async (task: TimelineItem, a: Attachment): Promise<void> => {
+    if (!onSaveNote) return;
+    const ref = parseTaskId(task.id);
+    const lines = ref ? linesOf(ref.path) : null;
+    if (!ref || !lines || !taskLineMatches(lines[ref.idx], task.content)) throw new Error('Görev satırı notta değişmiş görünüyor. Listeyi yenileyip tekrar deneyin.');
+    await onSaveNote(ref.path, removeAttachmentLine(lines, ref.idx, a.path).join('\n'));
+    if (isManagedAttachmentPath(a.path)) await platform.deletePath(a.path).catch(() => undefined);
+  };
   useEffect(() => () => { onProjectContext?.(null); }, []);
   // Hızlı slot yönlendirmesi (ilk çizimde ve her yeni istekte uygulanır).
   useEffect(() => {
@@ -1197,6 +1301,8 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                         </div>
                       )}
 
+                      <ProjectFolderRow project={note.name.replace('.md', '')} />
+
                       {onSaveNote && (
                         <div style={{ marginTop: '14px' }}>
                           <ProjectTaskAdder projectName={note.name.replace('.md', '')} onAdd={(t) => addTaskToProject(note, t)} />
@@ -1223,7 +1329,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
             <KanbanBoard
               tasks={currentProjectTasks}
               columns={kanbanColumns}
-              onChangeTaskStatus={onChangeTaskStatus}
+              onChangeTaskStatus={handleStatusChange}
               onOpenNote={onOpenNote}
               onSaveColumns={onSaveNote ? saveKanbanColumns : undefined}
               isCustomized={isKanbanCustomized}
@@ -1231,7 +1337,35 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
               scopeLabel={selectedProject
                 ? `${selectedProject}: ${isKanbanCustomized ? 'bu projeye özel sütunlar' : 'varsayılan sütunlar'}`
                 : 'Genel görünüm: varsayılan sütunlar'}
+              attachmentCount={onSaveNote ? (t) => attachmentsOf(t).length : undefined}
+              onAttach={onSaveNote ? (t) => setAttachTask(t) : undefined}
+              onAttachFiles={onSaveNote ? (t, files) => { setAttachTask(t); void addAttachments(t, files); } : undefined}
+              onClaude={isClaudeTaskSupported() ? (t) => { void askClaudeFor(t, true); } : undefined}
             />
+            {claudeTask && (
+              <ClaudeTaskModal
+                taskTitle={claudeTask.task.content}
+                project={claudeTask.project}
+                folderName={claudeTask.folderName}
+                branch={claudeTask.branch}
+                dir={claudeTask.dir}
+                attachments={claudeTask.attachments}
+                onNeverAsk={() => setAskEnabled(claudeTask.project, false)}
+                onClose={() => setClaudeTask(null)}
+              />
+            )}
+            {claudeNotice && (
+              <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 99999, maxWidth: 'min(520px, calc(100vw - 32px))', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '10px 16px', fontSize: '12.5px', color: 'var(--text-primary)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>{claudeNotice}</div>
+            )}
+            {attachTask && (
+              <TaskAttachmentsModal
+                taskTitle={attachTask.content}
+                attachments={attachmentsOf(attachTask)}
+                onAdd={(files) => addAttachments(attachTask, files)}
+                onRemove={(a) => removeAttachment(attachTask, a)}
+                onClose={() => setAttachTask(null)}
+              />
+            )}
               </div>
             </div>
           )}

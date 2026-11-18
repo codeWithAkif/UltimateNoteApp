@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld('electron', {
   saveGitCreds: (creds) => ipcRenderer.invoke('save-git-creds', creds),
   searchOnlineMusic: (query) => ipcRenderer.invoke('search-online-music', query),
   fetchIcs: (url) => ipcRenderer.invoke('fetch-ics', url),
+  claudeAgentPlan: (req) => ipcRenderer.invoke('claude-agent-plan', req),
+  claudeAgentCancel: (runId) => ipcRenderer.invoke('claude-agent-cancel', runId),
+  onClaudeAgentProgress: (callback) => {
+    const subscription = (event, data) => callback(data);
+    ipcRenderer.on('claude-agent-progress', subscription);
+    return () => ipcRenderer.removeListener('claude-agent-progress', subscription);
+  },
+  pickProjectFolder: () => ipcRenderer.invoke('pick-project-folder'),
+  inspectProjectFolder: (dir) => ipcRenderer.invoke('inspect-project-folder', dir),
   claudeCliRun: (req) => ipcRenderer.invoke('claude-cli-run', req),
   claudeCliStatus: () => ipcRenderer.invoke('claude-cli-status'),
   resolveArchiveTrack: (identifier) => ipcRenderer.invoke('resolve-archive-track', identifier),

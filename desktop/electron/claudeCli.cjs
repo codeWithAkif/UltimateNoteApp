@@ -87,4 +87,4 @@ const run = (req) => new Promise((resolve) => {
   child.stdin.end();
 });
 
-module.exports = { run, status, findExe };
+module.exports = { run, status, findExe, cleanEnv };

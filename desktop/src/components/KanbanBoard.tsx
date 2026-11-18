@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { TimelineItem } from '../App';
-import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X, Eye, EyeOff, Lock, Check } from 'lucide-react';
+import { Clock, Tag, Settings, Plus, Trash2, ArrowUp, ArrowDown, X, Eye, EyeOff, Lock, Check, Paperclip, Sparkles } from 'lucide-react';
 import {
   type KanbanColumn,
   DEFAULT_KANBAN_COLUMNS,
@@ -21,6 +21,12 @@ interface KanbanBoardProps {
   isCustomized?: boolean;
   onResetColumns?: () => void;
   scopeLabel?: string;
+  // Görev ekleri: kartta 📎 sayısı; tıklayınca ek penceresi, karta dosya bırakınca doğrudan eklenir.
+  attachmentCount?: (task: TimelineItem) => number;
+  onAttach?: (task: TimelineItem) => void;
+  onAttachFiles?: (task: TimelineItem, files: File[]) => void;
+  // "Claude ile plan çıkar" (proje klasörü seçilmiş projelerde)
+  onClaude?: (task: TimelineItem) => void;
 }
 
 // Eski görevlerin çoğunda [status:] etiketi yok — item.kanbanStatus bu yüzden geriye dönük
@@ -40,7 +46,7 @@ const COLUMN_ANIM: Record<string, string> = {
 };
 
 export default function KanbanBoard({
-  tasks, columns, onChangeTaskStatus, onOpenNote, onSaveColumns, isCustomized, onResetColumns, scopeLabel
+  tasks, columns, onChangeTaskStatus, onOpenNote, onSaveColumns, isCustomized, onResetColumns, scopeLabel, attachmentCount, onAttach, onAttachFiles, onClaude
 }: KanbanBoardProps) {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -140,6 +146,14 @@ export default function KanbanBoard({
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}
       onClick={() => onOpenNote?.(task)}
+      onDragOver={(e) => { if (onAttachFiles && e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); } }}
+      onDrop={(e) => {
+        if (onAttachFiles && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          e.preventDefault(); e.stopPropagation();
+          setDragOverKey(null);
+          onAttachFiles(task, Array.from(e.dataTransfer.files));
+        }
+      }}
     >
       <div style={{ fontSize: '13px', lineHeight: '1.4', marginBottom: '8px', color: 'var(--text-primary)' }}>
         {task.content}
@@ -154,6 +168,29 @@ export default function KanbanBoard({
             <span>{task.dateStr}</span>
           </div>
         )}
+        {onClaude && (
+          <button
+            type="button"
+            draggable={false}
+            title="Claude ile bu görev için plan çıkar"
+            onClick={(e) => { e.stopPropagation(); onClaude(task); }}
+            style={{ display: 'inline-flex', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px', color: 'var(--text-muted)', opacity: 0.7 }}
+          ><Sparkles size={12} /></button>
+        )}
+        {onAttach && (() => {
+          const n = attachmentCount ? attachmentCount(task) : 0;
+          return (
+            <button
+              type="button"
+              draggable={false}
+              title={n > 0 ? `${n} ek — tıklayın` : 'Ek ekle (dosya, resim, ekran görüntüsü)'}
+              onClick={(e) => { e.stopPropagation(); onAttach(task); }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px', fontSize: '11px', color: n > 0 ? 'var(--accent-color)' : 'var(--text-muted)', opacity: n > 0 ? 1 : 0.6 }}
+            >
+              <Paperclip size={12} />{n > 0 ? n : ''}
+            </button>
+          );
+        })()}
         {task.note && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <Tag size={12} />

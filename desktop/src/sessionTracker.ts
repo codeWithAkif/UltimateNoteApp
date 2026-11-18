@@ -170,13 +170,12 @@ const projectOf = (path: string, slug: string | undefined, ctx: ProjectContext):
   return projectForPath(path, ctx);
 };
 
-const when = (due?: string, time?: string) => [due, time].filter(Boolean).join(' ');
 
 const textLinesOf = (content: string): string[] => {
   const out: string[] = [];
   for (const raw of content.split('\n')) {
     const t = raw.trim();
-    if (!t || TASK_RE.test(raw) || /^[-*_]{3,}$/.test(t) || stripTags(t) === '') continue;
+    if (!t || TASK_RE.test(raw) || /^[-*_]{3,}$/.test(t) || stripTags(t) === '' || /^[-*]\s+ek:\s*\[/.test(t)) continue;
     out.push(t);
   }
   return out;
@@ -248,8 +247,9 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
       const project = projectOf(path, a.project, ctx);
       const base = { title: a.title };
       if (!b) {
+        // Takvimde yapılan işlemler özete girmez: saatli ve tamamlanmış satır bir takvim bloğudur (oturum/görüşme kaydı), görev değildir.
+        if (a.checked && a.time) return;
         if (a.checked) push('projeler', `“${a.title}” görevi eklendi ve tamamlandı`, project, { ...base, group: 'Eklendi ve tamamlandı', kind: 'added-done' });
-        else if (a.due || a.time) push('takvim', `Takvime “${a.title}” işini eklediniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvime eklenenler', kind: 'added' });
         else push('projeler', `“${a.title}” görevini eklediniz`, project, { ...base, group: 'Eklenen görevler', kind: 'added' });
         return;
       }
@@ -265,10 +265,8 @@ export const diffNote = (path: string, before: string | null, after: string, ctx
       } else if (b.status !== a.status) {
         push('projeler', `“${a.title}” kartını ${statusLabel(b.status)} sütunundan ${statusLabel(a.status)} sütununa taşıdınız`, project, { ...base, group: `${statusLabel(b.status)} → ${statusLabel(a.status)} sütununa taşındı`, kind: 'moved', from: statusLabel(b.status), to: statusLabel(a.status) });
       }
-      // Tamamlanmış bir bloğun/işin saatini sonradan düzeltmek (ör. oturum bloğunu uzatmak) iş sayılmaz.
-      if ((b.due !== a.due || b.time !== a.time) && (a.due || a.time) && !(b.checked && a.checked)) {
-        push('takvim', `“${a.title}” işinin takvim zamanını değiştirdiniz (${when(a.due, a.time)})`, project, { ...base, group: 'Takvim zamanı değişti', kind: 'cal' });
-      }
+      // Takvimde yapılan değişiklikler (işi takvime koymak, saatini/gününü kaydırmak, bloğu uzatmak) özete girmez: yalnızca görevin kendisinde
+      // olan değişiklikler (eklendi, sütun değişti, tamamlandı) anlatılır.
     });
   });
 

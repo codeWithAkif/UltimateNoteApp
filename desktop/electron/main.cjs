@@ -574,6 +574,26 @@ ipcMain.handle('list-media-files', async () => {
   }
 });
 
+// IPC Handler: "Claude başlasın mı?" (bkz. claudeAgent.cjs): görev için proje klasöründe salt okunur PLAN çıkarır, ilerlemeyi pencereye bildirir.
+const claudeAgent = require('./claudeAgent.cjs');
+ipcMain.handle('claude-agent-plan', async (event, req) => claudeAgent.plan(
+  { ...(req || {}), vaultDir: DEFAULT_NOTES_DIR },
+  (text) => { try { event.sender.send('claude-agent-progress', { runId: req && req.runId, text }); } catch { /* pencere kapanmış olabilir */ } }
+));
+ipcMain.handle('claude-agent-cancel', async (event, runId) => claudeAgent.cancel(runId));
+app.on('before-quit', () => { try { claudeAgent.cancelAll(); } catch { /* yoksay */ } });
+
+// IPC Handler: Proje klasörü seçimi (bkz. projectFolder.cjs): Windows'un klasör penceresiyle seçilir, riskli yerler (disk kökü, kullanıcı klasörü,
+// sistem klasörleri, notlar kasası) reddedilir. Elle yol yazılamaz.
+const projectFolder = require('./projectFolder.cjs');
+ipcMain.handle('pick-project-folder', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const r = await dialog.showOpenDialog(win || undefined, { title: 'Proje klasörünü seçin', properties: ['openDirectory'], defaultPath: path.join(os.homedir(), 'source', 'repos') });
+  if (r.canceled || !r.filePaths[0]) return { canceled: true };
+  return { canceled: false, info: projectFolder.inspect(r.filePaths[0], DEFAULT_NOTES_DIR) };
+});
+ipcMain.handle('inspect-project-folder', async (event, dir) => projectFolder.inspect(dir, DEFAULT_NOTES_DIR));
+
 // IPC Handler: "Claude Code (yerel)" sağlayıcısı (bkz. claudeCli.cjs): kurulu Claude Code ile tek seferlik, araçsız yapay zekâ çağrısı.
 const claudeCli = require('./claudeCli.cjs');
 ipcMain.handle('claude-cli-run', async (event, req) => claudeCli.run(req));
