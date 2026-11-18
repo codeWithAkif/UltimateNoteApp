@@ -150,6 +150,7 @@ ${lines}
 
 İSTENEN ÇIKTI (JSON):
 1. "anlati": 2-4 cümlelik Türkçe özet. OLAYI anlat; "A görevi test'e alındı, A görevi bitti" gibi sıralama yerine "A önce test edildi, sonra kapatıldı" gibi akış kur. Aynı konudaki görevleri tek cümlede topla. Geçmiş zaman, sade ve resmi olmayan ama profesyonel bir dil kullan.
+   Sütun bilgisini (nereden→nereye) MUTLAKA anlatıya kat: nereden="Test", nereye="Bitti" ise "test edilip kapatıldı"; nereden="İncelemede", nereye="Bitti" ise "incelenip kapatıldı"; sütun değişimi varsa nereye taşındığını söyle; tur="eklendi" ise "yeni iş olarak eklendi"; "eklendi ve tamamlandı" ise "açılıp aynı seansta kapatıldı" de. Görev başlıklarını tek tek tekrar etme, konuya göre topla.
 2. "temalar": görevleri konularına göre gruplayan en çok 5 tema. Her tema {"ad": kısa konu adı (en çok 4 sözcük), "ogeler": ilgili görevlerin i numaraları}. Her görev en çok bir temada olsun.
 3. "etiketler": i sırasına göre uzunluğu ${o.facts.length} olan dizi; her görev için en çok 8 sözcüklük kısa etiket (başlığın özü, olay türünü yazma).
 

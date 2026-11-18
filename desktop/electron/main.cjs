@@ -574,6 +574,11 @@ ipcMain.handle('list-media-files', async () => {
   }
 });
 
+// IPC Handler: "Claude Code (yerel)" sağlayıcısı (bkz. claudeCli.cjs): kurulu Claude Code ile tek seferlik, araçsız yapay zekâ çağrısı.
+const claudeCli = require('./claudeCli.cjs');
+ipcMain.handle('claude-cli-run', async (event, req) => claudeCli.run(req));
+ipcMain.handle('claude-cli-status', async () => claudeCli.status());
+
 // IPC Handler: Takvim (ICS) bağlantısını uygulamanın kendi tarafında okur. Renderer'dan doğrudan fetch tarayıcı kurallarına
 // (CORS) takılabiliyor; eskiden bu durumda gizli takvim adresi üçüncü taraf bir vekile gönderiliyordu. Artık hiçbir yere gönderilmez.
 // Yalnızca https (webcal:// https'e çevrilir), en çok 5 yönlendirme, 15 sn zaman aşımı, 5 MB sınır.

@@ -20,6 +20,8 @@ export interface ElectronAPI {
   onSyncStatusChanged: (callback: (status: 'synced' | 'syncing' | 'offline' | 'error') => void) => () => void;
   searchOnlineMusic: (query: string) => Promise<any[]>;
   fetchIcs?: (url: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  claudeCliRun?: (req: { prompt: string; schema?: any; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; structured?: any; text?: string; error?: string; ms: number }>;
+  claudeCliStatus?: () => Promise<{ available: boolean; version?: string; loggedIn?: boolean; authMethod?: string; error?: string }>;
   resolveArchiveTrack: (identifier: string) => Promise<string>;
   resolveYoutubePlaylist: (playlistId: string) => Promise<any[]>;
   fileExists: (relativePath: string) => Promise<boolean>;

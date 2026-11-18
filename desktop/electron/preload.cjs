@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('electron', {
   saveGitCreds: (creds) => ipcRenderer.invoke('save-git-creds', creds),
   searchOnlineMusic: (query) => ipcRenderer.invoke('search-online-music', query),
   fetchIcs: (url) => ipcRenderer.invoke('fetch-ics', url),
+  claudeCliRun: (req) => ipcRenderer.invoke('claude-cli-run', req),
+  claudeCliStatus: () => ipcRenderer.invoke('claude-cli-status'),
   resolveArchiveTrack: (identifier) => ipcRenderer.invoke('resolve-archive-track', identifier),
   resolveYoutubePlaylist: (playlistId) => ipcRenderer.invoke('resolve-youtube-playlist', playlistId),
   fileExists: (relativePath) => ipcRenderer.invoke('file-exists', relativePath),

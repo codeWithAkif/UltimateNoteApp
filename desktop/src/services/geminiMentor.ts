@@ -6,6 +6,7 @@
 
 import type { DevPathNoteMode } from '../devPaths';
 import { claudeGroundedText, claudeJson, isClaudeConfigured } from './claudeApi';
+import { claudeCliJson, isClaudeCliEnabled, isClaudeCliFirst } from './claudeCli';
 
 const GEMINI_KEY_STORAGE = 'gemini_api_key';
 const GEMINI_MODEL_STORAGE = 'gemini_model';
@@ -45,7 +46,7 @@ export const setGeminiModel = (model: string) => {
 
 // "Yapay zekâ hazır mı?" kapısı: Gemini VEYA Claude anahtarı girilmişse hazır sayılır (Claude, Gemini kotası dolunca yedek ya da
 // yalnızca Claude kullanan kullanıcı için tek sağlayıcıdır). Ad eski kaldı; birçok ekran bu kapıyı kullanıyor.
-export const isGeminiConfigured = (): boolean => !!getGeminiApiKey() || isClaudeConfigured();
+export const isGeminiConfigured = (): boolean => !!getGeminiApiKey() || isClaudeConfigured() || isClaudeCliEnabled();
 
 // Gemini hatası Claude'a düşmeyi hak ediyor mu? Kota (429), kimlik/izin (401/403), sunucu (5xx) ve ağ hataları evet;
 // 400 gibi istek hataları hayır (gerçek bir hata gizlenmesin).
@@ -93,26 +94,34 @@ export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Pr
   return JSON.parse(text) as T;
 }
 
-// Yapılandırılmış JSON isteği: önce Gemini; kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude anahtarı varsa Claude.
-// İki sağlayıcı da hata verirse kullanıcıya ikisinin de nedeni gösterilir.
+// Yapılandırılmış JSON isteği: sağlayıcılar sırayla denenir. Varsayılan sıra: Gemini (ücretsiz) -> Claude Code (yerel, abonelik; Ayarlar'dan açıldıysa)
+// -> Claude API (ücretli). "Önce Claude Code" seçiliyse yerel olan başa geçer. Bir sağlayıcı kota/sunucu/ağ hatası verirse ya da kullanılamazsa
+// sıradakine geçilir (Gemini'nin 400 gibi istek hataları gizlenmez). Hepsi başarısız olursa her birinin nedeni gösterilir.
 export async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
-  if (!getGeminiApiKey()) {
-    if (isClaudeConfigured()) return claudeJson<T>(prompt, responseSchema);
-    throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.');
-  }
-  try {
-    return await callGeminiOnly<T>(prompt, responseSchema);
-  } catch (e: any) {
-    if (!(isClaudeConfigured() && isFallbackWorthy(e))) throw e;
-    console.warn("[AI] Gemini kullanılamadı, Claude'a geçiliyor:", e?.message || e);
-    try {
-      return await claudeJson<T>(prompt, responseSchema);
-    } catch (e2: any) {
-      throw new Error(`${e.message}
+  interface Prov { name: string; run: () => Promise<T>; worthy: (e: any) => boolean }
+  const gem: Prov | null = getGeminiApiKey() ? { name: 'Gemini', run: () => callGeminiOnly<T>(prompt, responseSchema), worthy: isFallbackWorthy } : null;
+  const cli: Prov | null = isClaudeCliEnabled() ? { name: 'Claude Code (yerel)', run: () => claudeCliJson<T>(prompt, responseSchema), worthy: () => true } : null;
+  const api: Prov | null = isClaudeConfigured() ? { name: 'Claude API', run: () => claudeJson<T>(prompt, responseSchema), worthy: () => true } : null;
+  const order = (isClaudeCliFirst() ? [cli, gem, api] : [gem, cli, api]).filter((x): x is Prov => !!x);
+  if (order.length === 0) throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin ya da Claude Code (yerel) seçeneğini açın.');
 
-Claude yedeği de başarısız: ${e2?.message || e2}`);
+  const errors: string[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const p = order[i];
+    try {
+      return await p.run();
+    } catch (e: any) {
+      if (i === order.length - 1) {
+        if (errors.length === 0) throw e;
+        errors.push(`${p.name}: ${e?.message || e}`);
+        throw new Error(errors.join('\n\n'));
+      }
+      if (!p.worthy(e)) throw e; // gerçek bir istek hatası: gizleme
+      console.warn(`[AI] ${p.name} kullanılamadı, sıradakine geçiliyor:`, e?.message || e);
+      errors.push(`${p.name}: ${e?.message || e}`);
     }
   }
+  throw new Error(errors.join('\n\n'));
 }
 export const callAIJson = callGemini;
 

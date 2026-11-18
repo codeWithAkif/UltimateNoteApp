@@ -88,6 +88,9 @@ import {
   Languages
 } from 'lucide-react';
 import { getClaudeApiKey, setClaudeApiKey, getClaudeModel, setClaudeModel, CLAUDE_MODEL_OPTIONS } from './services/claudeApi';
+import {
+  isClaudeCliSupported, isClaudeCliEnabled, setClaudeCliEnabled, isClaudeCliFirst, setClaudeCliFirst, getClaudeCliModel, setClaudeCliModel, claudeCliStatus, CLAUDE_CLI_MODELS
+} from './services/claudeCli';
 import AssistantView from './components/AssistantView';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -2919,6 +2922,11 @@ export default function App() {
   const [geminiModelInput, setGeminiModelInput] = useState<string>(() => getGeminiModel());
   const [claudeApiKeyInput, setClaudeApiKeyInput] = useState<string>(() => getClaudeApiKey() || '');
   const [claudeModelInput, setClaudeModelInput] = useState<string>(() => getClaudeModel());
+  // Claude Code (yerel): kişisel Claude aboneliğiyle çalışan sağlayıcı (yalnızca masaüstü; varsayılan kapalı).
+  const [cliEnabled, setCliEnabled] = useState<boolean>(() => isClaudeCliEnabled());
+  const [cliFirst, setCliFirst] = useState<boolean>(() => isClaudeCliFirst());
+  const [cliModel, setCliModel] = useState<string>(() => getClaudeCliModel());
+  const [cliStatusText, setCliStatusText] = useState<string>('');
 
   // Gelişim yolu AI sihirbazı (seviye/müfredat belirleme) durumu.
   const [devPathWizardTarget, setDevPathWizardTarget] = useState<string | null>(null);
@@ -9713,6 +9721,60 @@ grant execute on function get_db_size() to anon;`}
                       Gemini kotası dolunca ya da Gemini hata verince aynı istek otomatik olarak Claude'a gider (ücretli API kullanımınızdan düşer). Gemini anahtarı boşsa yalnızca Claude kullanılır. Anahtar yalnızca bu cihazda saklanır ve sadece api.anthropic.com'a gönderilir.
                     </span>
                   </div>
+                  {isClaudeCliSupported() && (
+                    <div style={{ paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                      <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Claude Code (yerel) — Claude aboneliğiyle
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', fontSize: '12px', color: '#fff' }}>
+                        <input
+                          type="checkbox"
+                          checked={cliEnabled}
+                          onChange={(e) => { setClaudeCliEnabled(e.target.checked); setCliEnabled(e.target.checked); }}
+                          style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
+                        />
+                        Bu bilgisayardaki Claude Code'u yapay zekâ sağlayıcısı olarak kullan
+                      </label>
+                      {cliEnabled && (
+                        <>
+                          <select
+                            value={cliModel}
+                            onChange={(e) => { setClaudeCliModel(e.target.value); setCliModel(e.target.value); }}
+                            className="modal-input"
+                            style={{ width: '100%', marginTop: '8px' }}
+                          >
+                            {CLAUDE_CLI_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', fontSize: '12px', color: '#fff', marginTop: '8px' }}>
+                            <input
+                              type="checkbox"
+                              checked={cliFirst}
+                              onChange={(e) => { setClaudeCliFirst(e.target.checked); setCliFirst(e.target.checked); }}
+                              style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
+                            />
+                            Önce bunu dene (kapalıyken sıra: Gemini, Claude Code, Claude API)
+                          </label>
+                        </>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '8px' }}>
+                        <button
+                          type="button"
+                          style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}
+                          onClick={async () => {
+                            setCliStatusText('Kontrol ediliyor…');
+                            try {
+                              const st = await claudeCliStatus();
+                              setCliStatusText(!st.available ? (st.error || 'Claude Code bulunamadı.') : st.loggedIn ? `Hazır: ${st.version} (${st.authMethod || 'giriş yapılmış'})` : `${st.version} kurulu ama giriş yapılmamış. Bir terminalde "claude" yazıp giriş yapın.`);
+                            } catch (e: any) { setCliStatusText(String(e?.message || e)); }
+                          }}
+                        >Kontrol et</button>
+                        {cliStatusText && <span style={{ fontSize: '11px', color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>{cliStatusText}</span>}
+                      </div>
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '4px', lineHeight: 1.4 }}>
+                        Çağrılar API parası yerine Claude aboneliğinizin limitinden harcanır (yaklaşık 8 sn sürer, yalnızca masaüstü). Araçlar kapalıdır: dosyalara ya da komutlara erişmez. Yalnızca kişisel kullanım içindir; bu seçenek açıkken yapay zekâya giden metinler Claude hesabınızın gizlilik ayarlarına tabidir.
+                      </span>
+                    </div>
+                  )}
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none', padding: '8px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)' }}>
                     <input
                       type="checkbox"
