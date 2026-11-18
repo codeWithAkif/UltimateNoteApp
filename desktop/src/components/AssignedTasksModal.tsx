@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { X, RefreshCw, Trash2, Plus, ShieldCheck, AlertTriangle } from 'lucide-react';
 import {
   loadCfg, saveCfg, loadState, saveState, rowsFromResult, guessMapping, toTasks, parseCurl, notePathFor, applyFilter, type AssignedCfg, type AssignedState,
-  type SourceCfg, type SourceResult, type Mapping, type StatusKey, type AssignedTask
+  type SourceCfg, type SourceResult, type Mapping, type StatusKey, type AssignedTask, type CatalogClient, mapKey, nk, suggestMapping
 } from '../services/assignedTasks';
 
 const overlay: React.CSSProperties = {
@@ -31,10 +31,11 @@ const STATUS_LABEL: Record<StatusKey, string> = { backlog: 'Backlog', inprogress
 interface Preview { fields: string[]; rows: ReturnType<typeof rowsFromResult>['rows']; mapping: Mapping; tasks: AssignedTask[]; statuses: string[] }
 
 // Şirketin proje yönetim uygulamasından "bana atanan işler"i çekme ayarı. Şifre yalnızca Electron tarafında, işletim sisteminin korumalı deposunda saklanır.
-export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose }: {
+export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose, catalog = [] }: {
   onSyncNow: () => Promise<AssignedState>;
   onConfigChanged: () => void;
   onClose: () => void;
+  catalog?: CatalogClient[];
 }) {
   const api = (window as any).electron;
   const [cfg, setCfg] = useState<AssignedCfg>(() => loadCfg());
@@ -49,6 +50,7 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
   const [previews, setPreviews] = useState<Record<number, Preview>>({});
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, { client: string; project: string }>>({});
 
   useEffect(() => { api?.taskSourceCredentialsStatus?.().then((c: any) => { setCred(c); setUser(c.username || ''); }).catch(() => undefined); }, []);
 
@@ -134,6 +136,26 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
     try { setState(await onSyncNow()); } catch (e: any) { setMsg(String(e?.message || e)); }
     finally { setBusy(''); }
   };
+
+  // Eşleme listesi: önizlemedeki işler + son çekmede eşlenmemiş kalanlar + kayıtlı eşlemeler
+  const pairMap = new Map<string, { key: string; ptClient?: string; ptProject: string; count: number }>();
+  Object.values(previews).forEach(p => p.tasks.forEach(t => {
+    if (!t.project) return;
+    const key = mapKey(t.client, t.project); const e = pairMap.get(key);
+    if (e) e.count++; else pairMap.set(key, { key, ptClient: t.client, ptProject: t.project, count: 1 });
+  }));
+  (state.pending || []).forEach(p => { const key = mapKey(p.client, p.project); if (!pairMap.has(key)) pairMap.set(key, { key, ptClient: p.client, ptProject: p.project, count: p.count }); });
+  Object.entries(cfg.projectMap || {}).forEach(([key, m]) => { if (!pairMap.has(key)) pairMap.set(key, { key, ptClient: m.ptClient || undefined, ptProject: m.ptProject, count: 0 }); });
+  const pairs = [...pairMap.values()];
+  const draftOf = (p: { key: string; ptClient?: string; ptProject: string }) => drafts[p.key] || (cfg.projectMap?.[p.key] ? { client: cfg.projectMap[p.key].client, project: cfg.projectMap[p.key].project } : suggestMapping(p.ptClient, p.ptProject, catalog));
+  const saveMap = (p: { key: string; ptClient?: string; ptProject: string }) => {
+    const d = draftOf(p);
+    if (!d.client.trim() || !d.project.trim()) { setMsg('Eşleme için müşteri ve proje adı gerekli.'); return; }
+    setMsg('');
+    update({ ...cfg, projectMap: { ...(cfg.projectMap || {}), [p.key]: { ptClient: p.ptClient || '', ptProject: p.ptProject, client: d.client.trim(), project: d.project.trim() } } });
+    setDrafts(({ [p.key]: _gone, ...rest }) => rest);
+  };
+  const removeMap = (key: string) => { const { [key]: _x, ...rest } = cfg.projectMap || {}; update({ ...cfg, projectMap: rest }); };
 
   const ago = state.lastSync ? new Date(state.lastSync).toLocaleString('tr-TR') : '—';
   const insecure = /^http:\/\//i.test(cfg.loginUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)/i.test(cfg.loginUrl);
@@ -262,7 +284,32 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
         {!cred.has && <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '4px' }}>Önizlemek için önce e-posta ve şifreyi kaydedin.</div>}
         {msg && <div style={{ marginTop: '8px', fontSize: '12.5px', color: '#ef4444', overflowWrap: 'anywhere' }}>{msg}</div>}
 
-        <div style={label}>3. Otomatik çekme</div>
+        <div style={label}>3. Eşleme (ProTracker → sizin müşteri ve projeniz)</div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginBottom: '6px', lineHeight: 1.5 }}>
+          İşler yalnızca burada eşlediğiniz yere yazılır; eşlenmemiş işler hiçbir yere yazılmaz ve hiçbir müşteri/proje kendiliğinden açılmaz. Müşteri alanına mevcut müşterinizi seçin; proje alanına mevcut projenizi seçin ya da yeni bir proje adı yazın (o müşterinin altına açılır). Önce <b>Önizle</b>'ye basın, liste dolar.
+        </div>
+        <datalist id="at-clients">{catalog.map(c => <option key={c.name} value={c.name} />)}</datalist>
+        {pairs.length === 0 && <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>Henüz eşlenecek müşteri/proje yok (önizleme yapılınca görünür).</div>}
+        {pairs.map((p, i) => {
+          const d = draftOf(p); const saved = cfg.projectMap?.[p.key];
+          const isSaved = !!saved && saved.client === d.client && saved.project === d.project;
+          const known = catalog.find(c => nk(c.name) === nk(d.client));
+          return (
+            <div key={p.key} style={card}>
+              <div style={{ fontSize: '12.5px', fontWeight: 600, overflowWrap: 'anywhere' }}>{p.ptClient ? `${p.ptClient} › ` : ''}{p.ptProject}{p.count ? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}> · {p.count} iş</span> : null}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '6px', alignItems: 'center' }}>
+                <input list="at-clients" value={d.client} onChange={(e) => setDrafts({ ...drafts, [p.key]: { ...d, client: e.target.value } })} placeholder="Sizdeki müşteri" style={{ ...field, flex: '1 1 160px', width: 'auto' }} />
+                <datalist id={`at-proj-${i}`}>{(known?.projects || []).map(n => <option key={n} value={n} />)}</datalist>
+                <input list={`at-proj-${i}`} value={d.project} onChange={(e) => setDrafts({ ...drafts, [p.key]: { ...d, project: e.target.value } })} placeholder="Sizdeki proje (yeni ad yazabilirsiniz)" style={{ ...field, flex: '1 1 200px', width: 'auto' }} />
+                <button type="button" style={btn} onClick={() => saveMap(p)} disabled={isSaved}>{isSaved ? 'Kaydedildi ✓' : 'Eşle'}</button>
+                {saved && <button type="button" style={{ ...btn, padding: '5px 8px' }} title="Eşlemeyi kaldır" onClick={() => removeMap(p.key)}><Trash2 size={14} /></button>}
+              </div>
+              {d.client.trim() && !known && <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '4px' }}>"{d.client}" adında mevcut bir müşteri bulunamadı; yeni bir müşteri klasörü açılmaz, bu eşleme çalışmaz. Mevcut müşteriyi seçin.</div>}
+            </div>
+          );
+        })}
+
+        <div style={label}>4. Otomatik çekme</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', cursor: 'pointer' }}>
             <input type="checkbox" checked={cfg.enabled} onChange={(e) => update({ ...cfg, enabled: e.target.checked })} /> Uygulama açıkken otomatik çek

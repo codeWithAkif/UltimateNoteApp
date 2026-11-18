@@ -4,7 +4,7 @@
 
 import {
   loadCfg, loadState, saveState, rowsFromResult, guessMapping, toTasks, applyTasksToNote, notePathFor, noteFileName, slugOfName, applyFilter,
-  type AssignedState, type AssignedTask, type SourceResult
+  nk, mapKey, type AssignedState, type AssignedTask, type SourceResult, type ProjectMapEntry, type PendingItem
 } from './assignedTasks';
 
 export const isAssignedSupported = (): boolean => typeof window !== 'undefined' && !!(window as any).electron?.taskSourceSync;
@@ -19,51 +19,47 @@ export interface SyncDeps {
 // Bu hatalarda aynı ayarla tekrar denemek anlamsız (ya da zararlı): kullanıcı düzeltene kadar otomatik çekme durur.
 const PAUSE_CODES = new Set(['login-failed', 'no-credentials', 'config', 'insecure', 'login-form', 'no-table']);
 
-export interface Dest { path: string; name: string; header: string; tasks: AssignedTask[]; extra?: { path: string; content: string } }
+export interface Dest { path: string; name: string; header: string; tasks: AssignedTask[] }
 
-const nk = (s: string): string => s.replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/[\s_]+/g, ' ').trim();
 const baseOf = (p: string): string => p.split('/').pop() || p;
-const dirOf = (p: string): string => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 
-// Görevleri hedef notlara dağıtır. Proje bilgisi olmayanlar `fallbackName` ekip notuna gider.
+// Görevleri hedef notlara dağıtır. Proje bilgisi olmayanlar `fallbackName` ekip notuna gider. Proje bilgisi olanlar YALNIZCA kullanıcının elle yaptığı eşlemeye göre
+// (ProTracker müşteri/proje → kendi müşteri/projesi) yazılır; eşlenmemişler yazılmaz, `pending` olarak döner. Hiçbir müşteri/proje kendiliğinden oluşturulmaz
+// (yalnızca eşlemede seçilen/yazılan PROJE, seçilen müşterinin altında yoksa o müşterinin Projeler klasöründe açılır).
 export const resolveDestinations = async (
   tasks: AssignedTask[], fallbackName: string,
-  deps: { notePaths: string[]; clientsFolder: string; readNote: (p: string) => Promise<string | undefined> }
-): Promise<Dest[]> => {
-  const groups = new Map<string, { client: string; project: string; tasks: AssignedTask[] }>();
+  deps: { notePaths: string[]; clientsFolder: string; readNote: (p: string) => Promise<string | undefined>; projectMap?: Record<string, ProjectMapEntry> }
+): Promise<{ dests: Dest[]; pending: PendingItem[] }> => {
+  const groups = new Map<string, { client?: string; project: string; tasks: AssignedTask[] }>();
   const loose: AssignedTask[] = [];
   for (const t of tasks) {
     if (!t.project) { loose.push(t); continue; }
-    const key = `${nk(t.client || '')}|${nk(t.project)}`;
-    const g = groups.get(key) || { client: t.client || '', project: t.project, tasks: [] };
+    const key = mapKey(t.client, t.project);
+    const g = groups.get(key) || { client: t.client, project: t.project, tasks: [] };
     g.tasks.push(t); groups.set(key, g);
   }
-  const out: Dest[] = [];
-  if (loose.length) out.push({ path: notePathFor(fallbackName), name: fallbackName, header: '#proje #atananlar', tasks: loose });
+  const dests: Dest[] = [];
+  const pending: PendingItem[] = [];
+  if (loose.length) dests.push({ path: notePathFor(fallbackName), name: fallbackName, header: '#proje #atananlar', tasks: loose });
 
-  const findNote = async (name: string, tag: string, preferDir?: string): Promise<string | undefined> => {
-    const cands = deps.notePaths.filter(p => /\.md$/i.test(p) && nk(baseOf(p)) === nk(name));
-    cands.sort((a, b) => Number(!!preferDir && b.includes(preferDir)) - Number(!!preferDir && a.includes(preferDir)));
-    for (const p of cands) { const c = await deps.readNote(p); if (c && c.toLowerCase().includes(tag)) return p; }
-    return undefined;
-  };
-
-  for (const g of groups.values()) {
-    const existing = await findNote(g.project, '#proje', '/Projeler/');
-    if (existing) { out.push({ path: existing, name: baseOf(existing).replace(/\.md$/i, ''), header: '', tasks: g.tasks }); continue; }
-    const projFile = noteFileName(g.project);
-    if (!g.client) { out.push({ path: notePathFor(g.project), name: g.project, header: '#proje #atananlar', tasks: g.tasks }); continue; }
-    const clientNote = await findNote(g.client, '#müşteri');
-    let clientDir: string; let clientName: string; let extra: Dest['extra'];
-    if (clientNote) { clientDir = dirOf(clientNote); clientName = baseOf(clientNote).replace(/\.md$/i, ''); }
-    else {
-      const cf = noteFileName(g.client);
-      clientDir = `${deps.clientsFolder}/${cf}`; clientName = cf;
-      extra = { path: `${clientDir}/${cf}.md`, content: `# ${g.client}\n\n#müşteri\n` };
-    }
-    out.push({ path: `${clientDir}/Projeler/${projFile}.md`, name: projFile, header: `#proje #${slugOfName(clientName)}`, tasks: g.tasks, extra });
+  const root = deps.clientsFolder;
+  for (const [key, g] of groups) {
+    const m = deps.projectMap?.[key];
+    if (!m || !m.client || !m.project) { pending.push({ client: g.client, project: g.project, count: g.tasks.length }); continue; }
+    const clientDir = `${root}/${noteFileName(m.client)}`;
+    const inClient = deps.notePaths.filter(p => /\.md$/i.test(p) && p.toLowerCase().startsWith(clientDir.toLowerCase() + '/'));
+    if (inClient.length === 0) { pending.push({ client: g.client, project: g.project, count: g.tasks.length }); continue; } // müşteri klasörü yok: kendiliğinden açılmaz
+    // müşterinin mevcut proje notu (aynı ad, #proje)
+    let found: string | undefined;
+    for (const p of inClient.filter(p => nk(baseOf(p)) === nk(m.project))) { const c = await deps.readNote(p); if (c && c.toLowerCase().includes('#proje')) { found = p; break; } }
+    if (found) { dests.push({ path: found, name: baseOf(found).replace(/\.md$/i, ''), header: '', tasks: g.tasks }); continue; }
+    // yeni proje notu: müşterinin kendi notunun adından etiket (Borusan → #borusan)
+    const clientNote = inClient.find(p => !p.toLowerCase().includes('/projeler/') && /\.md$/i.test(p));
+    const slugBase = clientNote ? baseOf(clientNote).replace(/\.md$/i, '') : m.client;
+    const projFile = noteFileName(m.project);
+    dests.push({ path: `${clientDir}/Projeler/${projFile}.md`, name: projFile, header: `#proje #${slugOfName(slugBase)}`, tasks: g.tasks });
   }
-  return out;
+  return { dests, pending };
 };
 
 export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> => {
@@ -82,6 +78,7 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
   let total = 0, added = 0, updated = 0, completed = 0;
   const problems: string[] = [];
   const results: SourceResult[] = res.sources || [];
+  const pendingAll = new Map<string, PendingItem>();
   const dests = new Map<string, Dest>(); // aynı notaya giden görevler birleştirilir (tek yazım)
   const notePaths = deps.notePaths ? deps.notePaths() : [];
   for (let i = 0; i < results.length; i++) {
@@ -94,7 +91,13 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
     const tasks = toTasks(applyFilter(rows, src.filter), mapping, src.statusMap);
     total += tasks.length;
     if (tasks.length === 0) continue; // boş sonuç notu değiştirmez
-    for (const d of await resolveDestinations(tasks, teamName, { notePaths, clientsFolder: deps.clientsFolder || 'Müşteriler', readNote: deps.readNote })) {
+    const resolved = await resolveDestinations(tasks, teamName, { notePaths, clientsFolder: deps.clientsFolder || 'Müşteriler', readNote: deps.readNote, projectMap: cfg.projectMap });
+    for (const p of resolved.pending) {
+      const k = mapKey(p.client, p.project);
+      const ex = pendingAll.get(k);
+      if (ex) ex.count += p.count; else pendingAll.set(k, { ...p });
+    }
+    for (const d of resolved.dests) {
       const cur = dests.get(d.path);
       if (!cur) { dests.set(d.path, { ...d, tasks: [...d.tasks] }); continue; }
       const have = new Set(cur.tasks.map(t => t.id));
@@ -102,14 +105,16 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
     }
   }
   for (const d of dests.values()) {
-    if (d.extra && !notePaths.includes(d.extra.path) && (await deps.readNote(d.extra.path)) === undefined) await deps.saveNote(d.extra.path, d.extra.content);
     const existing = await deps.readNote(d.path);
     const { content, stats } = applyTasksToNote(existing, d.name, d.tasks, d.header || '#proje');
     if (content !== (existing ?? '')) await deps.saveNote(d.path, content);
     added += stats.added; updated += stats.updated; completed += stats.completed;
   }
+  const pending = [...pendingAll.values()];
+  const waiting = pending.reduce((n, p) => n + p.count, 0);
   return finish({
     lastSync: Date.now(), lastCode: problems.length ? 'partial' : 'ok', lastError: problems.join(' · '),
-    paused: false, summary: `${total} iş okundu · ${added} yeni · ${updated} güncellendi · ${completed} tamamlandı`
+    paused: false, pending,
+    summary: `${total} iş okundu · ${added} yeni · ${updated} güncellendi · ${completed} tamamlandı${waiting ? ` · ${waiting} iş eşleme bekliyor` : ''}`
   });
 };

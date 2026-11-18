@@ -1077,7 +1077,23 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
         </div>
       </div>
       {assignedOpen && onSyncAssigned && (
-        <AssignedTasksModal onSyncNow={onSyncAssigned} onConfigChanged={() => onAssignedConfigChanged?.()} onClose={() => setAssignedOpen(false)} />
+        <AssignedTasksModal
+          onSyncNow={onSyncAssigned} onConfigChanged={() => onAssignedConfigChanged?.()} onClose={() => setAssignedOpen(false)}
+          catalog={(() => {
+            // Müşteri = {clientsFolder}/<Müşteri>/ altında not bulunan klasör; proje = <Müşteri>/Projeler/<Ad>.md
+            const root = `${clientsFolder}/`.toLowerCase();
+            const map = new Map<string, Set<string>>();
+            notes.forEach(n => {
+              if (!/\.md$/i.test(n.path) || !n.path.toLowerCase().startsWith(root)) return;
+              const parts = n.path.slice(root.length).split('/');
+              if (parts.length < 2) return;
+              const set = map.get(parts[0]) || new Set<string>();
+              if (parts.length === 3 && parts[1].toLowerCase() === 'projeler' && /\.md$/i.test(parts[2])) set.add(parts[2].replace(/\.md$/i, ''));
+              map.set(parts[0], set);
+            });
+            return [...map.entries()].map(([name, ps]) => ({ name, projects: [...ps].sort((a, b) => a.localeCompare(b, 'tr')) })).sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+          })()}
+        />
       )}
 
       {/* Content */}

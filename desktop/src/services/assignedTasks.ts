@@ -253,14 +253,44 @@ export const parseCurl = (text: string): CurlImport | null => {
 // ---------------- ayar ve durum (bu cihaz) ----------------
 export interface RowFilter { column: string; contains: string }
 export interface SourceCfg { name: string; url: string; method?: 'GET' | 'POST'; body?: string; contentType?: string; cookies?: string; team?: string; filter?: RowFilter; mapping?: Mapping; statusMap?: Record<string, StatusKey> }
-export interface AssignedCfg { enabled: boolean; loginUrl: string; allowHttp: boolean; intervalMin: number; sources: SourceCfg[] }
-export interface AssignedState { lastSync?: number; lastCode?: string; lastError?: string; paused?: boolean; summary?: string }
+// ProTracker'daki müşteri/proje adı -> kullanıcının KENDİ müşteri ve projesi (elle eşleme; eşlenmeyen işler hiçbir yere yazılmaz)
+export interface ProjectMapEntry { ptClient: string; ptProject: string; client: string; project: string }
+export interface AssignedCfg { enabled: boolean; loginUrl: string; allowHttp: boolean; intervalMin: number; sources: SourceCfg[]; projectMap?: Record<string, ProjectMapEntry> }
+export interface PendingItem { client?: string; project: string; count: number }
+export interface AssignedState { lastSync?: number; lastCode?: string; lastError?: string; paused?: boolean; summary?: string; pending?: PendingItem[] }
+
+export const nk = (s: string): string => String(s || '').replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/[\s_]+/g, ' ').trim();
+export const mapKey = (client: string | undefined, project: string): string => `${nk(client || '')}|${nk(project)}`;
+
+// Kullanıcının kasasındaki müşteri ve projeler (eşleme listesinde seçenek olarak gösterilir)
+export interface CatalogClient { name: string; projects: string[] }
+
+// Öneri (otomatik UYGULANMAZ, kutuya önceden yazılır): müşteri = ad aynıysa ya da ProTracker adı sizin müşteri adınızla başlıyorsa (Borusan Enerji → Borusan);
+// proje = ProTracker proje adından müşteri adı öneki atılmış hali ("Borusan - Düzenli Çalışma - 2026" → "Düzenli Çalışma - 2026"); aynı adlı proje varsa o.
+export const suggestMapping = (ptClient: string | undefined, ptProject: string, catalog: CatalogClient[]): { client: string; project: string } => {
+  let client = '';
+  if (ptClient) {
+    const exact = catalog.find(c => nk(c.name) === nk(ptClient));
+    const prefix = catalog.filter(c => nk(ptClient).startsWith(nk(c.name) + ' ')).sort((a, b) => b.name.length - a.name.length)[0];
+    client = (exact || prefix)?.name || '';
+  }
+  const strip = (name: string) => {
+    let p = ptProject.trim();
+    for (const pre of [client, ptClient || ''].filter(Boolean).sort((a, b) => b.length - a.length)) {
+      if (nk(p).startsWith(nk(pre))) { const rest = p.slice(pre.length).replace(/^[\s\-–—:]+/, '').trim(); if (rest) { p = rest; break; } }
+    }
+    return p;
+  };
+  const wanted = strip(ptProject);
+  const known = catalog.find(c => c.name === client)?.projects.find(p => nk(p) === nk(wanted) || nk(p) === nk(ptProject));
+  return { client, project: known || wanted };
+};
 
 const CFG_KEY = 'assigned_tasks_cfg_v1';
 const STATE_KEY = 'assigned_tasks_state_v1';
 export const defaultCfg = (): AssignedCfg => ({ enabled: false, loginUrl: '', allowHttp: false, intervalMin: 15, sources: [] });
 export const loadCfg = (): AssignedCfg => {
-  try { const o = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); return { ...defaultCfg(), ...o, sources: Array.isArray(o.sources) ? o.sources : [] }; } catch { return defaultCfg(); }
+  try { const o = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); return { ...defaultCfg(), ...o, sources: Array.isArray(o.sources) ? o.sources : [], projectMap: o.projectMap && typeof o.projectMap === 'object' ? o.projectMap : {} }; } catch { return defaultCfg(); }
 };
 export const saveCfg = (c: AssignedCfg) => { try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch { /* yoksay */ } };
 export const loadState = (): AssignedState => { try { return JSON.parse(localStorage.getItem(STATE_KEY) || '{}'); } catch { return {}; } };
