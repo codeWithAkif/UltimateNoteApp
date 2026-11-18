@@ -198,13 +198,13 @@ const fetchSource = async (t, source, maxPages) => {
   const out = [];
   for (const l of picked.slice(0, 15)) {
     if (new URL(l.url).origin !== new URL(source.url).origin) continue;
-    const r = await fetchOne(t, source, l.url, maxPages);
+    const r = await fetchOne(t, source, l.url, maxPages, false, true);
     out.push({ ...r, name: l.team });
   }
   return out;
 };
 
-const fetchOne = async (t, source, pageUrl, maxPages, rawDoc) => {
+const fetchOne = async (t, source, pageUrl, maxPages, rawDoc, lenient) => {
   const viewCookies = parseViewCookies(source.cookies);
   for (const c of viewCookies) { if (typeof t.setCookie === 'function') await t.setCookie(pageUrl, c.name, c.value); }
   const method = (source.method || 'GET').toUpperCase();
@@ -223,6 +223,10 @@ const fetchOne = async (t, source, pageUrl, maxPages, rawDoc) => {
   if (hasPasswordForm(res.text)) throw new SyncError('login-required', 'Oturum açık değil (sunucu giriş sayfasına yönlendirdi).');
   let doc = parse(res.text);
   let table = extractTable(doc, res.url || pageUrl) || extractGrid(doc, res.url || pageUrl);
+  if (!table && lenient) return { kind: 'html', table: { headers: GRID_HEADERS, rows: [] } }; // ekip menüsünden gelen boş sprint hata değildir
+  if (!table && teamLinks(doc, res.url || pageUrl).length > 0) {
+    throw new SyncError('no-table', `"${source.name || pageUrl}" sayfasında iş listesi yok; burası ekip menüsü olan genel bir sayfa. Kaynağın "Ekip adı" kutusuna ekip adını (ya da tüm ekipler için *) yazın.`);
+  }
   if (!table) {
     const ids = new Set((res.text.match(/\b[A-Z]{2,6}-\d{2,}\b/g) || []));
     const name = source.name || source.url;
