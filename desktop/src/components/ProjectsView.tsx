@@ -8,6 +8,9 @@ import { PROJECT_KICKOFF_CHECKLIST } from '../projectTemplate';
 import ProjectFolderRow from './ProjectFolderRow';
 import TaskAttachmentsModal from './TaskAttachmentsModal';
 import ClaudeTaskModal from './ClaudeTaskModal';
+import AssignedTasksModal from './AssignedTasksModal';
+import { isAssignedSupported } from '../services/assignedSync';
+import type { AssignedState } from '../services/assignedTasks';
 import { isClaudeTaskSupported, isAskEnabled, isClaudeReady, setAskEnabled } from '../services/claudeTask';
 import { getProjectFolder, inspectProjectFolder } from '../services/projectFolders';
 import { platform } from '../services/platform';
@@ -48,6 +51,9 @@ interface ProjectsViewProps {
   onTasksAdded?: () => void;
   // Seçili projeyi üst bileşene bildirir (oturum özeti: Kanban/Genel Bakış'ta geçen süre bu projeye yazılsın).
   onProjectContext?: (project: string | null) => void;
+  // Şirket uygulamasından atanan işleri çekme (App.tsx sürücüsü): şimdi çek ve ayar değişti bildirimi.
+  onSyncAssigned?: () => Promise<AssignedState>;
+  onAssignedConfigChanged?: () => void;
 }
 
 // Bir müşteri/proje notunun içeriğinden [renk:hex] ve [icon:emoji] etiketlerini okur.
@@ -161,7 +167,8 @@ function ProjectTaskAdder({ onAdd, projectName }: { onAdd: (text: string) => Pro
   );
 }
 
-export default function ProjectsView({ navRequest, onNavHandled, timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded, onProjectContext }: ProjectsViewProps) {
+export default function ProjectsView({ navRequest, onNavHandled, timelineItems, notes, scannedContents, onChangeTaskStatus, onOpenNote, onSaveNote, clientsFolder = 'Müşteriler', onTasksAdded, onProjectContext, onSyncAssigned, onAssignedConfigChanged }: ProjectsViewProps) {
+  const [assignedOpen, setAssignedOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'kanban' | 'clients'>('dashboard');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   useEffect(() => { onProjectContext?.(selectedProject); }, [selectedProject]);
@@ -1058,8 +1065,20 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
           >
             <Users size={16} /> Müşteriler
           </button>
+          {isAssignedSupported() && onSyncAssigned && (
+            <button
+              onClick={() => setAssignedOpen(true)}
+              title="Şirket proje yönetim uygulamasından size atanan işleri çek"
+              style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              Atanan işler
+            </button>
+          )}
         </div>
       </div>
+      {assignedOpen && onSyncAssigned && (
+        <AssignedTasksModal onSyncNow={onSyncAssigned} onConfigChanged={() => onAssignedConfigChanged?.()} onClose={() => setAssignedOpen(false)} />
+      )}
 
       {/* Content */}
       <div className="projects-content" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>

@@ -574,6 +574,41 @@ ipcMain.handle('list-media-files', async () => {
   }
 });
 
+// IPC Handler: Şirket proje yönetim uygulamasından "bana atanan işler" (bkz. taskSource.cjs). E-posta/şifre işletim sistemi anahtar zinciriyle
+// şifreli dosyada saklanır (Google ayarlarıyla aynı yöntem); renderer'a ŞİFRE ASLA GERİ DÖNMEZ, giriş burada yapılır.
+const taskSource = require('./taskSource.cjs');
+const taskSourceCredPath = () => path.join(app.getPath('userData'), 'task-source-credentials.enc');
+const readTaskSourceCreds = () => {
+  try {
+    if (!fs.existsSync(taskSourceCredPath()) || !safeStorage.isEncryptionAvailable()) return null;
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(taskSourceCredPath())));
+  } catch { return null; }
+};
+ipcMain.handle('task-source-save-credentials', async (event, creds) => {
+  if (!creds || typeof creds.username !== 'string' || typeof creds.password !== 'string' || !creds.username.trim() || !creds.password) return { ok: false, error: 'E-posta ve şifre gerekli.' };
+  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Bu sistemde şifreli depolama kullanılamıyor; şifre saklanmadı.' };
+  fs.writeFileSync(taskSourceCredPath(), safeStorage.encryptString(JSON.stringify({ username: creds.username.trim(), password: creds.password })));
+  return { ok: true };
+});
+ipcMain.handle('task-source-credentials-status', async () => {
+  const c = readTaskSourceCreds();
+  return { has: !!c, username: c ? c.username : '' };
+});
+ipcMain.handle('task-source-clear-credentials', async () => {
+  try { if (fs.existsSync(taskSourceCredPath())) fs.unlinkSync(taskSourceCredPath()); } catch { /* yoksay */ }
+  return { ok: true };
+});
+let taskSourceRunning = false;
+ipcMain.handle('task-source-sync', async (event, cfg) => {
+  if (taskSourceRunning) return { ok: false, code: 'busy', error: 'Bir çekme zaten sürüyor.' };
+  taskSourceRunning = true;
+  try {
+    const { session } = require('electron');
+    const ses = session.fromPartition('task-source'); // bellekte, çerezler uygulama kapanınca silinir
+    return await taskSource.runSync(cfg || {}, readTaskSourceCreds(), taskSource.electronTransport(ses));
+  } finally { taskSourceRunning = false; }
+});
+
 // IPC Handler: "Claude başlasın mı?" (bkz. claudeAgent.cjs): görev için proje klasöründe salt okunur PLAN çıkarır, ilerlemeyi pencereye bildirir.
 const claudeAgent = require('./claudeAgent.cjs');
 ipcMain.handle('claude-agent-plan', async (event, req) => claudeAgent.plan(

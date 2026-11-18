@@ -70,7 +70,7 @@ const DURUM_CHIPS: Record<string, { emoji: string; label: string; color: string 
 };
 
 // Bu adlardaki etiketler rozete çevrilir; 'hidden' = kullanıcıya anlamsız iç kimlik, hiç gösterilmez.
-export const INLINE_TAG_NAMES = ['type', 'session', 'plan', 'hours', 'gcal', 'gcalh', 'exid', 'srs', 'durum'] as const;
+export const INLINE_TAG_NAMES = ['type', 'session', 'plan', 'hours', 'gcal', 'gcalh', 'exid', 'srs', 'durum', 'kaynak', 'kdurum'] as const;
 
 export const inlineTagChip = (name: string, rawValue: string): ChipInfo | 'hidden' | null => {
   const n = name.toLowerCase();
@@ -87,7 +87,9 @@ export const inlineTagChip = (name: string, rawValue: string): ChipInfo | 'hidde
     case 'plan': return { emoji: '📌', label: `Plan: ${fmtSlot(v)}`, color: '#38bdf8', title: 'Planlanan zaman' };
     case 'hours': return { emoji: '⏱️', label: `${v.replace('.', ',')} sa`, color: '#94a3b8', title: 'Harcanan/planlanan süre' };
     case 'gcal': return { emoji: '📅', label: 'Takvimde', color: '#60a5fa', title: 'Google Takvim ile eşitlendi' };
-    case 'gcalh': case 'exid': return 'hidden';
+    case 'gcalh': case 'exid': case 'kdurum': return 'hidden';
+    // Şirket uygulamasından çekilen işin numarası (eşleşme anahtarı); bkz. services/assignedTasks.ts
+    case 'kaynak': return { emoji: '🔗', label: v, color: '#94a3b8', title: 'Şirket uygulamasındaki görev numarası' };
     case 'srs': {
       const box = v.match(/box\s*(\d+)/i);
       const day = v.match(/\d{4}-\d{2}-\d{2}/);

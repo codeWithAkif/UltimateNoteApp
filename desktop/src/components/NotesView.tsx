@@ -7678,7 +7678,7 @@ export default function NotesView({
         );
       }
       {
-        const tagM = part.match(/^\[(type|session|plan|hours|gcal|gcalh|exid|srs|durum):\s*([^\]]*)\]$/i);
+        const tagM = part.match(/^\[(type|session|plan|hours|gcal|gcalh|exid|srs|durum|kaynak|kdurum):\s*([^\]]*)\]$/i);
         if (tagM) {
           const chip = inlineTagChip(tagM[1], tagM[2]);
           if (chip === 'hidden') return null;

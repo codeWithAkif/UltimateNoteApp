@@ -16,6 +16,8 @@ import {
   loadCallMap, saveCallMap, loadConsumed, saveConsumed, loadIncludeProjectless, saveIncludeProjectless, loadTitleMap, rememberTitleProject, findTranscriptSummary, type DayBlock, type ExternalEvent
 } from './dayPlan';
 import { type ParsedCall } from './teamsCalls';
+import { runAssignedSync, isAssignedSupported } from './services/assignedSync';
+import { loadCfg as loadAssignedCfg, loadState as loadAssignedState, type AssignedState } from './services/assignedTasks';
 import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react';
 import Sidebar from './components/Sidebar';
@@ -3797,6 +3799,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               .replace(/\[hours:[\d.]+\]/gi, '')
               .replace(/\[gcal:[^\]]+\]/gi, '')
               .replace(/\[gcalh:[^\]]+\]/gi, '')
+              .replace(/\[(?:kaynak|kdurum):[^\]]+\]/gi, '') // şirket uygulamasından çekilen işlerin iç etiketleri (bkz. services/assignedTasks.ts)
               .replace(/\[başlama:[^\]]+\]/gi, '')
               .replace(/#[a-zA-Z0-9_\-ğüşıöçĞÜŞİÖÇ]+/g, '')
               .replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]/g, '') // strip capture timestamp
@@ -4412,6 +4415,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
   const currentProjectKeyRef = useRef<() => string>(() => '');
   const [includeProjectless, setIncludeProjectless] = useState<boolean>(() => loadIncludeProjectless());
   const [gapsModalOpen, setGapsModalOpen] = useState(false);
+  const [assignedVersion, setAssignedVersion] = useState(0); // Atanan işler ayarı değişince otomatik çekme zamanlayıcısı yenilenir
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [hideAiNames, setHideAiNames] = useState<boolean>(() => loadHideNames());
   const [aiExtraNames, setAiExtraNames] = useState<string>(() => loadExtraNames());
@@ -4661,6 +4665,34 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
       return aiGuessProject(title, guessCandidates(names), buildAnonymizer(names));
     }
   };
+
+  // ---- Atanan işler (şirket proje yönetim uygulaması; bkz. services/assignedSync.ts) ----
+  // Eşitleme notlara kendiliğinden yazar: oturum özetinde "yaptığınız iş" sayılmasın diye izleme kapatılır.
+  const syncAssignedNow = async (): Promise<AssignedState> => {
+    suppressSessionTrackRef.current = true;
+    try {
+      const st = await runAssignedSync({
+        readNote: async (p) => fileContentsRef.current[p] ?? (notes.some(n => n.path === p) ? await handleReadNoteContent(p) : undefined),
+        saveNote: (p, c) => handleSaveNote(p, c)
+      });
+      loadAllData();
+      return st;
+    } finally { suppressSessionTrackRef.current = false; }
+  };
+  const syncAssignedRef = useRef(syncAssignedNow);
+  syncAssignedRef.current = syncAssignedNow;
+  useEffect(() => {
+    const cfg = loadAssignedCfg();
+    if (!isAssignedSupported() || !cfg.enabled) return;
+    const tick = () => {
+      if (loadAssignedState().paused) return; // giriş/ayar hatasında tekrar denenmez (hesap kilitlenmesin)
+      if (Object.keys(fileContentsRef.current).length === 0) return;
+      void syncAssignedRef.current();
+    };
+    const first = setTimeout(tick, 20000);
+    const iv = setInterval(tick, Math.max(5, cfg.intervalMin) * 60000);
+    return () => { clearTimeout(first); clearInterval(iv); };
+  }, [assignedVersion]);
 
   // Günün blokları (işlenmiş + bekleyen taslaklar): pencerede çakışma uyarısı için.
   const dayBlocksFor = useCallback((ymd: string): DayBlock[] => {
@@ -8220,6 +8252,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           {activeTab === 'projects' && (
             <ProjectsView
               onProjectContext={(p) => { projectsViewProjectRef.current = p; }}
+              onSyncAssigned={syncAssignedNow}
+              onAssignedConfigChanged={() => setAssignedVersion(v => v + 1)}
               timelineItems={timelineItems}
               navRequest={projectNav}
               onNavHandled={() => setProjectNav(null)}

@@ -1884,6 +1884,7 @@ export default function CalendarView({
               // efekti) — başlıkta ham etiket olarak görünmesin.
               .replace(/\[gcal:[^\]]+\]/gi, '')
               .replace(/\[gcalh:[^\]]+\]/gi, '')
+              .replace(/\[(?:kaynak|kdurum):[^\]]+\]/gi, '')
               .replace(/\s+/g, ' ')
               .trim();
 

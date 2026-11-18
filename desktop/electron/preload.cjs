@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('electron', {
   saveGitCreds: (creds) => ipcRenderer.invoke('save-git-creds', creds),
   searchOnlineMusic: (query) => ipcRenderer.invoke('search-online-music', query),
   fetchIcs: (url) => ipcRenderer.invoke('fetch-ics', url),
+  taskSourceSaveCredentials: (creds) => ipcRenderer.invoke('task-source-save-credentials', creds),
+  taskSourceCredentialsStatus: () => ipcRenderer.invoke('task-source-credentials-status'),
+  taskSourceClearCredentials: () => ipcRenderer.invoke('task-source-clear-credentials'),
+  taskSourceSync: (cfg) => ipcRenderer.invoke('task-source-sync', cfg),
   claudeAgentPlan: (req) => ipcRenderer.invoke('claude-agent-plan', req),
   claudeAgentCancel: (runId) => ipcRenderer.invoke('claude-agent-cancel', runId),
   onClaudeAgentProgress: (callback) => {

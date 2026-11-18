@@ -20,6 +20,10 @@ export interface ElectronAPI {
   onSyncStatusChanged: (callback: (status: 'synced' | 'syncing' | 'offline' | 'error') => void) => () => void;
   searchOnlineMusic: (query: string) => Promise<any[]>;
   fetchIcs?: (url: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  taskSourceSaveCredentials?: (creds: { username: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
+  taskSourceCredentialsStatus?: () => Promise<{ has: boolean; username: string }>;
+  taskSourceClearCredentials?: () => Promise<{ ok: boolean }>;
+  taskSourceSync?: (cfg: any) => Promise<{ ok: boolean; code?: string; error?: string; sources?: any[] }>;
   claudeAgentPlan?: (req: { runId: string; dir: string; prompt: string; attachments?: string[]; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number }>;
   claudeAgentCancel?: (runId: string) => Promise<{ ok: boolean }>;
   onClaudeAgentProgress?: (callback: (data: { runId?: string; text: string }) => void) => () => void;
