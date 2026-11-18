@@ -199,7 +199,7 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
                 <div style={{ marginTop: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '8px' }}>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>{p.rows.length} kayıt bulundu, {p.tasks.length} iş okunacak. Alanlar doğru eşleşmediyse düzeltin:</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {([['id', 'Numara'], ['title', 'Başlık'], ['status', 'Durum'], ['due', 'Bitiş']] as [keyof Mapping, string][]).map(([k, lab]) => (
+                    {([['id', 'Numara'], ['title', 'Başlık'], ['status', 'Durum'], ['due', 'Bitiş'], ['project', 'Proje'], ['client', 'Müşteri']] as [keyof Mapping, string][]).map(([k, lab]) => (
                       <label key={k} style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 130px' }}>
                         {lab}
                         <select value={p.mapping[k] || ''} onChange={(e) => setMapping(i, k, e.target.value)} style={field}>
@@ -236,7 +236,7 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
                   <div style={{ marginTop: '8px', fontSize: '12px' }}>
                     {p.tasks.slice(0, 6).map(t => (
                       <div key={t.id} style={{ display: 'flex', gap: '8px', padding: '2px 0', color: 'var(--text-secondary)' }}>
-                        <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{t.id}</span><span style={{ flex: 1, overflowWrap: 'anywhere' }}>{t.title}</span><span style={{ flexShrink: 0 }}>{STATUS_LABEL[t.status]}{t.due ? ` · ${t.due}` : ''}</span>
+                        <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{t.id}</span><span style={{ flex: 1, overflowWrap: 'anywhere' }}>{t.title}{(t.client || t.project) && <span style={{ color: 'var(--text-muted)' }}> — {[t.client, t.project].filter(Boolean).join(' › ')}</span>}</span><span style={{ flexShrink: 0 }}>{STATUS_LABEL[t.status]}{t.due ? ` · ${t.due}` : ''}</span>
                       </div>
                     ))}
                     {p.tasks.length > 6 && <div style={{ color: 'var(--text-muted)' }}>… ve {p.tasks.length - 6} iş daha</div>}

@@ -7,9 +7,9 @@
 
 export interface SourceResult { name: string; sourceIndex?: number; kind: 'json' | 'html'; json?: any; table?: { headers: string[]; rows: { cells: string[]; href: string }[] } }
 export type RawRow = Record<string, string>;
-export interface Mapping { id?: string; title?: string; status?: string; due?: string }
+export interface Mapping { id?: string; title?: string; status?: string; due?: string; project?: string; client?: string }
 export type StatusKey = 'backlog' | 'inprogress' | 'review' | 'test' | 'park' | 'blocked' | 'done';
-export interface AssignedTask { id: string; title: string; status: StatusKey; rawStatus: string; due?: string; href?: string }
+export interface AssignedTask { id: string; title: string; status: StatusKey; rawStatus: string; due?: string; href?: string; project?: string; client?: string }
 
 // ---------------- ham veriyi satırlara çevirme ----------------
 const norm = (s: unknown) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
@@ -104,7 +104,9 @@ export const guessMapping = (fields: string[]): Mapping => {
     id: pick(f, /^(taskkey|task ?key|key|task ?no|issue ?key|no|numara|iş ?no|kod|code|#)$/i, /(key|code|kod|numara|\bno\b)$/i) || pick(f, /^(id|taskid)$/i, /(^|[^a-z])id$/i),
     title: pick(f, /^(title|name|subject|summary|başlık|baslik|konu|görev|gorev|iş|task ?name|task ?title|taskname|tasktitle)$/i, /(title|başlık|baslik|subject|summary|name|konu|görev|gorev)/i),
     status: pick(f, /^(status|durum|state|aşama|asama|stage|column)$/i, /(status|durum|state|aşama|stage)/i),
-    due: pick(f, /^(due ?date|duedate|deadline|bitiş|bitis|bitiş tarihi|termin|son tarih|end ?date)$/i, /(due|deadline|bitiş|bitis|termin|son ?tarih|end ?date|target)/i)
+    due: pick(f, /^(due ?date|duedate|deadline|bitiş|bitis|bitiş tarihi|termin|son tarih|end ?date)$/i, /(due|deadline|bitiş|bitis|termin|son ?tarih|end ?date|target)/i),
+    project: f.find(x => /^(proje|project|project ?name)$/i.test(x)),
+    client: f.find(x => /^(müşteri|musteri|client|customer|customer ?name|client ?name)$/i.test(x))
   };
 };
 
@@ -136,7 +138,8 @@ export const toTasks = (rows: RawRow[], m: Mapping, statusMap?: Record<string, S
     if (seen.has(rawId)) return;
     seen.add(rawId);
     const rawStatus = norm(m.status ? r[m.status] : '');
-    out.push({ id: rawId, title, status: mapStatus(rawStatus, statusMap), rawStatus, due: m.due ? normalizeDue(r[m.due]) : undefined, href: r.__href });
+    out.push({ id: rawId, title, status: mapStatus(rawStatus, statusMap), rawStatus, due: m.due ? normalizeDue(r[m.due]) : undefined, href: r.__href,
+      project: m.project ? cleanTitle(r[m.project]) || undefined : undefined, client: m.client ? cleanTitle(r[m.client]) || undefined : undefined });
   });
   return out;
 };
@@ -158,10 +161,10 @@ const TAG_START = /\s\[[A-Za-zçğıöşüÇĞİÖŞÜ_-]+:/;
 
 export interface ApplyStats { added: number; updated: number; completed: number }
 
-export const applyTasksToNote = (existing: string | undefined, name: string, tasks: AssignedTask[]): { content: string; stats: ApplyStats } => {
+export const applyTasksToNote = (existing: string | undefined, name: string, tasks: AssignedTask[], headerTags = '#proje #atananlar'): { content: string; stats: ApplyStats } => {
   const slug = slugOfName(name);
   const stats: ApplyStats = { added: 0, updated: 0, completed: 0 };
-  const base = existing && existing.trim() ? existing.replace(/\s+$/, '') : `# ${name}\n\n#proje #atananlar\n`;
+  const base = existing && existing.trim() ? existing.replace(/\s+$/, '') : `# ${name}\n\n${headerTags}\n`;
   const lines = base.split('\n');
   const idx = new Map<string, number>();
   lines.forEach((l, i) => { const m = l.match(/\[kaynak:([^\]]+)\]/); if (m && LINE_RE.test(l) && !idx.has(m[1])) idx.set(m[1], i); });

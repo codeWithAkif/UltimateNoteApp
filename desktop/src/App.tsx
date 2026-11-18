@@ -4673,7 +4673,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
     try {
       const st = await runAssignedSync({
         readNote: async (p) => fileContentsRef.current[p] ?? (notes.some(n => n.path === p) ? await handleReadNoteContent(p) : undefined),
-        saveNote: (p, c) => handleSaveNote(p, c)
+        saveNote: (p, c) => handleSaveNote(p, c),
+        notePaths: () => notes.filter(n => n.type === 'note').map(n => n.path),
+        clientsFolder
       });
       loadAllData();
       return st;

@@ -107,13 +107,23 @@ const extractTable = (doc, baseUrl) => {
 // div tabanlı liste (ProTracker): her görev satırı data-task-id taşır (.effort-row). Tablo gibi { headers, rows } döndürülür.
 // Satır: [Key, Başlık, Durum, Bölüm, Proje, Atanan]. Durum = tür/öncelik dışındaki etiket; yoksa bölüm (backlog -> Backlog).
 const TYPE_PRIORITY = /^(feature|bug|task|story|epic|improvement|support|chore|low|medium|high|critical|urgent|blocker|minor|major|normal|lowest|highest)$/i;
-const GRID_HEADERS = ['Key', 'Başlık', 'Durum', 'Bölüm', 'Proje', 'Atanan'];
+const GRID_HEADERS = ['Key', 'Başlık', 'Durum', 'Bölüm', 'Proje', 'Atanan', 'Müşteri'];
 const extractGrid = (doc, baseUrl) => {
   const nodes = doc.querySelectorAll('.effort-row[data-task-id], .sortable-item[data-task-id]');
   if (nodes.length === 0) return null;
   // Sayfadaki "MT-90480" biçimli numaralardan önek öğren (data-task-id yalnızca sayı)
   const prefix = {};
   for (const m of String(doc.toString()).matchAll(/\b([A-Z]{2,6})-(\d{2,})\b/g)) prefix[m[2]] = m[1];
+  // Board kartlarında müşteri (yeşil etiket) ve proje (mavi etiket) var; iş numarasıyla (MT-90480) listedeki satıra bağlanır
+  const meta = {};
+  for (const card of doc.querySelectorAll('[data-task-id]')) {
+    if (/effort-row/.test(card.getAttribute('class') || '')) continue;
+    const key = (norm((card.querySelector('.badge-phoenix-secondary') || { text: '' }).text).match(/\b[A-Z]{2,6}-\d{2,}\b/) || [])[0];
+    if (!key || meta[key]) continue;
+    const pr = card.querySelector('.badge-phoenix-info');
+    const cu = card.querySelector('.badge-phoenix-success');
+    meta[key] = { project: pr ? norm(pr.text) : '', customer: cu ? norm(cu.text) : '' };
+  }
   const seen = new Set();
   const rows = [];
   for (const n of nodes) {
@@ -127,9 +137,11 @@ const extractGrid = (doc, baseUrl) => {
     const badges = (nameCell ? nameCell.querySelectorAll('.badge') : []).map((b) => norm(b.text)).filter(Boolean);
     const status = badges.filter((b) => !TYPE_PRIORITY.test(b)).pop() || (/backlog/i.test(sec) ? 'Backlog' : sec ? 'Sprint' : '');
     const cells = n.querySelectorAll('.table-cell');
-    const project = cells[1] ? norm(cells[1].text) : '';
+    const key = `${prefix[id] || 'MT'}-${id}`;
+    const m = meta[key] || {};
+    const project = (cells[1] ? norm(cells[1].text) : '') || m.project || '';
     const people = [...new Set(n.querySelectorAll('[data-bs-title]').map((e) => norm(e.getAttribute('data-bs-title'))).filter(Boolean))];
-    rows.push({ cells: [`${prefix[id] || 'MT'}-${id}`, title, status, sec, project, people.join(', ')], href: '' });
+    rows.push({ cells: [key, title, status, sec, project, people.join(', '), m.customer || ''], href: '' });
   }
   return rows.length ? { headers: GRID_HEADERS, rows } : null;
 };
