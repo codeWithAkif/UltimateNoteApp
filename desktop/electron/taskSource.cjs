@@ -104,7 +104,46 @@ const extractTable = (doc, baseUrl) => {
   return best;
 };
 
-const NEXT_TEXT = /^(sonraki|ileri|next|›|»|>|>>)$/i;
+// div tabanlı liste (ProTracker): her görev satırı data-task-id taşır (.effort-row). Tablo gibi { headers, rows } döndürülür.
+// Satır: [Key, Başlık, Durum, Bölüm, Proje, Atanan]. Durum = tür/öncelik dışındaki etiket; yoksa bölüm (backlog -> Backlog).
+const TYPE_PRIORITY = /^(feature|bug|task|story|epic|improvement|support|chore|low|medium|high|critical|urgent|blocker|minor|major|normal|lowest|highest)$/i;
+const GRID_HEADERS = ['Key', 'Başlık', 'Durum', 'Bölüm', 'Proje', 'Atanan'];
+const extractGrid = (doc, baseUrl) => {
+  const nodes = doc.querySelectorAll('.effort-row[data-task-id], .sortable-item[data-task-id]');
+  if (nodes.length === 0) return null;
+  // Sayfadaki "MT-90480" biçimli numaralardan önek öğren (data-task-id yalnızca sayı)
+  const prefix = {};
+  for (const m of String(doc.toString()).matchAll(/\b([A-Z]{2,6})-(\d{2,})\b/g)) prefix[m[2]] = m[1];
+  const seen = new Set();
+  const rows = [];
+  for (const n of nodes) {
+    const id = n.getAttribute('data-task-id');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    let sec = '';
+    for (let p = n.parentNode; p; p = p.parentNode) { const s = p.getAttribute && p.getAttribute('data-status'); if (s) { sec = s; break; } }
+    const nameCell = n.querySelector('.table-cell');
+    const title = norm((nameCell && nameCell.querySelector('a') ? nameCell.querySelector('a') : nameCell || n).text);
+    const badges = (nameCell ? nameCell.querySelectorAll('.badge') : []).map((b) => norm(b.text)).filter(Boolean);
+    const status = badges.filter((b) => !TYPE_PRIORITY.test(b)).pop() || (/backlog/i.test(sec) ? 'Backlog' : sec ? 'Sprint' : '');
+    const cells = n.querySelectorAll('.table-cell');
+    const project = cells[1] ? norm(cells[1].text) : '';
+    const people = [...new Set(n.querySelectorAll('[data-bs-title]').map((e) => norm(e.getAttribute('data-bs-title'))).filter(Boolean))];
+    rows.push({ cells: [`${prefix[id] || 'MT'}-${id}`, title, status, sec, project, people.join(', ')], href: '' });
+  }
+  return rows.length ? { headers: GRID_HEADERS, rows } : null;
+};
+
+// Ekip menüsü: her ekibin ŞU ANKİ sprint'ine giden bağlantılar (sprintId her sprint'te değişir, ekip adı sabit kalır).
+const teamLinks = (doc, baseUrl) => {
+  const out = [];
+  for (const a of doc.querySelectorAll('a.dropdown-item[href*="sprintId="]')) {
+    try { out.push({ team: norm(a.text), url: new URL(a.getAttribute('href'), baseUrl).href }); } catch { /* geç */ }
+  }
+  return out;
+};
+
+const NEXT_TEXT =/^(sonraki|ileri|next|›|»|>|>>)$/i;
 const findNextLink = (doc, baseUrl) => {
   const rel = doc.querySelector('a[rel="next"]');
   const cands = rel ? [rel] : doc.querySelectorAll('a[href]').filter((a) => NEXT_TEXT.test(norm(a.text)) || /\bnext\b/i.test(a.getAttribute('class') || '') || /\bnext\b/i.test(a.getAttribute('title') || ''));
@@ -118,26 +157,83 @@ const findNextLink = (doc, baseUrl) => {
   return null;
 };
 
+// Kaynağa eklenebilen "görünüm çerezi" (örn. taskViewPreference=list): site liste/board görünümünü çerezle hatırlıyorsa tablo görünümünü almak için.
+// Oturum/giriş/güvenlik çerezleri YAZILAMAZ (yalnızca zararsız tercih çerezleri).
+const SENSITIVE_COOKIE = /(identity|auth|session|sess|token|antiforgery|affinity|aspxauth|csrf|xsrf|login|credential|key|secret)/i;
+const parseViewCookies = (str) => {
+  if (!str || !String(str).trim()) return [];
+  const out = [];
+  for (const part of String(str).split(';')) {
+    const p = part.trim();
+    if (!p) continue;
+    const i = p.indexOf('=');
+    const name = i > 0 ? p.slice(0, i).trim() : '';
+    const value = i > 0 ? p.slice(i + 1).trim() : '';
+    if (!/^[A-Za-z0-9_.-]{1,60}$/.test(name) || value.length > 100 || /[;\s,]/.test(value)) throw new SyncError('config', `Görünüm çerezi geçersiz: "${p.slice(0, 40)}" (ad=değer biçiminde olmalı).`);
+    if (SENSITIVE_COOKIE.test(name)) throw new SyncError('config', `"${name}" bir oturum/güvenlik çerezi gibi görünüyor; yalnızca görünüm tercihi çerezleri eklenebilir.`);
+    out.push({ name, value });
+  }
+  return out.slice(0, 5);
+};
+
 const REQ_HEADERS = { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json, text/html;q=0.9, */*;q=0.5' };
 
 // Kaynak: { name, url, method?, body?, contentType? }. Dönüş: { kind: 'json', json } ya da { kind: 'html', table }.
+// Kaynakta `team` varsa: adres bir ekip menüsü içeren sayfadır; menüden o ekibin güncel sprint sayfası bulunur (`*` = menüdeki tüm ekipler).
+// Dönüş her zaman liste: [{ name?, kind, ... }] (tek ekip/adres için tek öğe).
 const fetchSource = async (t, source, maxPages) => {
+  const team = norm(source.team);
+  if (!team) return [await fetchOne(t, source, source.url, maxPages)];
+  const start = await fetchOne(t, source, source.url, maxPages, true);
+  const links = teamLinks(start.doc, start.url);
+  if (links.length === 0) throw new SyncError('config', `"${source.name || source.url}" sayfasında ekip menüsü bulunamadı; ekip adıyla bulma kullanılamıyor (adresi doğrudan sprint sayfası olarak verin).`);
+  let picked;
+  if (team === '*') picked = links;
+  else {
+    const q = team.toLocaleLowerCase('tr');
+    picked = links.filter((l) => l.team.toLocaleLowerCase('tr') === q);
+    if (picked.length === 0) picked = links.filter((l) => l.team.toLocaleLowerCase('tr').includes(q));
+    if (picked.length === 0) throw new SyncError('config', `"${team}" adlı ekip menüde yok. Menüdeki ekipler: ${links.map((l) => l.team).join(', ')}`);
+  }
+  const out = [];
+  for (const l of picked.slice(0, 15)) {
+    if (new URL(l.url).origin !== new URL(source.url).origin) continue;
+    const r = await fetchOne(t, source, l.url, maxPages);
+    out.push({ ...r, name: l.team });
+  }
+  return out;
+};
+
+const fetchOne = async (t, source, pageUrl, maxPages, rawDoc) => {
+  const viewCookies = parseViewCookies(source.cookies);
+  for (const c of viewCookies) { if (typeof t.setCookie === 'function') await t.setCookie(pageUrl, c.name, c.value); }
   const method = (source.method || 'GET').toUpperCase();
   if (!['GET', 'POST'].includes(method)) throw new SyncError('config', 'Kaynak yöntemi GET ya da POST olmalı.');
-  const res = await t.request(source.url, { method, body: source.body || null, contentType: source.contentType || undefined, headers: REQ_HEADERS });
+  const isStart = !!rawDoc;
+  const res = await t.request(pageUrl, { method: isStart ? 'GET' : method, body: isStart ? null : (source.body || null), contentType: isStart ? undefined : (source.contentType || undefined), headers: REQ_HEADERS });
   if (res.status === 401 || res.status === 403) throw new SyncError('login-required', 'Oturum açık değil (sunucu yetkisiz döndü).');
   const first = res.text.trim();
+  if (rawDoc) {
+    if (hasPasswordForm(res.text)) throw new SyncError('login-required', 'Oturum açık değil (sunucu giriş sayfasına yönlendirdi).');
+    return { doc: parse(res.text), url: res.url || pageUrl };
+  }
   if (first.startsWith('{') || first.startsWith('[')) {
     try { return { kind: 'json', json: JSON.parse(first) }; } catch { /* HTML gibi dene */ }
   }
   if (hasPasswordForm(res.text)) throw new SyncError('login-required', 'Oturum açık değil (sunucu giriş sayfasına yönlendirdi).');
   let doc = parse(res.text);
-  let table = extractTable(doc, res.url || source.url);
-  if (!table) throw new SyncError('no-table', `"${source.name || source.url}" sayfasında tablo bulunamadı (sayfa veriyi sonradan yüklüyor olabilir; JSON adresi gerekebilir).`);
-  let url = res.url || source.url;
-  for (let p = 1; p < (maxPages || 10); p++) {
+  let table = extractTable(doc, res.url || pageUrl) || extractGrid(doc, res.url || pageUrl);
+  if (!table) {
+    const ids = new Set((res.text.match(/\b[A-Z]{2,6}-\d{2,}\b/g) || []));
+    const name = source.name || source.url;
+    if (ids.size > 0) throw new SyncError('no-table', `"${name}" sayfasında tablo yok ama ${ids.size} iş numarası (örn. ${[...ids][0]}) var: işler tablo değil kart olarak geliyor. Sitede liste (tablo) görünümü varsa kaynağa görünüm çerezini ekleyin (örn. taskViewPreference=list).`);
+    throw new SyncError('no-table', `"${name}" sayfasında tablo ve iş numarası bulunamadı (sayfa veriyi sonradan yüklüyor olabilir; JSON adresi gerekebilir).`);
+  }
+  let url = res.url || pageUrl;
+  const gridOnly = table.headers === GRID_HEADERS;
+  for (let p = 1; !gridOnly && p < (maxPages || 10); p++) {
     const next = findNextLink(doc, url);
-    if (!next || new URL(next).origin !== new URL(source.url).origin) break;
+    if (!next || new URL(next).origin !== new URL(pageUrl).origin) break;
     const r = await t.request(next, { headers: REQ_HEADERS });
     doc = parse(r.text);
     const more = extractTable(doc, r.url || next);
@@ -158,16 +254,16 @@ const runSync = async (cfg, creds, t) => {
     let logins = 0;
     const out = [];
     for (const s of cfg.sources) {
-      let r;
-      try { r = await fetchSource(t, s, cfg.maxPages); }
+      let rs;
+      try { rs = await fetchSource(t, s, cfg.maxPages); }
       catch (e) {
         if (e instanceof SyncError && e.code === 'login-required' && logins < 2) {
           logins++;
           await login(t, cfg, creds);
-          r = await fetchSource(t, s, cfg.maxPages);
+          rs = await fetchSource(t, s, cfg.maxPages);
         } else throw e;
       }
-      out.push({ name: s.name, ...r });
+      for (const r of rs) out.push({ name: s.name, sourceIndex: cfg.sources.indexOf(s), ...r });
     }
     return { ok: true, sources: out };
   } catch (e) {
@@ -181,6 +277,7 @@ const runSync = async (cfg, creds, t) => {
 // ---- taşıyıcılar ----
 // Electron: oturum bölümü (çerezler bellekte tutulur, uygulama kapanınca silinir); sistem sertifika deposu kullanılır.
 const electronTransport = (ses) => ({
+  async setCookie(url, name, value) { await ses.cookies.set({ url: new URL(url).origin, name, value, path: '/' }); },
   async request(url, opts = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 25000);
@@ -198,4 +295,4 @@ const electronTransport = (ses) => ({
   }
 });
 
-module.exports = { runSync, SyncError, electronTransport, findLoginForm, extractTable, findNextLink, checkUrls };
+module.exports = { runSync, SyncError, electronTransport, findLoginForm, extractTable, extractGrid, teamLinks,findNextLink, checkUrls, parseViewCookies };

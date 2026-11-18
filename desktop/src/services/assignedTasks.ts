@@ -5,7 +5,7 @@
 //  - kaynak: şirket uygulamasındaki görev numarası (aynı iş ikinci kez eklenmesin diye eşleşme anahtarı)
 //  - kdurum: son çekmede kaynağın durumu. Yerel durum YALNIZCA kaynak durumu değişince güncellenir; kartı kendiniz taşıdıysanız, kaynak değişmedikçe bozulmaz.
 
-export interface SourceResult { name: string; kind: 'json' | 'html'; json?: any; table?: { headers: string[]; rows: { cells: string[]; href: string }[] } }
+export interface SourceResult { name: string; sourceIndex?: number; kind: 'json' | 'html'; json?: any; table?: { headers: string[]; rows: { cells: string[]; href: string }[] } }
 export type RawRow = Record<string, string>;
 export interface Mapping { id?: string; title?: string; status?: string; due?: string }
 export type StatusKey = 'backlog' | 'inprogress' | 'review' | 'test' | 'park' | 'blocked' | 'done';
@@ -85,6 +85,13 @@ export const rowsFromResult = (r: SourceResult): { fields: string[]; rows: RawRo
   const recs = findRecords(r.json).map(flatten);
   const fields = [...new Set(recs.flatMap(o => Object.keys(o)))];
   return { fields, rows: recs };
+};
+
+// Satır filtresi: örn. Atanan sütununda "MS" geçenler (başkalarının işleri de gelirse yalnızca sizinkiler alınsın).
+export const applyFilter = (rows: RawRow[], f?: RowFilter): RawRow[] => {
+  const needle = (f?.contains || '').trim().toLocaleLowerCase('tr');
+  if (!f || !f.column || !needle) return rows;
+  return rows.filter(r => String(r[f.column] || '').toLocaleLowerCase('tr').includes(needle));
 };
 
 // ---------------- alan eşleme tahmini ----------------
@@ -241,7 +248,8 @@ export const parseCurl = (text: string): CurlImport | null => {
 };
 
 // ---------------- ayar ve durum (bu cihaz) ----------------
-export interface SourceCfg { name: string; url: string; method?: 'GET' | 'POST'; body?: string; contentType?: string; mapping?: Mapping; statusMap?: Record<string, StatusKey> }
+export interface RowFilter { column: string; contains: string }
+export interface SourceCfg { name: string; url: string; method?: 'GET' | 'POST'; body?: string; contentType?: string; cookies?: string; team?: string; filter?: RowFilter; mapping?: Mapping; statusMap?: Record<string, StatusKey> }
 export interface AssignedCfg { enabled: boolean; loginUrl: string; allowHttp: boolean; intervalMin: number; sources: SourceCfg[] }
 export interface AssignedState { lastSync?: number; lastCode?: string; lastError?: string; paused?: boolean; summary?: string }
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, RefreshCw, Trash2, Plus, ShieldCheck, AlertTriangle } from 'lucide-react';
 import {
-  loadCfg, saveCfg, loadState, saveState, rowsFromResult, guessMapping, toTasks, parseCurl, notePathFor, type AssignedCfg, type AssignedState,
+  loadCfg, saveCfg, loadState, saveState, rowsFromResult, guessMapping, toTasks, parseCurl, notePathFor, applyFilter, type AssignedCfg, type AssignedState,
   type SourceCfg, type SourceResult, type Mapping, type StatusKey, type AssignedTask
 } from '../services/assignedTasks';
 
@@ -84,13 +84,21 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
   const runPreview = async () => {
     setBusy('preview'); setMsg('');
     try {
-      const res = await api.taskSourceSync({ loginUrl: cfg.loginUrl, allowHttp: cfg.allowHttp, maxPages: 10, sources: cfg.sources.map(s => ({ name: s.name, url: s.url, method: s.method, body: s.body, contentType: s.contentType })) });
+      const res = await api.taskSourceSync({ loginUrl: cfg.loginUrl, allowHttp: cfg.allowHttp, maxPages: 10, sources: cfg.sources.map(s => ({ name: s.name, url: s.url, method: s.method, body: s.body, contentType: s.contentType, cookies: s.cookies, team: s.team })) });
       if (!res.ok) { setMsg(res.error || 'Çekilemedi.'); return; }
       const out: Record<number, Preview> = {};
+      // Ekip adıyla bulunan bir kaynak birden çok sonuç döndürebilir: önizlemede tek listede birleşir
+      const merged: Record<number, { fields: string[]; rows: ReturnType<typeof rowsFromResult>['rows'] }> = {};
       (res.sources as SourceResult[]).forEach((r, i) => {
+        const idx = r.sourceIndex ?? i;
         const { fields, rows } = rowsFromResult(r);
+        const m = merged[idx] || (merged[idx] = { fields, rows: [] });
+        m.rows = m.rows.concat(rows);
+      });
+      Object.keys(merged).forEach(k => {
+        const i = Number(k); const { fields, rows } = merged[i];
         const mapping = { ...guessMapping(fields), ...(cfg.sources[i]?.mapping || {}) };
-        const tasks = toTasks(rows, mapping, cfg.sources[i]?.statusMap);
+        const tasks = toTasks(applyFilter(rows, cfg.sources[i]?.filter), mapping, cfg.sources[i]?.statusMap);
         out[i] = { fields, rows, mapping, tasks, statuses: [...new Set(rows.map(x => (mapping.status ? x[mapping.status] : '')).filter(Boolean))] };
       });
       setPreviews(out);
@@ -103,14 +111,22 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
     const p = previews[i]; if (!p) return;
     const mapping = { ...p.mapping, [key]: v || undefined };
     const src = cfg.sources[i];
-    setPreviews({ ...previews, [i]: { ...p, mapping, tasks: toTasks(p.rows, mapping, src?.statusMap) } });
+    setPreviews({ ...previews, [i]: { ...p, mapping, tasks: toTasks(applyFilter(p.rows, src?.filter), mapping, src?.statusMap) } });
     update({ ...cfg, sources: cfg.sources.map((s, k) => (k === i ? { ...s, mapping } : s)) });
   };
   const setStatusMap = (i: number, raw: string, v: StatusKey) => {
     const src = cfg.sources[i]; const p = previews[i]; if (!src || !p) return;
     const statusMap = { ...(src.statusMap || {}), [raw.toLocaleLowerCase('tr')]: v };
     update({ ...cfg, sources: cfg.sources.map((s, k) => (k === i ? { ...s, statusMap } : s)) });
-    setPreviews({ ...previews, [i]: { ...p, tasks: toTasks(p.rows, p.mapping, statusMap) } });
+    setPreviews({ ...previews, [i]: { ...p, tasks: toTasks(applyFilter(p.rows, src.filter), p.mapping, statusMap) } });
+  };
+  const setTeam = (i: number, v: string) => { update({ ...cfg, sources: cfg.sources.map((s, k) => (k === i ? { ...s, team: v.trim() || undefined } : s)) }); setPreviews({}); };
+  const setCookies = (i: number, v: string) => { update({ ...cfg, sources: cfg.sources.map((s, k) => (k === i ? { ...s, cookies: v.trim() || undefined } : s)) }); };
+  const setFilter = (i: number, patch: Partial<{ column: string; contains: string }>) => {
+    const src = cfg.sources[i]; const p = previews[i]; if (!src) return;
+    const filter = { column: '', contains: '', ...(src.filter || {}), ...patch };
+    update({ ...cfg, sources: cfg.sources.map((s, k) => (k === i ? { ...s, filter: filter.column && filter.contains ? filter : undefined } : s)) });
+    if (p) setPreviews({ ...previews, [i]: { ...p, tasks: toTasks(applyFilter(p.rows, filter.column && filter.contains ? filter : undefined), p.mapping, src.statusMap) } });
   };
 
   const syncNow = async () => {
@@ -162,6 +178,20 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: '13px', fontWeight: 600 }}>{s.name} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>→ {notePathFor(s.name)}</span></div>
                   <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{s.method === 'POST' ? 'POST ' : ''}{s.url}</div>
+                  <input
+                    value={s.team || ''}
+                    onChange={(e) => setTeam(i, e.target.value)}
+                    placeholder="Ekip adı (isteğe bağlı): sprint değişse de güncel sprint bulunur. * yazarsanız menüdeki tüm ekipler çekilir"
+                    title="Adres ekip menüsü olan bir sayfa olmalı (örn. .../MainTask). Menüde bu adı taşıyan ekibin o anki sprint sayfası otomatik bulunur; notlar ekip adıyla yazılır."
+                    style={{ ...field, marginTop: '6px', fontSize: '11.5px' }}
+                  />
+                  <input
+                    value={s.cookies || ''}
+                    onChange={(e) => setCookies(i, e.target.value)}
+                    placeholder="Görünüm çerezi (isteğe bağlı, örn. taskViewPreference=list)"
+                    title="Site liste/board görünümünü çerezle hatırlıyorsa, tablo (liste) görünümünü almak için. Oturum/giriş çerezleri yazılamaz."
+                    style={{ ...field, marginTop: '6px', fontSize: '11.5px' }}
+                  />
                 </div>
                 <button type="button" style={{ ...btn, padding: '5px 8px' }} title="Kaynağı kaldır" onClick={() => { update({ ...cfg, sources: cfg.sources.filter((_, k) => k !== i) }); setPreviews({}); }}><Trash2 size={14} /></button>
               </div>
@@ -178,6 +208,14 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
                         </select>
                       </label>
                     ))}
+                  </div>
+                  <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                    <span>Yalnızca şu kişiye atananlar:</span>
+                    <select value={s.filter?.column || ''} onChange={(e) => setFilter(i, { column: e.target.value })} style={{ ...field, width: 'auto', padding: '3px 6px', fontSize: '11.5px' }}>
+                      <option value="">(filtre yok)</option>
+                      {p.fields.filter(f => f !== '__href').map(f => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                    <input value={s.filter?.contains || ''} onChange={(e) => setFilter(i, { contains: e.target.value })} placeholder="içinde geçen metin (örn. MS)" style={{ ...field, width: '170px', padding: '3px 6px', fontSize: '11.5px' }} />
                   </div>
                   {p.statuses.length > 0 && (
                     <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px 12px', alignItems: 'center', fontSize: '11.5px', color: 'var(--text-secondary)' }}>
