@@ -34,18 +34,21 @@ export const prepareStatement = (name: string, raw: string, pages: number): Stat
   return { name: name.slice(0, 80), text: truncated ? clean.slice(0, MAX_STATEMENT_CHARS) : clean, pages, truncated };
 };
 
+const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  new Promise<T>((res, rej) => { const t = setTimeout(() => rej(new Error('ZAMAN_ASIMI')), ms); p.then(v => { clearTimeout(t); res(v); }, e => { clearTimeout(t); rej(e); }); });
+
 export async function readStatementPdf(file: File): Promise<StatementText> {
   if (file.size > MAX_PDF_BYTES) throw new Error('PDF çok büyük (en çok 15 MB).');
   // pdf.js yalnızca gerekince yüklensin (açılış hızı ve telefon paketi için)
-  const pdfjs: any = await import('pdfjs-dist');
-  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-    const w: any = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
-    pdfjs.GlobalWorkerOptions.workerSrc = w.default;
-  }
+  // "legacy" derleme şart: yeni derleme Promise.try kullanır (Chromium 128+), uygulamanın Electron 29'unda yok → sonsuza dek takılıyordu.
+  // İşçi dosyası da ana iş parçacığında çalışır: paketli uygulama file:// ile açıldığı için ayrı Worker güvenilir değil.
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  if (!(globalThis as any).pdfjsWorker) (globalThis as any).pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
   let doc: any;
   try {
-    doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    doc = await withTimeout(pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise, 25000);
   } catch (e: any) {
+    if (e?.message === 'ZAMAN_ASIMI') throw new Error('PDF 25 saniyede açılamadı. Dosyayı yeniden indirip deneyin ya da tutarları yazarak girin.');
     if (e?.name === 'PasswordException') throw new Error('Bu PDF şifreli (bankalar ekstreyi çoğu zaman şifreli gönderir). Şifreyi PDF okuyucuda kaldırıp ("şifresiz kaydet") yeniden ekleyin; şifreyi uygulamaya yazmayın.');
     throw new Error('PDF açılamadı: dosya bozuk olabilir.');
   }
@@ -53,7 +56,7 @@ export async function readStatementPdf(file: File): Promise<StatementText> {
   const pages = Math.min(doc.numPages, 8);
   for (let p = 1; p <= pages; p++) {
     const page = await doc.getPage(p);
-    const tc = await page.getTextContent();
+    const tc = await withTimeout<any>(page.getTextContent(), 25000).catch((e: any) => { throw new Error(e?.message === 'ZAMAN_ASIMI' ? 'PDF metni 25 saniyede okunamadı.' : 'PDF okunamadı.'); });
     chunks.push(itemsToText(tc.items as any));
   }
   const st = prepareStatement(file.name, chunks.join('\n\n'), doc.numPages);

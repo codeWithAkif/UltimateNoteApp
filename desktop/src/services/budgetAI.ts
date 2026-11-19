@@ -37,7 +37,16 @@ const TYPE_HELP = `Tür eşlemesi:
 NAKİT ESASLI MANTIK (çift saymayı önler): Bütçedeki her kalem o ay hesaptan çıkan/giren paradır. Kart ekstresi, ÖDENDİĞİ aya girilir (örn. Ekim harcamalarının ekstresi Kasım başında maaşla ödenir → Kasım bütçesine yazılır). Kullanıcı "kartla şunu aldım/harcadım" derse bunu değişken harcama olarak EKLEME: o harcama ekstre gelince ödeme ayına kart kalemi olarak girilecek; cevapta bunu kısaca söyle ve eylem üretme.`;
 
 export interface ChatMsg { role: 'user' | 'ai'; text: string }
-export interface ChatResult { cevap: string; senaryo: boolean; eylemler: AIAction[] }
+export interface ChatResult { cevap: string; senaryo: boolean; eylemler: AIAction[]; ekstreAy?: string }
+
+// Ekstrenin son ödeme ayı "YYYY-AA" olmalı ve bugünden makul uzaklıkta (±8 ay) olmalı; saçma bir ayı sessizce yok sayarız
+export const validMonth = (v: unknown, now: Date = new Date()): string | undefined => {
+  const s = String(v ?? '').trim();
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(s);
+  if (!m) return undefined;
+  const diff = (Number(m[1]) - now.getFullYear()) * 12 + (Number(m[2]) - 1 - now.getMonth());
+  return Math.abs(diff) <= 8 ? s : undefined;
+};
 
 const ACTION_PROPS = {
   op: { type: 'string' }, kind: { type: 'string' }, id: { type: 'string' }, ad: { type: 'string' }, tutar: { type: 'number' }, gun: { type: 'integer' },
@@ -48,6 +57,7 @@ export const CHAT_SCHEMA = {
   properties: {
     cevap: { type: 'string' },
     senaryo: { type: 'boolean' },
+    ekstreAy: { type: 'string' },
     eylemler: { type: 'array', items: { type: 'object', properties: ACTION_PROPS, required: ['op', 'ad', 'tutar'] } }
   },
   required: ['cevap', 'senaryo', 'eylemler']
@@ -62,7 +72,7 @@ export const budgetFacts = (b: Budget): string => {
 export interface StatementIn { name: string; text: string }
 
 // Ekstre metni: yapay zekâya yalnızca özet çıkarma görevi verilir; tek tek alışverişler değişken harcama olarak EKLENMEZ (kart tutarı zaten ekstrenin toplamıdır)
-export const statementBlock = (s?: StatementIn, month?: string): string => s ? `\nEKLİ KART EKSTRESİ (${redactSensitive(s.name).slice(0, 80)}) — bilgisayarda metne çevrildi, kimlik numaraları gizlendi:\n"""\n${redactSensitive(s.text).slice(0, 14000)}\n"""\nEKSTRE GÖREVİ: Bu ekstreden TEK bir kart kalemi çıkar: kind=kart, ad=banka/kart adı (örn. "Garanti Bonus"), tutar=bu dönemin ÖDENECEK TOPLAM borcu (asgari ödeme DEĞİL; toplam dönem borcu/ekstre borcu), gun=son ödeme tarihinin günü. Ekstrede taksitli işlemler varsa taksitliTutar = bu ekstreye yansıyan taksitlerin toplamı. Tek tek alışverişleri ekleme. Rakamları kendin topla/doğrula; tutarı belirleyemiyorsan eylem ekleme, cevapta nedenini söyle. Listede aynı kart zaten varsa guncelle kullan.${month ? ` Bu bütçe ayı ${month}; ekstrenin son ödeme tarihi başka bir aya düşüyorsa cevapta bir cümleyle uyar (hangi aya ait olduğunu söyle), yine de kalemi çıkar.` : ''} Son ödeme tarihi bugünden (${new Date().toLocaleDateString('tr-TR')}) önceyse yalnızca "ödediyseniz sorun yok" demen yeterli; kullanıcı ekstreleri tam öder, gecikme faizi uyarısı yapma.\n` : '';
+export const statementBlock = (s?: StatementIn, month?: string): string => s ? `\nEKLİ KART EKSTRESİ (${redactSensitive(s.name).slice(0, 80)}) — bilgisayarda metne çevrildi, kimlik numaraları gizlendi:\n"""\n${redactSensitive(s.text).slice(0, 14000)}\n"""\nEKSTRE GÖREVİ: Bu ekstreden TEK bir kart kalemi çıkar: kind=kart, ad=banka/kart adı (örn. "Garanti Bonus"), tutar=bu dönemin ÖDENECEK TOPLAM borcu (asgari ödeme DEĞİL; toplam dönem borcu/ekstre borcu), gun=son ödeme tarihinin günü. Ekstrede taksitli işlemler varsa taksitliTutar = bu ekstreye yansıyan taksitlerin toplamı. Tek tek alışverişleri ekleme. Rakamları kendin topla/doğrula; tutarı belirleyemiyorsan eylem ekleme, cevapta nedenini söyle. Listede aynı kart zaten varsa guncelle kullan. "ekstreAy" alanına ekstrenin SON ÖDEME TARİHİNİN ayını YYYY-AA biçiminde yaz (örn. son ödeme 9 Kasım 2026 ise "2026-11"); ödeme ayı odur, kesim ayı değil.${month ? ` Seçili bütçe ayı ${month}; ekstre başka aya aitse uygulama kartı o aya taşır, sen cevapta yalnızca "bu ekstre X ayına ait" de.` : ''} Son ödeme tarihi bugünden (${new Date().toLocaleDateString('tr-TR')}) önceyse yalnızca "ödediyseniz sorun yok" demen yeterli; kullanıcı ekstreleri tam öder, gecikme faizi uyarısı yapma.\n` : '';
 
 export const buildChatPrompt = (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string; statement?: StatementIn }): string => {
   const hist = o.history.slice(-8).map(m => `${m.role === 'user' ? 'Kullanıcı' : 'Uzman'}: ${redactSensitive(m.text).slice(0, 500)}`).join('\n');
@@ -114,7 +124,7 @@ export const normalizeChat = (raw: any): ChatResult => {
       taksitliTutar: toNum(a.taksitliTutar), neden: a.neden ? String(a.neden).slice(0, 200) : undefined
     });
   }
-  return { cevap: String(raw?.cevap ?? '').trim() || 'Anladım.', senaryo: raw?.senaryo === true, eylemler: acts };
+  return { cevap: String(raw?.cevap ?? '').trim() || 'Anladım.', senaryo: raw?.senaryo === true, eylemler: acts, ekstreAy: validMonth(raw?.ekstreAy) };
 };
 
 export type AICall = <T>(prompt: string, schema: any) => Promise<T>;

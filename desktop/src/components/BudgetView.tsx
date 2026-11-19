@@ -30,6 +30,7 @@ const KIND_COLOR: Record<BudgetKind, string> = { gelir: '#22c55e', sabit: '#ef44
 interface ActState { check: CheckedAction; target?: { kind: BudgetKind; name: string }; state: 'bekliyor' | 'eklendi' | 'atlandi' | 'hata'; note?: string }
 interface ChatEntry {
   id: string; role: 'user' | 'ai'; text: string; t: number; acts?: ActState[];
+  goTo?: string; // ekstre başka aya ait: kartlar o ayın sohbetine hazırlandı, bu düğme o aya geçirir
   senaryo?: { kalanOnce: number; kalanSonra: number; ayOnce: number | null; aySonra: number | null };
 }
 const chatKey = (m: string) => `budget_chat_v1_${m}`;
@@ -213,6 +214,15 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
   const updateMsg = (id: string, fn: (m: ChatEntry) => ChatEntry) => setMsgs(ms => ms.map(m => (m.id === id ? fn(m) : m)));
   const setAct = (id: string, idx: number, p: Partial<ActState>) => updateMsg(id, m => ({ ...m, acts: (m.acts || []).map((a, i) => (i === idx ? { ...a, ...p } : a)) }));
 
+  // Başka bir ayın bütçesi: kayıtlıysa o, yoksa önceki aydan devir (önceki ay bu ekrandaysa kaydedilmemiş son hâli kullanılır)
+  const budgetFor = (m: string, curB: Budget): Budget => {
+    const parsed = parseBudgetNote(fileContents[monthPath(m)], m);
+    if (parsed) return parsed;
+    const pm = shiftMonth(m, -1);
+    const prev = pm === curB.month ? curB : parseBudgetNote(fileContents[monthPath(pm)], pm);
+    return prev && prev.items.length ? rollover(prev, m) : emptyBudget(m);
+  };
+
   const send = async () => {
     const typed = input.trim();
     if ((!typed && !stmt) || thinking || reading) return;
@@ -226,6 +236,16 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
       const persona = (fileContents[PERSONA_PATH] || '').trim() || DEFAULT_PERSONA;
       const cur = budgetRef.current;
       const res = await askBudget({ persona, budget: cur, history: msgsRef.current.filter(m => m.id !== um.id).map(m => ({ role: m.role, text: m.text })), message: text, statement: att ? { name: att.name, text: att.text } : undefined });
+      // Ekstre seçili aydan başka bir ayın ödemesiyse: kartları o ayın bütçesine göre hazırla, o ayın sohbetine koy, buradan düğmeyle geçilsin
+      const target = att ? res.ekstreAy : undefined;
+      if (target && target !== cur.month && res.eylemler.length) {
+        const bt = budgetFor(target, cur);
+        const ch = checkActions(bt, res.eylemler);
+        const tActs: ActState[] = ch.map(c => ({ check: c, state: c.ok ? 'bekliyor' : 'hata', note: c.problem }));
+        saveChat(target, [...loadChat(target), um, { id: newId(), role: 'ai', text: res.cevap, t: Date.now(), acts: tActs }]);
+        setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: `${res.cevap}\n\nBu ekstre ${monthLabel(target)} ödemesi; kartı o ayın bütçesi için hazırladım.`, t: Date.now(), goTo: target }]);
+        return;
+      }
       const checked = checkActions(cur, res.eylemler);
       const acts: ActState[] = checked.map(c => {
         const it = c.ok && c.action.op !== 'ekle' ? cur.items.find(i => i.id === c.action.id) : undefined;
@@ -352,6 +372,11 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                 {msgs.map(m => (
                   <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'stretch', maxWidth: m.role === 'user' ? '90%' : '100%' }}>
                     <div style={{ background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: m.role === 'user' ? '#fff' : 'var(--text-primary)', borderRadius: '10px', padding: '8px 11px', fontSize: '12.5px', lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.text}</div>
+                    {m.goTo && (
+                      <button type="button" style={{ ...btnPrimary, marginTop: '6px' }} onClick={() => setMonth(m.goTo!)}>
+                        <ChevronRight size={14} /> {monthLabel(m.goTo)} bütçesine git ve kartı onayla
+                      </button>
+                    )}
                     {m.acts && m.acts.length > 0 && (
                       <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
                         {m.senaryo && (
