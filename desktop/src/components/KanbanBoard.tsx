@@ -129,7 +129,17 @@ export default function KanbanBoard({
     setEditing(false);
   };
 
-  const renderCard = (task: TimelineItem, colKey: string) => (
+  // Alt görev, ana görevle AYNI sütundaysa ayrı kart olmaz; ana kartın içinde satır olarak görünür.
+  // Farklı sütundaysa kendi kartı kalır (durumu tek başına izlenebilsin) ve ana göreve atıf gösterir.
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  const colOf = (id: string) => currentCols.get(id);
+  const nestedInParent = (t: TimelineItem) => !!(t.isSubtask && t.parentId && taskById.has(t.parentId) && colOf(t.parentId) === colOf(t.id));
+  const childrenOf = (id: string) => tasks.filter(t => t.parentId === id && nestedInParent(t));
+
+  const renderCard = (task: TimelineItem, colKey: string) => {
+    const kids = childrenOf(task.id);
+    const parentTask = task.isSubtask && task.parentId && !nestedInParent(task) ? taskById.get(task.parentId) : undefined;
+    return (
     <div
       key={task.id}
       draggable
@@ -155,9 +165,35 @@ export default function KanbanBoard({
         }
       }}
     >
+      {parentTask && (
+        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={parentTask.content}>
+          ↳ {parentTask.content}
+        </div>
+      )}
       <div style={{ fontSize: '13px', lineHeight: '1.4', marginBottom: '8px', color: 'var(--text-primary)' }}>
         {task.content}
       </div>
+      {kids.length > 0 && (
+        <div style={{ marginBottom: '8px', padding: '6px', borderRadius: '6px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {kids.map(k => {
+            const kDone = resolveStatus(k) === 'done';
+            return (
+              <div
+                key={k.id}
+                draggable
+                onDragStart={(e) => { e.stopPropagation(); handleDragStart(e, k.id); }}
+                onDragEnd={() => { setDraggedTaskId(null); setDragOverKey(null); }}
+                onClick={(e) => { e.stopPropagation(); onOpenNote?.(k); }}
+                title="Alt görev — başka sütuna sürükleyerek durumunu değiştirebilirsiniz"
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '3px 4px', borderRadius: '4px', cursor: 'grab', color: kDone ? 'var(--text-muted)' : 'var(--text-primary)', textDecoration: kDone ? 'line-through' : 'none' }}
+              >
+                <span style={{ display: 'inline-flex', color: kDone ? '#4caf50' : 'var(--text-muted)' }}>{kDone ? <Check size={12} /> : <Clock size={12} />}</span>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{k.content}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
         {task.dateStr && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -201,7 +237,8 @@ export default function KanbanBoard({
         )}
       </div>
     </div>
-  );
+    );
+  };
 
   const smallBtn: React.CSSProperties = {
     background: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)',
@@ -339,7 +376,7 @@ export default function KanbanBoard({
               <span style={{ background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }}>{tasksByStatus[col.key].length}</span>
             </div>
             <div style={{ flex: 1, overflowY: 'auto' }}>
-              {tasksByStatus[col.key].map(t => renderCard(t, col.key))}
+              {tasksByStatus[col.key].filter(t => !nestedInParent(t)).map(t => renderCard(t, col.key))}
             </div>
           </div>
           );

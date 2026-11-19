@@ -230,6 +230,17 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
   const handleStatusChange = (id: string, newStatus: string) => {
     const task = timelineItems.find(t => t.id === id);
     const prev = task ? (task.kanbanStatus || (task.isCompleted ? 'done' : task.status === 'in-progress' ? 'inprogress' : 'backlog')) : '';
+    // Alt görevler bitmeden ana görev bitemez: kart sürüklense bile "Bitti"ye geçmez (yoksa ana iş
+    // kapalı görünür ama içindeki işler açık kalırdı). Yalnızca doğrudan alt görevler sayılır;
+    // seans satırları (derinlik 2) alt görevin kendi işidir.
+    if (task && newStatus === 'done') {
+      const open = timelineItems.filter(c => c.isTodo && c.isSubtask && c.parentId === id && (c.subtaskDepth ?? 1) < 2
+        && !(c.kanbanStatus === 'done' || c.status === 'done' || (!c.kanbanStatus && !c.status && c.isCompleted)));
+      if (open.length > 0) {
+        noticeLater(`"${task.content}" bitirilemez: ${open.length} alt görev henüz bitmedi. Önce alt görevleri "Bitti"ye alın.`);
+        return;
+      }
+    }
     onChangeTaskStatus(id, newStatus);
     if (task && newStatus === 'inprogress' && prev === 'backlog') void askClaudeFor(task, false);
   };
