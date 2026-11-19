@@ -981,6 +981,15 @@ export default function CalendarView({
 
   // Track accordion expanded state in sidebar
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
+  // Planlanmamış Görevler paneli proje bazlı gruplanır; kapatılan proje grupları hatırlanır (yalnızca bu cihazda).
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('unplanned_collapsed_groups') || '{}'); } catch { return {}; }
+  });
+  const toggleGroup = (key: string) => setCollapsedGroups(prev => {
+    const next = { ...prev, [key]: !prev[key] };
+    try { localStorage.setItem('unplanned_collapsed_groups', JSON.stringify(next)); } catch { /* yoksay */ }
+    return next;
+  });
   const [isUnplannedOpen, setIsUnplannedOpen] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -3150,7 +3159,27 @@ export default function CalendarView({
     // Regular task without subtasks: show if not scheduled
     return !t.dueDate;
   });
-  
+
+  // Planlanmamış görevleri projeye göre grupla: proje = görev satırındaki [project:slug] etiketinin eşleştiği proje adı;
+  // müşteri = o projenin bağlı olduğu müşteri. Projesiz görevler en sonda "Projesiz" grubunda.
+  const unscheduledGroups = (() => {
+    const slugOf = (n: string) => n.toLocaleLowerCase('tr').replace(/\s+/g, '-');
+    const nameBySlug = new Map(projectNames.map(n => [slugOf(n), n] as [string, string]));
+    const clientBySlug = (slug: string) => Object.keys(clientProjectSlugs).find(c => (clientProjectSlugs[c] || []).includes(slug));
+    const groups = new Map<string, { key: string; name: string; client?: string; tasks: typeof unscheduledTasks }>();
+    unscheduledTasks.forEach(t => {
+      const slug = t.ownTags.find(tag => nameBySlug.has(tag));
+      const key = slug || '';
+      let g = groups.get(key);
+      if (!g) { g = { key, name: slug ? (nameBySlug.get(slug) as string) : 'Projesiz', client: slug ? clientBySlug(slug) : undefined, tasks: [] }; groups.set(key, g); }
+      g.tasks.push(t);
+    });
+    return [...groups.values()].sort((a, b) => {
+      if (!a.key !== !b.key) return a.key ? -1 : 1; // projesiz en sonda
+      return (a.client || '￿').localeCompare(b.client || '￿', 'tr') || a.name.localeCompare(b.name, 'tr');
+    });
+  })();
+
   // Calendar Dates ranges calculations
   const monthStart = startOfMonth(currentDate);
   const monthEnd = endOfMonth(monthStart);
@@ -5244,7 +5273,21 @@ export default function CalendarView({
           </div>
         ) : (
           <div className="unscheduled-tasks-list">
-            {unscheduledTasks.map(task => {
+            {unscheduledGroups.map(group => (
+              <div key={group.key || '__projesiz'} className="unscheduled-project-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  title={collapsedGroups[group.key] ? 'Grubu aç' : 'Grubu kapat'}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--border-color)', padding: '4px 2px 5px', cursor: 'pointer', color: 'var(--text-secondary)', textAlign: 'left', width: '100%' }}
+                >
+                  {collapsedGroups[group.key] ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflowWrap: 'anywhere', flex: 1 }}>
+                    {group.client && <span style={{ fontWeight: 500, color: 'var(--text-muted)' }}>{group.client} › </span>}{group.name}
+                  </span>
+                  <span style={{ fontSize: '10.5px', fontWeight: 700, background: 'rgba(255,255,255,0.08)', borderRadius: '10px', padding: '1px 7px' }}>{group.tasks.length}</span>
+                </button>
+                {!collapsedGroups[group.key] && group.tasks.map(task => {
               const hasSubtasks = task.subtasks && task.subtasks.length > 0;
               const parentTask = task.isSubtask && task.parentTaskId ? tasks.find(t => t.id === task.parentTaskId) : null;
               if (hasSubtasks) {
@@ -5625,6 +5668,8 @@ export default function CalendarView({
                 </div>
               );
             })}
+              </div>
+            ))}
           </div>
         )}
 

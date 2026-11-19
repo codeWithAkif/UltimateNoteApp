@@ -17,6 +17,7 @@ import {
 } from './dayPlan';
 import { type ParsedCall } from './teamsCalls';
 import { runAssignedSync, isAssignedSupported } from './services/assignedSync';
+import { NOTIFY_LOG_PATH, parseLog, pickNew, toNotification } from './services/assignedNotify';
 import { loadCfg as loadAssignedCfg, loadState as loadAssignedState, type AssignedState } from './services/assignedTasks';
 import { loadSlots, saveSlots, slotFromEvent, projectNamesFrom, type QuickSlot, type ProjectNavRequest, type CalendarNavRequest } from './quickSlots';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment } from 'react';
@@ -1042,6 +1043,31 @@ export default function App() {
       return prev;
     });
   };
+
+  // ProTracker değişiklik bildirimi (telefon): bilgisayar, çekmede fark ettiği değişiklikleri kasadaki günlük notuna yazar; kasa senkronuyla gelen bu not
+  // okunur, daha önce bildirilmemiş girdiler için YEREL bildirim gösterilir. İlk görüşte (bu cihazda hiç bakılmamışsa) yalnızca başlangıç noktası alınır.
+  const protrackerLog = fileContents[NOTIFY_LOG_PATH];
+  useEffect(() => {
+    if (!isCapacitor || !protrackerLog) return;
+    (async () => {
+      try {
+        const raw = localStorage.getItem('protracker_notify_last');
+        const { fresh, newLast } = pickNew(parseLog(protrackerLog), raw === null ? undefined : Number(raw));
+        if (raw === null || newLast !== Number(raw)) localStorage.setItem('protracker_notify_last', String(newLast));
+        if (fresh.length === 0) return;
+        const perm = await LocalNotifications.checkPermissions();
+        if (perm.display !== 'granted') return;
+        try { await LocalNotifications.createChannel({ id: 'tasks_v2', name: 'Görevler', importance: 5, vibration: true, visibility: 1, sound: 'default' }); } catch (_) { /* zaten var */ }
+        const n = toNotification(fresh);
+        await LocalNotifications.schedule({
+          notifications: [{
+            title: n.title, body: n.body, id: Math.floor(Date.now() % 1000000) + Math.floor(Math.random() * 1000),
+            schedule: { at: new Date(Date.now() + 500), allowWhileIdle: true }, channelId: 'tasks_v2', attachments: [], actionTypeId: '', extra: null
+          }]
+        });
+      } catch (e) { console.error('ProTracker bildirimi gösterilemedi:', e); }
+    })();
+  }, [protrackerLog]);
 
   // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
   // Bir görev tamamlandığı ANDA (erken/geç) çalar — scheduleNotificationsForTasks'taki

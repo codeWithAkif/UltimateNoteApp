@@ -319,6 +319,10 @@ export default function AssignedTasksModal({ onSyncNow, onConfigChanged, onClose
           </select>
           <button type="button" style={{ ...btn, opacity: busy ? 0.6 : 1 }} disabled={!!busy || !cred.has} onClick={syncNow}><RefreshCw size={14} /> {busy === 'sync' ? 'Çekiliyor…' : 'Şimdi çek'}</button>
         </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', marginTop: '10px', fontSize: '12.5px', cursor: 'pointer' }}>
+          <input type="checkbox" checked={cfg.notify !== false} onChange={(e) => update({ ...cfg, notify: e.target.checked })} style={{ marginTop: '2px' }} />
+          <span>ProTracker'da bir iş değişirse (yeni iş, durum/başlık/termin değişikliği) telefona bildirim gönder<br /><span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>Değişiklik kasadaki "Sistem/ProTracker Bildirimleri" notuna yazılır; telefon uygulaması kasayı güncelleyince bildirimi gösterir. Dış servis kullanılmaz. İlk çekme sessizdir.</span></span>
+        </label>
         <div style={{ marginTop: '8px', fontSize: '12px', color: state.lastCode === 'ok' || state.lastCode === 'partial' ? 'var(--text-secondary)' : state.lastError ? '#ef4444' : 'var(--text-muted)', overflowWrap: 'anywhere' }}>
           Son çekme: {ago}{state.summary ? ` · ${state.summary}` : ''}{state.lastError ? ` · ${state.lastError}` : ''}
         </div>

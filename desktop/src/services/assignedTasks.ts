@@ -255,9 +255,9 @@ export interface RowFilter { column: string; contains: string }
 export interface SourceCfg { name: string; url: string; method?: 'GET' | 'POST'; body?: string; contentType?: string; cookies?: string; team?: string; filter?: RowFilter; mapping?: Mapping; statusMap?: Record<string, StatusKey> }
 // ProTracker'daki müşteri/proje adı -> kullanıcının KENDİ müşteri ve projesi (elle eşleme; eşlenmeyen işler hiçbir yere yazılmaz)
 export interface ProjectMapEntry { ptClient: string; ptProject: string; client: string; project: string }
-export interface AssignedCfg { enabled: boolean; loginUrl: string; allowHttp: boolean; intervalMin: number; sources: SourceCfg[]; projectMap?: Record<string, ProjectMapEntry> }
+export interface AssignedCfg { enabled: boolean; loginUrl: string; allowHttp: boolean; intervalMin: number; sources: SourceCfg[]; projectMap?: Record<string, ProjectMapEntry>; notify?: boolean }
 export interface PendingItem { client?: string; project: string; count: number }
-export interface AssignedState { lastSync?: number; lastCode?: string; lastError?: string; paused?: boolean; summary?: string; pending?: PendingItem[] }
+export interface AssignedState { lastSync?: number; lastCode?: string; lastError?: string; paused?: boolean; summary?: string; pending?: PendingItem[]; seen?: Record<string, { s: StatusKey; t: string; d?: string }>; changes?: number }
 
 export const nk = (s: string): string => String(s || '').replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/[\s_]+/g, ' ').trim();
 export const mapKey = (client: string | undefined, project: string): string => `${nk(client || '')}|${nk(project)}`;

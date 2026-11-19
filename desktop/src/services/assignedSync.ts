@@ -6,6 +6,7 @@ import {
   loadCfg, loadState, saveState, rowsFromResult, guessMapping, toTasks, applyTasksToNote, notePathFor, noteFileName, slugOfName, applyFilter,
   nk, mapKey, type AssignedState, type AssignedTask, type SourceResult, type ProjectMapEntry, type PendingItem
 } from './assignedTasks';
+import { diffTasks, appendLog, NOTIFY_LOG_PATH } from './assignedNotify';
 
 export const isAssignedSupported = (): boolean => typeof window !== 'undefined' && !!(window as any).electron?.taskSourceSync;
 
@@ -79,6 +80,7 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
   const problems: string[] = [];
   const results: SourceResult[] = res.sources || [];
   const pendingAll = new Map<string, PendingItem>();
+  const seenItems = new Map<string, { task: AssignedTask; label: string }>();
   const dests = new Map<string, Dest>(); // aynı notaya giden görevler birleştirilir (tek yazım)
   const notePaths = deps.notePaths ? deps.notePaths() : [];
   for (let i = 0; i < results.length; i++) {
@@ -92,6 +94,10 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
     total += tasks.length;
     if (tasks.length === 0) continue; // boş sonuç notu değiştirmez
     const resolved = await resolveDestinations(tasks, teamName, { notePaths, clientsFolder: deps.clientsFolder || 'Müşteriler', readNote: deps.readNote, projectMap: cfg.projectMap });
+    // değişiklik takibi: her iş, yazılacağı proje/ekip adıyla (eşlenmemişse ProTracker proje adıyla) etiketlenir
+    const labelById = new Map<string, string>();
+    resolved.dests.forEach(d => d.tasks.forEach(t => labelById.set(t.id, d.name)));
+    tasks.forEach(t => { if (!seenItems.has(t.id)) seenItems.set(t.id, { task: t, label: labelById.get(t.id) || t.project || teamName }); });
     for (const p of resolved.pending) {
       const k = mapKey(p.client, p.project);
       const ex = pendingAll.get(k);
@@ -112,9 +118,22 @@ export const runAssignedSync = async (deps: SyncDeps): Promise<AssignedState> =>
   }
   const pending = [...pendingAll.values()];
   const waiting = pending.reduce((n, p) => n + p.count, 0);
+
+  // Fark bildirimi: önceki çekmeden farklı olanlar kasadaki günlük notuna yazılır (telefon buradan bildirim üretir). İlk çekme sessiz başlangıçtır.
+  // Bir kaynak hata verdiyse (problems) işler eksik olabilir; yine de yalnızca görülenler karşılaştırılır, kaybolan işler için bildirim üretilmez.
+  const now = Date.now();
+  const diff = diffTasks(prev.seen, [...seenItems.values()], now);
+  let changes = 0;
+  if (cfg.notify !== false && diff.entries.length > 0) {
+    try {
+      const existing = await deps.readNote(NOTIFY_LOG_PATH);
+      await deps.saveNote(NOTIFY_LOG_PATH, appendLog(existing, diff.entries));
+      changes = diff.entries.length;
+    } catch { /* günlük yazılamadıysa bir sonraki çekmede yeniden denenmez; çekme yine de başarılı sayılır */ }
+  }
   return finish({
-    lastSync: Date.now(), lastCode: problems.length ? 'partial' : 'ok', lastError: problems.join(' · '),
-    paused: false, pending,
-    summary: `${total} iş okundu · ${added} yeni · ${updated} güncellendi · ${completed} tamamlandı${waiting ? ` · ${waiting} iş eşleme bekliyor` : ''}`
+    lastSync: now, lastCode: problems.length ? 'partial' : 'ok', lastError: problems.join(' · '),
+    paused: false, pending, seen: diff.seen, changes,
+    summary: `${total} iş okundu · ${added} yeni · ${updated} güncellendi · ${completed} tamamlandı${waiting ? ` · ${waiting} iş eşleme bekliyor` : ''}${changes ? ` · ${changes} değişiklik telefona bildirildi` : ''}`
   });
 };
