@@ -63,20 +63,30 @@ export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Pr
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
   }
 
-  const res = await fetch(
-    `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema
-        }
-      })
-    }
-  );
+  // Zaman aşımı yok idi: Gemini takılınca ekran sonsuza dek "düşünüyor" kalıyor, yedek sağlayıcıya (Claude Code) da geçilemiyordu
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  let res: Response;
+  try {
+    res = await fetch(
+      `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema
+          }
+        })
+      }
+    );
+  } catch (e: any) {
+    if (e?.name === 'AbortError') throw Object.assign(new Error('Gemini 45 saniyede yanıt vermedi (zaman aşımı).'), { status: 504 });
+    throw e;
+  } finally { clearTimeout(timer); }
 
   if (!res.ok) {
     let errText = '';

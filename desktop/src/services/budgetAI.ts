@@ -32,7 +32,9 @@ const TYPE_HELP = `Tür eşlemesi:
 - gelir: maaş, prim, ek iş, kira geliri, diğer gelirler
 - sabit: kira, fatura (elektrik, su, doğalgaz, internet, telefon), aidat, okul/kreş/servis, sigorta, abonelik, kredi taksiti (kart dışı), diğer değişmeyen giderler
 - kart: kredi kartı ekstresi/borcu (ad olarak banka/kart adı yaz; taksitli kısmı söylenirse taksitliTutar)
-- degisken: market, yemek, ulaşım, eğlence, giyim, sağlık gibi ay içinde değişen harcamalar`;
+- degisken: market, yemek, ulaşım, eğlence, giyim, sağlık gibi ay içinde değişen harcamalar; YALNIZCA karta yazılmayan (nakit/banka kartı/havale) olanlar
+
+NAKİT ESASLI MANTIK (çift saymayı önler): Bütçedeki her kalem o ay hesaptan çıkan/giren paradır. Kart ekstresi, ÖDENDİĞİ aya girilir (örn. Ekim harcamalarının ekstresi Kasım başında maaşla ödenir → Kasım bütçesine yazılır). Kullanıcı "kartla şunu aldım/harcadım" derse bunu değişken harcama olarak EKLEME: o harcama ekstre gelince ödeme ayına kart kalemi olarak girilecek; cevapta bunu kısaca söyle ve eylem üretme.`;
 
 export interface ChatMsg { role: 'user' | 'ai'; text: string }
 export interface ChatResult { cevap: string; senaryo: boolean; eylemler: AIAction[] }
@@ -57,7 +59,12 @@ export const budgetFacts = (b: Budget): string => {
   return lines.join('\n') + `\nBeklenmeyenler payı: %${b.reservePct}`;
 };
 
-export const buildChatPrompt = (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string }): string => {
+export interface StatementIn { name: string; text: string }
+
+// Ekstre metni: yapay zekâya yalnızca özet çıkarma görevi verilir; tek tek alışverişler değişken harcama olarak EKLENMEZ (kart tutarı zaten ekstrenin toplamıdır)
+export const statementBlock = (s?: StatementIn, month?: string): string => s ? `\nEKLİ KART EKSTRESİ (${redactSensitive(s.name).slice(0, 80)}) — bilgisayarda metne çevrildi, kimlik numaraları gizlendi:\n"""\n${redactSensitive(s.text).slice(0, 14000)}\n"""\nEKSTRE GÖREVİ: Bu ekstreden TEK bir kart kalemi çıkar: kind=kart, ad=banka/kart adı (örn. "Garanti Bonus"), tutar=bu dönemin ÖDENECEK TOPLAM borcu (asgari ödeme DEĞİL; toplam dönem borcu/ekstre borcu), gun=son ödeme tarihinin günü. Ekstrede taksitli işlemler varsa taksitliTutar = bu ekstreye yansıyan taksitlerin toplamı. Tek tek alışverişleri ekleme. Rakamları kendin topla/doğrula; tutarı belirleyemiyorsan eylem ekleme, cevapta nedenini söyle. Listede aynı kart zaten varsa guncelle kullan.${month ? ` Bu bütçe ayı ${month}; ekstrenin son ödeme tarihi başka bir aya düşüyorsa cevapta bir cümleyle uyar (hangi aya ait olduğunu söyle), yine de kalemi çıkar.` : ''} Son ödeme tarihi bugünden (${new Date().toLocaleDateString('tr-TR')}) önceyse yalnızca "ödediyseniz sorun yok" demen yeterli; kullanıcı ekstreleri tam öder, gecikme faizi uyarısı yapma.\n` : '';
+
+export const buildChatPrompt = (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string; statement?: StatementIn }): string => {
   const hist = o.history.slice(-8).map(m => `${m.role === 'user' ? 'Kullanıcı' : 'Uzman'}: ${redactSensitive(m.text).slice(0, 500)}`).join('\n');
   return `${o.persona.slice(0, 6000)}
 
@@ -66,7 +73,7 @@ ${TYPE_HELP}
 BU AYIN BÜTÇESİ (${o.budget.month}) — kalem kimlikleriyle (güncelle/sil için bu kimlikleri kullan):
 ${budgetFacts(o.budget)}
 
-${hist ? `SOHBET GEÇMİŞİ:\n${hist}\n\n` : ''}KULLANICININ SON MESAJI:
+${hist ? `SOHBET GEÇMİŞİ:\n${hist}\n\n` : ''}${statementBlock(o.statement, o.budget.month)}KULLANICININ SON MESAJI:
 ${redactSensitive(o.message).slice(0, 2000)}
 
 GÖREV: Mesajdaki bütçe bilgilerini "eylemler" olarak çıkar (op: ekle | guncelle | sil). Her ekle için JSON alanları tam olarak şunlar olmalı: "kind" (gelir/sabit/kart/degisken), "ad" (kalemin kısa adı, örn. "Maaş", "Kira", "Elektrik", "Okul servisi"; ASLA boş bırakma), "tutar" (sayı, TL); ayrıca gün ve taksit yalnızca kullanıcı söylediyse. Zaten listede olan bir kalemi yeniden ekleme, guncelle kullan.
@@ -112,7 +119,7 @@ export const normalizeChat = (raw: any): ChatResult => {
 
 export type AICall = <T>(prompt: string, schema: any) => Promise<T>;
 
-export const askBudget = async (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string }, call: AICall = callGemini): Promise<ChatResult> => {
+export const askBudget = async (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string; statement?: StatementIn }, call: AICall = callGemini): Promise<ChatResult> => {
   const raw = await call<any>(buildChatPrompt(o), CHAT_SCHEMA);
   return normalizeChat(raw);
 };

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PiggyBank, Send, Undo2, Trash2, Plus, ChevronLeft, ChevronRight, Sparkles, Check, X, UserCog, AlertTriangle, RefreshCw, FileText } from 'lucide-react';
+import { PiggyBank, Send, Undo2, Trash2, Plus, ChevronLeft, ChevronRight, Sparkles, Check, X, UserCog, AlertTriangle, RefreshCw, FileText, Paperclip } from 'lucide-react';
 import {
   type Budget, type BudgetItem, type BudgetKind, type CheckedAction, KIND_LABEL, KIND_ORDER, monthPath, monthOf, shiftMonth, monthLabel, parseBudgetNote, serializeBudget,
   rollover, emptyBudget, totals, cashflow, dailyAllowance, transition, checkActions, applyAction, applyActions, retarget, reindex, parseTL, fmtTL, round2
@@ -7,7 +7,13 @@ import {
 import { PERSONA_PATH, DEFAULT_PERSONA, askBudget, askAdvice, type Advice } from '../services/budgetAI';
 import { isGeminiConfigured } from '../services/geminiMentor';
 import { Waterfall, CashChart } from './BudgetCharts';
+import { readStatementPdf, type StatementText } from '../services/statementPdf';
 
+// Nakit esaslı mantık: kalemler "o ay hesaptan çıkan/giren" paradır. Bu açıklama çift saymayı önler.
+const HINT: Partial<Record<BudgetKind, string>> = {
+  kart: 'Bu ay ÖDENECEK ekstreler (geçen ayın harcamaları). Ekstreyi ödendiği aya girin.',
+  degisken: 'Yalnızca karta yazılmayanlar (nakit/banka kartı). Karttaki harcamalar sonraki ayın ekstresiyle gelir.'
+};
 const panel: React.CSSProperties = { background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 14px' };
 const field: React.CSSProperties = {
   background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', borderRadius: '6px',
@@ -106,7 +112,25 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
   const msgsRef = useRef(msgs); msgsRef.current = msgs;
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
+  const [waitSec, setWaitSec] = useState(0); // yanıt beklerken geçen süre: takıldı mı yoksa çalışıyor mu anlaşılsın
+  useEffect(() => {
+    if (!thinking) { setWaitSec(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setWaitSec(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [thinking]);
   const [err, setErr] = useState('');
+  // Eklenen ekstre PDF'i: bilgisayarda metne çevrilir (kimlik numaraları gizli), bir sonraki mesajla yapay zekâya gider
+  const [stmt, setStmt] = useState<StatementText | null>(null);
+  const [reading, setReading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pickPdf = async (f: File | undefined) => {
+    if (!f) return;
+    setErr('');
+    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { setErr('Yalnızca PDF eklenebilir.'); return; }
+    setReading(true);
+    try { setStmt(await readStatementPdf(f)); } catch (e: any) { setStmt(null); setErr(String(e?.message || e)); } finally { setReading(false); }
+  };
   const [advice, setAdvice] = useState<{ a: Advice; applied: number[] } | null>(null);
   const [advising, setAdvising] = useState(false);
   const [tampon, setTampon] = useState('');
@@ -190,16 +214,18 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
   const setAct = (id: string, idx: number, p: Partial<ActState>) => updateMsg(id, m => ({ ...m, acts: (m.acts || []).map((a, i) => (i === idx ? { ...a, ...p } : a)) }));
 
   const send = async () => {
-    const text = input.trim();
-    if (!text || thinking) return;
+    const typed = input.trim();
+    if ((!typed && !stmt) || thinking || reading) return;
+    const text = typed || 'Ekteki kart ekstresini bütçeye işle.';
+    const att = stmt;
     if (!aiReady) { setErr('Yapay zekâ ayarlı değil: Ayarlar > AI Mentor\'dan Gemini anahtarı ekleyin ya da masaüstünde Claude Code\'u açın.'); return; }
-    setInput(''); setErr(''); setThinking(true);
-    const um: ChatEntry = { id: newId(), role: 'user', text, t: Date.now() };
+    setInput(''); setErr(''); setThinking(true); setStmt(null);
+    const um: ChatEntry = { id: newId(), role: 'user', text: att ? `📎 ${att.name}\n${text}` : text, t: Date.now() };
     setMsgs(ms => [...ms, um]);
     try {
       const persona = (fileContents[PERSONA_PATH] || '').trim() || DEFAULT_PERSONA;
       const cur = budgetRef.current;
-      const res = await askBudget({ persona, budget: cur, history: msgsRef.current.filter(m => m.id !== um.id).map(m => ({ role: m.role, text: m.text })), message: text });
+      const res = await askBudget({ persona, budget: cur, history: msgsRef.current.filter(m => m.id !== um.id).map(m => ({ role: m.role, text: m.text })), message: text, statement: att ? { name: att.name, text: att.text } : undefined });
       const checked = checkActions(cur, res.eylemler);
       const acts: ActState[] = checked.map(c => {
         const it = c.ok && c.action.op !== 'ekle' ? cur.items.find(i => i.id === c.action.id) : undefined;
@@ -357,18 +383,30 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                     )}
                   </div>
                 ))}
-                {thinking && <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={13} className="animate-spin" /> Düşünüyor…</div>}
+                {thinking && <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={13} className="animate-spin" /> Düşünüyor… {waitSec} sn{waitSec >= 20 ? ' (uzun sürerse otomatik yedeğe geçer ya da hata gösterir)' : ''}</div>}
                 <div ref={chatEnd} />
               </div>
               {err && <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '6px', overflowWrap: 'anywhere' }}>{err}</div>}
               {!aiReady && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '6px' }}>Yapay zekâ ayarlı değil (Ayarlar &gt; AI Mentor). Kalemleri sağdaki tablolardan elle girebilirsiniz.</div>}
+              {(stmt || reading) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+                  <FileText size={13} />
+                  {reading ? 'PDF okunuyor…' : <>
+                    <span style={{ fontWeight: 600 }}>{stmt!.name}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>· {stmt!.pages} sayfa{stmt!.truncated ? ' (ilk bölümü okunacak)' : ''} · kart/IBAN/TC numaraları gizlendi</span>
+                    <button type="button" onClick={() => setStmt(null)} aria-label="Eki kaldır" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, display: 'flex' }}><X size={13} /></button>
+                  </>}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px', alignItems: 'flex-end' }}>
+                <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void pickPdf(f); }} />
+                <button type="button" style={{ ...btn, padding: '8px' }} disabled={thinking || reading} onClick={() => fileRef.current?.click()} aria-label="Kart ekstresi PDF ekle" title="Kart ekstresi PDF'i ekle"><Paperclip size={14} /></button>
                 <textarea
                   value={input} onChange={(e) => setInput(e.target.value)} rows={2} aria-label="Mesajınız"
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
                   placeholder="Bu ay maaşım…, kira…, kart ekstresi…" style={{ ...field, flex: 1, resize: 'vertical' }}
                 />
-                <button type="button" style={{ ...btnPrimary, opacity: input.trim() && !thinking ? 1 : 0.6 }} disabled={!input.trim() || thinking} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
+                <button type="button" style={{ ...btnPrimary, opacity: (input.trim() || stmt) && !thinking && !reading ? 1 : 0.6 }} disabled={(!input.trim() && !stmt) || thinking || reading} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
               </div>
             </div>
 
@@ -426,6 +464,7 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                       {KIND_LABEL[kind]} <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}>· {fmtTL(rows.reduce((s, r) => s + r.amount, 0))}</span>
                       <button type="button" style={{ ...btn, marginLeft: 'auto', padding: '3px 8px', fontSize: '11.5px' }} onClick={() => addItem(kind)}><Plus size={12} /> Ekle</button>
                     </div>
+                    {HINT[kind] && <div style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '1px 0 4px' }}>{HINT[kind]}</div>}
                     {rows.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>—</div>}
                     {rows.map(it => <Row key={it.id} it={it} onChange={(p) => patchItem(it.id, p)} onRemove={() => removeItem(it.id)} />)}
                   </div>
