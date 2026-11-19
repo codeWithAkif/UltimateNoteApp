@@ -105,6 +105,7 @@ const check = async (req) => {
   const r = repoOf(req); if (r.error) return { ok: false, error: r.error };
   const wt = path.resolve(String(req.worktree || ''));
   if (!ownedWt(r.info, wt, req.branch)) return { ok: false, error: 'Çalışma kopyası bulunamadı ya da uygulamaya ait değil.' };
+  try { require('./devPreview.cjs').stopAll(); } catch { /* yoksay */ } // kontrol bağlantıyı kurup sonunda kaldırır; çalışan önizleme etkilenmesin
   agent.linkModules(r.info.path, wt);
   try { return await runTsc(appDirOf(wt)); }
   finally { agent.unlinkModules(wt); }
@@ -158,6 +159,7 @@ const merge = async (req) => {
   if (!ownedWt(r.info, wt, req.branch)) return { ok: false, error: 'Çalışma kopyası bulunamadı ya da uygulamaya ait değil.' };
   const prep = await prepareMain(r.info);
   if (prep.error) return { ok: false, error: prep.error, dirty: prep.dirty };
+  try { require('./devPreview.cjs').stopAll(); } catch { /* yoksay */ }
   agent.unlinkModules(wt);
   const wtStatus = await git(wt, ['status', '--porcelain'], 30000);
   if (wtStatus.out.trim()) return { ok: false, error: 'Çalışma kopyasında kaydedilmemiş değişiklik var; önce Claude turunu bitirin.' };

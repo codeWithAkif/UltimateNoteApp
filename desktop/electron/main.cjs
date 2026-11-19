@@ -644,6 +644,25 @@ ipcMain.handle('dev-diff', devGuard((e, r) => devTools.diff(r)));
 ipcMain.handle('dev-merge', devGuard((e, r) => devTools.merge(r)));
 ipcMain.handle('dev-release-plan', devGuard((e, r) => devTools.releasePlan(r)));
 ipcMain.handle('dev-release-do', devGuard((e, r) => devTools.releaseDo(r, (text) => { try { e.sender.send('dev-progress', { text }); } catch { /* pencere kapanmış olabilir */ } })));
+// Önizleme (bkz. devPreview.cjs): çalışma kopyasındaki uygulamayı tarayıcı modunda çalıştırır; <webview> ile gösterilir.
+const devPreview = require('./devPreview.cjs');
+let devPreviewStarting = false;
+ipcMain.handle('dev-preview-start', async (event, req) => {
+  if (devPreviewStarting) return { ok: false, error: 'Önizleme zaten başlatılıyor.' };
+  devPreviewStarting = true;
+  try { return await devPreview.start({ ...(req || {}), vaultDir: DEFAULT_NOTES_DIR }); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  finally { devPreviewStarting = false; }
+});
+ipcMain.handle('dev-preview-stop', async () => ({ ok: true, stopped: devPreview.stopAll() }));
+ipcMain.handle('dev-preview-shot', async (event, wcId) => {
+  try {
+    const { webContents } = require('electron');
+    const wc = webContents.fromId(Number(wcId));
+    return await devPreview.saveShot(wc);
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+app.on('before-quit', () => { try { devPreview.stopAll(); devPreview.cleanShots(); } catch { /* yoksay */ } });
 ipcMain.handle('dev-ci', async (event, req) => devTools.ci({ ...(req || {}), vaultDir: DEFAULT_NOTES_DIR }));
 // Geliştirme istekleri (durum, plan, çalışma kopyası bilgisi) bu cihazda tutulur: userData/dev-requests.json
 const devStorePath = () => path.join(app.getPath('userData'), 'dev-requests.json');

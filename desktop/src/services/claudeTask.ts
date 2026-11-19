@@ -71,12 +71,12 @@ export interface ApplyResult {
   changed?: boolean; partial?: boolean; dirtyBase?: boolean; branch?: string; worktree?: string; base?: string; stat?: string; files?: { status: string; path: string }[];
 }
 
-export const applyTask = async (runId: string, req: PlanRequest & { plan?: string; prompt?: string; reuse?: { worktree: string; branch: string } }, onProgress: (text: string) => void): Promise<ApplyResult> => {
+export const applyTask = async (runId: string, req: PlanRequest & { plan?: string; prompt?: string; shots?: string[]; reuse?: { worktree: string; branch: string } }, onProgress: (text: string) => void): Promise<ApplyResult> => {
   const api = (window as any).electron;
   if (!api?.claudeAgentApply) return { ok: false, error: 'Yalnızca masaüstü uygulamasında kullanılabilir.' };
   const unsub = api.onClaudeAgentProgress?.((d: { runId?: string; text: string }) => { if (d.runId === runId) onProgress(d.text); });
   try {
-    return await api.claudeAgentApply({ runId, dir: req.dir, title: req.title, prompt: req.prompt || buildApplyPrompt({ title: req.title, project: req.project, plan: req.plan }), attachments: req.attachments, model: req.model, reuse: req.reuse });
+    return await api.claudeAgentApply({ runId, dir: req.dir, title: req.title, prompt: req.prompt || buildApplyPrompt({ title: req.title, project: req.project, plan: req.plan }), attachments: req.attachments, model: req.model, shots: req.shots, reuse: req.reuse });
   } finally { try { unsub?.(); } catch { /* yoksay */ } }
 };
 

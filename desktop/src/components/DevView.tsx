@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Hammer, Download, Play, FileSearch, GitMerge, Rocket, Trash2, RefreshCw, FolderOpen, X, AlertTriangle, CheckCircle2, Square, ShieldCheck } from 'lucide-react';
+import { Hammer, Download, Monitor, Smartphone, Camera, Play, FileSearch, GitMerge, Rocket, Trash2, RefreshCw, FolderOpen, X, AlertTriangle, CheckCircle2, Square, ShieldCheck } from 'lucide-react';
 import { CLAUDE_TASK_MODELS, getTaskModel, setTaskModel, planTask, applyTask, cancelPlan, discardWork, openWorkFolder, isClaudeReady } from '../services/claudeTask';
 import { getProjectFolder, setProjectFolder, pickProjectFolder, inspectProjectFolder, type FolderInfo } from '../services/projectFolders';
 import {
-  isDevSupported, loadDevStore, saveDevStore, newDevId, taskText, buildDevApplyPrompt, buildDevFixPrompt, buildDevRedoPrompt, fmtDuration,
+  isDevSupported, loadDevStore, saveDevStore, newDevId, taskText, buildDevApplyPrompt, buildDevFixPrompt, buildDevRedoPrompt, buildDevFeedbackPrompt, fmtDuration,
   appendReleaseLog, DEV_LOG_PATH, STAGE_LABEL, STAGE_COLOR, emptyStore, type DevStore, type DevRequest, type DevStage, type DevRelease
 } from '../services/devWork';
 
@@ -68,6 +68,14 @@ export default function DevView({ fileContents, onSaveNote }: {
   const [rel, setRel] = useState<{ plan: RelPlan | null; loading: boolean; bump: 'patch' | 'minor' | 'major'; summary: string; running: boolean; progress: string; error: string; findings?: RelPlan['findings']; output?: string } | null>(null);
   const runId = useRef('');
   const alive = useRef(true);
+  // Önizleme: çalışma kopyasındaki uygulama tarayıcı modunda çalışır, <webview> ile gösterilir; ekran görüntüleri Claude'un düzeltme turuna eklenir
+  const [preview, setPreview] = useState<{ id: string; url: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [wvReady, setWvReady] = useState(false);
+  const [phone, setPhone] = useState(false);
+  const [shots, setShots] = useState<{ path: string; thumb: string }[]>([]);
+  const [feedback, setFeedback] = useState('');
+  const webviewRef = useRef<any>(null);
   const [appVer, setAppVer] = useState('');
   const [upd, setUpd] = useState<UpdState | null>(null);
   const updRef = useRef<UpdState | null>(null);
@@ -181,9 +189,17 @@ export default function DevView({ fileContents, onSaveNote }: {
     return <div style={{ padding: '24px', color: 'var(--text-muted)' }}>Geliştir bölümü yalnızca masaüstü uygulamasında çalışır (Claude Code orada kurulu).</div>;
   }
 
+  useEffect(() => {
+    const wv = webviewRef.current;
+    if (!wv || !preview) return;
+    const onReady = () => setWvReady(true);
+    wv.addEventListener('dom-ready', onReady);
+    return () => { try { wv.removeEventListener('dom-ready', onReady); } catch { /* yoksay */ } };
+  }, [preview?.url]);
+
   const selected = store.requests.find(r => r.id === selectedId) || null;
   const progress = (t: string) => setLines(l => [...l.slice(-40), t]);
-  const isBusy = !!busy || !!rel?.running;
+  const isBusy = !!busy || !!rel?.running || previewLoading;
 
   const pickDir = async () => {
     setMsg('');
@@ -214,8 +230,28 @@ export default function DevView({ fileContents, onSaveNote }: {
     setBusy(null);
   };
 
+  const closePreview = async () => { setPreview(null); setWvReady(false); try { await api.devPreviewStop?.(); } catch { /* yoksay */ } };
+  const startPreview = async (r: DevRequest) => {
+    if (!dir || !r.worktree || !r.branch) return;
+    setMsg(''); setPreviewLoading(true); setWvReady(false);
+    const res = await api.devPreviewStart({ dir, worktree: r.worktree, branch: r.branch });
+    if (!alive.current) return;
+    setPreviewLoading(false);
+    if (res?.ok) setPreview({ id: r.id, url: res.url }); else { setPreview(null); setMsg(res?.error || 'Önizleme başlatılamadı.'); }
+  };
+  const takeShot = async () => {
+    const wv = webviewRef.current;
+    if (!wv || !wvReady) { setMsg('Sayfa henüz yüklenmedi; birkaç saniye sonra tekrar deneyin.'); return; }
+    setMsg('');
+    let id = 0;
+    try { id = wv.getWebContentsId(); } catch { /* yok */ }
+    const res = await api.devPreviewShot(id);
+    if (res?.ok) setShots(s => [...s.slice(-5), { path: res.path, thumb: res.thumb }]); else setMsg(res?.error || 'Ekran görüntüsü alınamadı.');
+  };
+
   const doCheck = async (r: DevRequest) => {
     if (!dir || !r.worktree || !r.branch) return;
+    if (preview) { setPreview(null); setWvReady(false); } // kontrol çalışırken önizleme kapanır (sunucu tarafı da durdurur)
     setBusy({ id: r.id, kind: 'check' }); setLines(['Tür denetimi (tsc) çalışıyor…']);
     patch(r.id, { stage: 'kontrol' });
     const res = await api.devCheck({ dir, worktree: r.worktree, branch: r.branch });
@@ -225,30 +261,39 @@ export default function DevView({ fileContents, onSaveNote }: {
   };
 
   // ---- Claude: uygula (ilk tur / düzeltme / çakışma sonrası yeniden)
-  const doApply = async (r: DevRequest, mode: 'first' | 'fix' | 'redo') => {
+  const doApply = async (r: DevRequest, mode: 'first' | 'fix' | 'redo' | 'feedback') => {
     if (!dir) return;
+    if (mode === 'feedback' && !feedback.trim() && shots.length === 0) { setMsg('Önce neyin düzeltileceğini yazın ya da ekran görüntüsü alın.'); return; }
+    const hadPreview = !!preview && preview.id === r.id;
+    const sendShots = mode === 'feedback' ? shots.map(s => s.path) : [];
+    const note = feedback;
+    if (preview) { setPreview(null); setWvReady(false); }
     setTaskModel(model); setMsg(''); setLines([]); setConflict(null); setDiffView(null);
     runId.current = newDevId(); setBusy({ id: r.id, kind: 'apply' });
     const prevStage = r.stage;
     const oldWork = mode === 'redo' && r.worktree && r.branch ? { worktree: r.worktree, branch: r.branch } : null;
     const prompt = mode === 'fix' ? buildDevFixPrompt(r, r.check?.output || r.error || 'Bilinmeyen sorun')
+      : mode === 'feedback' ? buildDevFeedbackPrompt(r, note.trim() || '(yazılı not yok; ekran görüntülerine bakıp gördüğün sorunları düzelt)', sendShots.length)
       : mode === 'redo' ? buildDevRedoPrompt(r, conflict?.files || []) : buildDevApplyPrompt(r);
-    patch(r.id, { stage: 'yapiliyor', error: undefined }, mode === 'fix' ? 'Düzeltme turu başladı' : mode === 'redo' ? 'Güncel koddan yeniden uygulama başladı' : 'Uygulama başladı');
+    patch(r.id, { stage: 'yapiliyor', error: undefined }, mode === 'fix' ? 'Düzeltme turu başladı' : mode === 'feedback' ? `Önizleme geri bildirimiyle tur başladı (${sendShots.length} görüntü)` : mode === 'redo' ? 'Güncel koddan yeniden uygulama başladı' : 'Uygulama başladı');
     const res = await applyTask(runId.current, {
       dir, title: r.title, project: PROJECT_LABEL, attachments: [], model, plan: r.plan, prompt,
-      reuse: mode === 'fix' && r.worktree && r.branch ? { worktree: r.worktree, branch: r.branch } : undefined
+      shots: sendShots,
+      reuse: (mode === 'fix' || mode === 'feedback') && r.worktree && r.branch ? { worktree: r.worktree, branch: r.branch } : undefined
     }, progress);
     if (!alive.current) return;
     if (res.cancelled) { patch(r.id, { stage: prevStage === 'yapiliyor' ? 'istek' : prevStage }, 'Durduruldu'); setBusy(null); return; }
-    if (!res.ok && !res.changed) { patch(r.id, { stage: mode === 'fix' ? 'inceleme' : 'hata', error: res.error }, `Hata: ${res.error}`); setBusy(null); return; }
-    if (res.ok && res.changed === false && mode !== 'fix') { patch(r.id, { stage: 'hata', error: 'Claude hiçbir dosyayı değiştirmedi.', summary: res.text }, 'Değişiklik yapılmadı'); setBusy(null); return; }
+    if (!res.ok && !res.changed) { patch(r.id, { stage: mode === 'fix' || mode === 'feedback' ? 'inceleme' : 'hata', error: res.error }, `Hata: ${res.error}`); setBusy(null); return; }
+    if (res.ok && res.changed === false && mode !== 'fix' && mode !== 'feedback') { patch(r.id, { stage: 'hata', error: 'Claude hiçbir dosyayı değiştirmedi.', summary: res.text }, 'Değişiklik yapılmadı'); setBusy(null); return; }
     if (res.ok && res.changed === false) { patch(r.id, { stage: 'inceleme', summary: res.text || r.summary }, 'Düzeltme turunda yeni değişiklik olmadı'); setBusy(null); return; }
     if (oldWork) await discardWork(dir, oldWork.worktree, oldWork.branch); // yeniden yapma başarılı: çakışan eski kopya silinir
     patch(r.id, {
       branch: res.branch, worktree: res.worktree, stat: res.stat, files: res.files, summary: res.text, rounds: (r.rounds || 0) + 1, error: res.partial ? res.error : undefined, check: undefined
     }, `Claude turu bitti (${fmtDuration(res.ms || 0)})${res.partial ? ' — kısmen' : ''}`);
     setBusy(null);
+    if (mode === 'feedback') { setFeedback(''); setShots([]); }
     await doCheck({ ...r, branch: res.branch, worktree: res.worktree });
+    if (hadPreview && alive.current) await startPreview({ ...r, branch: res.branch, worktree: res.worktree }); // açık olan önizleme yeni hâliyle yeniden açılır
   };
 
   const showDiff = async (r: DevRequest, file?: string) => {
@@ -263,6 +308,7 @@ export default function DevView({ fileContents, onSaveNote }: {
   const doMerge = async (r: DevRequest) => {
     if (!dir || !r.worktree || !r.branch) return;
     setConfirm(''); setMsg(''); setConflict(null);
+    if (preview) { setPreview(null); setWvReady(false); }
     setBusy({ id: r.id, kind: 'merge' }); setLines(['Ana dal güncelleniyor ve birleştiriliyor…']);
     const res = await api.devMerge({ dir, worktree: r.worktree, branch: r.branch });
     if (!alive.current) return;
@@ -274,6 +320,7 @@ export default function DevView({ fileContents, onSaveNote }: {
 
   const doDiscard = async (r: DevRequest) => {
     setConfirm('');
+    if (preview) { setPreview(null); setWvReady(false); }
     if (dir && r.worktree && r.branch) { const res = await discardWork(dir, r.worktree, r.branch); if (!res.ok) { setMsg(res.error || 'Silinemedi.'); return; } }
     patch(r.id, { stage: 'reddedildi', worktree: undefined, branch: undefined }, 'Reddedildi ve silindi');
     setDiffView(null); void refreshStatus();
@@ -472,6 +519,7 @@ export default function DevView({ fileContents, onSaveNote }: {
                     )}
                     {selected.stage === 'inceleme' && selected.worktree && (
                       <>
+                        <button type="button" style={btnPrimary} disabled={isBusy} onClick={() => startPreview(selected)}><Monitor size={14} /> {preview?.id === selected.id ? 'Önizlemeyi yenile' : 'Önizle'}</button>
                         <button type="button" style={btn} onClick={() => showDiff(selected)}><FileSearch size={14} /> Farkı göster</button>
                         <button type="button" style={btn} onClick={() => doCheck(selected)}><ShieldCheck size={14} /> Kontrolü tekrarla</button>
                         {selected.check && !selected.check.ok && <button type="button" style={btnPrimary} disabled={!ready} onClick={() => doApply(selected, 'fix')}>Claude düzeltsin</button>}
@@ -521,6 +569,37 @@ export default function DevView({ fileContents, onSaveNote }: {
                           <span style={{ width: '14px', fontWeight: 700, color: f.status === 'A' ? '#22c55e' : f.status === 'D' ? '#ef4444' : '#eab308' }}>{f.status}</span><span style={{ overflowWrap: 'anywhere' }}>{f.path}</span>
                         </div>
                       ))}
+                    </div>
+                  </>
+                )}
+
+                {previewLoading && <div style={{ marginTop: '12px', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '8px' }}><RefreshCw size={14} className="animate-spin" /> Önizleme sunucusu başlatılıyor…</div>}
+                {preview && preview.id === selected.id && selected.stage === 'inceleme' && (
+                  <>
+                    <div style={label}>Önizleme <span style={{ textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>(tarayıcı modu: sahte boş kasa, gerçek notlarınıza dokunmaz; masaüstüne özel özellikler çalışmaz)</span></div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                      <button type="button" style={btn} onClick={() => { try { webviewRef.current?.reload(); } catch { /* yoksay */ } }}><RefreshCw size={13} /> Yenile</button>
+                      <button type="button" style={{ ...btn, ...(phone ? { background: 'var(--accent-color)', color: '#fff', border: '1px solid var(--accent-color)' } : {}) }} onClick={() => setPhone(v => !v)}><Smartphone size={13} /> Telefon boyutu</button>
+                      <button type="button" style={btnPrimary} disabled={!wvReady} onClick={takeShot}><Camera size={13} /> Ekran görüntüsü al</button>
+                      <button type="button" style={btn} onClick={closePreview}><X size={13} /> Kapat</button>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'center', background: '#0b0f14', borderRadius: '8px', padding: phone ? '8px 0' : 0, overflow: 'hidden' }}>
+                      <webview ref={webviewRef} src={preview.url} partition="devpreview" style={{ width: phone ? '390px' : '100%', height: '560px', border: 0, background: '#fff' }} />
+                    </div>
+                    {!wvReady && <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>Sayfa yükleniyor… ilk açılış 10-30 saniye sürebilir.</div>}
+                    {shots.length > 0 && (
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
+                        {shots.map((s, i) => (
+                          <div key={s.path} style={{ position: 'relative' }}>
+                            <img src={s.thumb} alt={`Ekran görüntüsü ${i + 1}`} style={{ width: '120px', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'block' }} />
+                            <button type="button" title="Kaldır" onClick={() => setShots(x => x.filter(y => y.path !== s.path))} style={{ position: 'absolute', top: '3px', right: '3px', background: 'rgba(0,0,0,0.7)', border: 'none', color: '#fff', borderRadius: '50%', width: '18px', height: '18px', cursor: 'pointer', fontSize: '11px', lineHeight: 1 }}>×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={3} placeholder="Ne düzeltilsin? (örn. 'düğme çok küçük', 'yazılar taşıyor'). Aldığınız ekran görüntüleri Claude'a eklenir." style={{ ...field, marginTop: '10px', resize: 'vertical' }} />
+                    <div style={{ marginTop: '8px' }}>
+                      <button type="button" style={btnPrimary} disabled={isBusy || !ready || (!feedback.trim() && shots.length === 0)} onClick={() => doApply(selected, 'feedback')}>Claude düzeltsin{shots.length ? ` (notum + ${shots.length} görüntü)` : ' (notum)'}</button>
                     </div>
                   </>
                 )}

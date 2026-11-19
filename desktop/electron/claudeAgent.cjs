@@ -194,6 +194,7 @@ const unlinkModules = (wt) => {
 };
 
 const removeWork = async (repoDir, wtPath, branch) => {
+  try { require('./devPreview.cjs').stopAll(); } catch { /* önizleme modülü yoksa yoksay */ } // çalışan önizleme node_modules bağlantısını kullanır
   unlinkModules(wtPath);
   await git(repoDir, ['worktree', 'remove', '--force', wtPath]);
   try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch { /* yoksay */ }
@@ -210,7 +211,27 @@ const applyProgressText = (dir, name, input) => {
   }
 };
 
-// req: { runId, dir, prompt, title, attachments?, model?, timeoutMs?, vaultDir }
+// Önizlemeden alınan ekran görüntüleri: yalnızca uygulamanın kendi geçici klasöründeki .png dosyaları (en çok 6, her biri en çok 8 MB) geçici ek klasörüne kopyalanır.
+const SHOTS_DIR = path.join(os.tmpdir(), 'ultimatenotes-dev-shots');
+const copyShots = (paths, destDir) => {
+  const out = [];
+  if (!Array.isArray(paths)) return out;
+  for (const p of paths.slice(0, 6)) {
+    try {
+      const abs = path.resolve(String(p));
+      if (path.dirname(abs).toLowerCase() !== SHOTS_DIR.toLowerCase() || !/\.png$/i.test(abs)) continue;
+      const st = fs.statSync(abs);
+      if (!st.isFile() || st.size > 8 * 1024 * 1024) continue;
+      fs.mkdirSync(destDir, { recursive: true });
+      const dst = path.join(destDir, path.basename(abs));
+      fs.copyFileSync(abs, dst);
+      out.push(dst);
+    } catch { /* geç */ }
+  }
+  return out;
+};
+
+// req: { runId, dir, prompt, title, attachments?, shots?, model?, timeoutMs?, vaultDir }
 const apply = (req, onProgress) => new Promise((resolve) => {
   const started = Date.now();
   const done = (v) => resolve({ ms: Date.now() - started, ...v });
@@ -247,6 +268,7 @@ const apply = (req, onProgress) => new Promise((resolve) => {
       const add = await git(info.path, ['worktree', 'add', '-b', branch, wt]);
       if (!add.ok) return done({ ok: false, error: `Çalışma kopyası açılamadı: ${add.err.slice(0, 300)}` });
     } else say('Mevcut çalışma kopyasında devam ediliyor…');
+    try { require('./devPreview.cjs').stopAll(); } catch { /* yoksay */ } // düzeltme turunda dosyalar değişir ve bağlantı sonda kaldırılır
     linkModules(info.path, wt);
 
     // 2) ekleri geçici klasöre kopyala
@@ -258,6 +280,7 @@ const apply = (req, onProgress) => new Promise((resolve) => {
     try {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-task-'));
       const copied = copyAttachments(req.vaultDir, req.attachments, path.join(tmpDir, 'ekler'));
+      copied.push(...copyShots(req.shots, path.join(tmpDir, 'ekler')));
       if (copied.length) {
         args.push('--add-dir', path.join(tmpDir, 'ekler'));
         prompt += `\n\nGÖREVE EKLİ DOSYALAR (ekran görüntüsü/belge; okuyabilirsin, bunlara bak):\n${copied.map(f => `- ${f}`).join('\n')}`;

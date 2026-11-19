@@ -24,7 +24,7 @@ Bu dosya, uygulamanın "Geliştir" bölümünden (ve elle) çalışan Claude Cod
 - Veri kaybı riski olan işlemler (silme, üzerine yazma) önce onay ister; geri alınamaz işlemi kendiliğinden yapma.
 
 ## Doğrulama
-- Bitirmeden önce `desktop` klasöründe: `npx tsc --noEmit` — hatasız olmalı. (Çalışma kopyasında `node_modules` ana klasörden bağlıdır; kurma.)
+- "Geliştir" bölümünden çalışıyorsan tür denetimini (`tsc`) **uygulama** yapar; komut izni yoktur, sen çalıştırmaya uğraşma (onay istenip takılır). Elle (terminalde) çalışıyorsan bitirmeden önce `desktop` klasöründe `npx tsc --noEmit` hatasız olmalı. Çalışma kopyasında `node_modules` ana klasörden bağlıdır; kurma.
 - Mantık içeren değişiklikte, mümkünse davranışı gerçekten çalıştırarak denemeden "çalışıyor" deme; denemediysen son yanıtta açıkça yaz.
 
 ## Son yanıt

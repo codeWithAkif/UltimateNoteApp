@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('electron', {
   devReleasePlan: (req) => ipcRenderer.invoke('dev-release-plan', req),
   devReleaseDo: (req) => ipcRenderer.invoke('dev-release-do', req),
   devCi: (req) => ipcRenderer.invoke('dev-ci', req),
+  devPreviewStart: (req) => ipcRenderer.invoke('dev-preview-start', req),
+  devPreviewStop: () => ipcRenderer.invoke('dev-preview-stop'),
+  devPreviewShot: (wcId) => ipcRenderer.invoke('dev-preview-shot', wcId),
   devStoreGet: () => ipcRenderer.invoke('dev-store-get'),
   devStoreSet: (data) => ipcRenderer.invoke('dev-store-set', data),
   onDevProgress: (cb) => {

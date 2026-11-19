@@ -66,7 +66,7 @@ KURALLAR:
 - Repo kökündeki CLAUDE.md kurallarına uy.
 - Yalnızca isteğin gerektirdiği dosyaları değiştir; kapsam dışı iyileştirme yapma.
 - package.json sürümünü DEĞİŞTİRME, commit/etiket/push YAPMA: sürüm ve yayın işini uygulama yapar.
-- Bittiğinde 'npx tsc --noEmit' ile tür denetimini çalıştır (desktop klasöründe) ve hataları düzelt.
+- Tür denetimini (tsc) sen ÇALIŞTIRMA: komut izni yoktur, onay istenir ve takılır. Uygulama değişiklikten sonra kendisi denetler ve hata varsa sana geri bildirir. Kodu yazarken tür doğruluğuna dikkat et.
 
 SON YANITINI Türkçe, kısa ve şu başlıklarla yaz:
 1. Yapılanlar
@@ -82,8 +82,19 @@ export const buildDevFixPrompt = (r: Pick<DevRequest, 'title' | 'detail'>, probl
 Uygulama, değişiklikleri kontrol etti ve şu sorunu buldu:
 ${problem.slice(0, 8000)}
 
-Yalnızca bu sorunu düzelt; başka bir şeyi değiştirme. Düzelttikten sonra 'npx tsc --noEmit' ile yeniden doğrula. Kurallar önceki turdakiyle aynı (commit/push yok, sürüme dokunma).
+Yalnızca bu sorunu düzelt; başka bir şeyi değiştirme. Tür denetimini sen çalıştırma (uygulama yeniden denetler). Kurallar önceki turdakiyle aynı (commit/push yok, sürüme dokunma).
 SON YANITINI Türkçe, 3-5 satırla yaz: ne düzelttin, doğrulama sonucu.`;
+
+export const buildDevFeedbackPrompt = (r: Pick<DevRequest, 'title' | 'detail'>, note: string, shotCount: number): string =>
+  `Aynı çalışma kopyasında devam ediyorsun. Önceki turda şu isteği uyguladın:
+
+İSTEK: ${taskText(r)}
+
+Kullanıcı değişikliği çalışırken önizlemede inceledi ve şunu söylüyor:
+${note.slice(0, 4000)}
+${shotCount > 0 ? `\nÖnizlemeden ${shotCount} ekran görüntüsü ekte (eklenen dosyaları oku ve gerçekte ne göründüğüne bak).\n` : ''}
+Yalnızca bu geri bildirimi uygula; başka bir şeyi değiştirme. Tür denetimini sen çalıştırma (uygulama denetler). Kurallar önceki turdakiyle aynı (commit/push yok, sürüme dokunma).
+SON YANITINI Türkçe, 3-5 satırla yaz: ne değiştirdin, doğrulama sonucu.`;
 
 export const buildDevRedoPrompt = (r: Pick<DevRequest, 'title' | 'detail' | 'plan'>, conflictFiles: string[]): string =>
   `${buildDevApplyPrompt(r)}

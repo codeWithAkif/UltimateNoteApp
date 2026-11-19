@@ -25,7 +25,7 @@ export interface ElectronAPI {
   taskSourceClearCredentials?: () => Promise<{ ok: boolean }>;
   taskSourceSync?: (cfg: any) => Promise<{ ok: boolean; code?: string; error?: string; sources?: any[] }>;
   claudeAgentPlan?: (req: { runId: string; dir: string; prompt: string; attachments?: string[]; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number }>;
-  claudeAgentApply?: (req: { runId: string; dir: string; prompt: string; title: string; attachments?: string[]; model?: string; timeoutMs?: number; reuse?: { worktree: string; branch: string } }) => Promise<{
+  claudeAgentApply?: (req: { runId: string; dir: string; prompt: string; title: string; attachments?: string[]; shots?: string[]; model?: string; timeoutMs?: number; reuse?: { worktree: string; branch: string } }) => Promise<{
     ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number;
     changed?: boolean; partial?: boolean; dirtyBase?: boolean; branch?: string; worktree?: string; base?: string; stat?: string; files?: { status: string; path: string }[];
   }>;
@@ -39,6 +39,9 @@ export interface ElectronAPI {
   devReleasePlan?: (req: { dir: string }) => Promise<any>;
   devReleaseDo?: (req: { dir: string; version: string; summary?: string }) => Promise<any>;
   devCi?: (req: { dir: string; tag: string }) => Promise<any>;
+  devPreviewStart?: (req: { dir: string; worktree: string; branch: string }) => Promise<{ ok: boolean; url?: string; port?: number; error?: string }>;
+  devPreviewStop?: () => Promise<{ ok: boolean; stopped?: boolean }>;
+  devPreviewShot?: (webContentsId: number) => Promise<{ ok: boolean; path?: string; thumb?: string; error?: string }>;
   devStoreGet?: () => Promise<any>;
   devStoreSet?: (data: any) => Promise<{ ok: boolean; error?: string }>;
   onDevProgress?: (cb: (d: { text: string }) => void) => () => void;
