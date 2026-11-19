@@ -90,7 +90,6 @@ import {
   Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History,
   Languages
 } from 'lucide-react';
-import { getClaudeApiKey, setClaudeApiKey, getClaudeModel, setClaudeModel, CLAUDE_MODEL_OPTIONS } from './services/claudeApi';
 import {
   isClaudeCliSupported, isClaudeCliEnabled, setClaudeCliEnabled, isClaudeCliFirst, setClaudeCliFirst, getClaudeCliModel, setClaudeCliModel, claudeCliStatus, CLAUDE_CLI_MODELS
 } from './services/claudeCli';
@@ -2948,8 +2947,8 @@ export default function App() {
   });
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>(() => getGeminiApiKey() || '');
   const [geminiModelInput, setGeminiModelInput] = useState<string>(() => getGeminiModel());
-  const [claudeApiKeyInput, setClaudeApiKeyInput] = useState<string>(() => getClaudeApiKey() || '');
-  const [claudeModelInput, setClaudeModelInput] = useState<string>(() => getClaudeModel());
+  // Ücretli Claude API desteği kaldırıldı: bu cihazda eskiden kaydedilmiş anahtar ve model silinir (anahtar boşuna durmasın).
+  useEffect(() => { try { localStorage.removeItem('claude_api_key'); localStorage.removeItem('claude_model'); } catch { /* yoksay */ } }, []);
   // Claude Code (yerel): kişisel Claude aboneliğiyle çalışan sağlayıcı (yalnızca masaüstü; varsayılan kapalı).
   const [cliEnabled, setCliEnabled] = useState<boolean>(() => isClaudeCliEnabled());
   const [cliFirst, setCliFirst] = useState<boolean>(() => isClaudeCliFirst());
@@ -9759,30 +9758,6 @@ grant execute on function get_db_size() to anon;`}
                       Ücretsiz katmanda her modelin günlük istek kotası ayrı takip edilir — birinin kotası dolarsa (Google AI Studio "Rate Limit" panelinden görebilirsin) buradan başka bir modele geçebilirsin.
                     </span>
                   </div>
-                  <div style={{ paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                    <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      Claude API Anahtarı (yedek, isteğe bağlı)
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="sk-ant-..."
-                      value={claudeApiKeyInput}
-                      onChange={(e) => setClaudeApiKeyInput(e.target.value)}
-                      className="modal-input"
-                      style={{ width: '100%' }}
-                    />
-                    <select
-                      value={claudeModelInput}
-                      onChange={(e) => setClaudeModelInput(e.target.value)}
-                      className="modal-input"
-                      style={{ width: '100%', marginTop: '8px' }}
-                    >
-                      {Array.from(new Set([...CLAUDE_MODEL_OPTIONS, claudeModelInput])).map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginTop: '4px', lineHeight: 1.4 }}>
-                      Gemini kotası dolunca ya da Gemini hata verince aynı istek otomatik olarak Claude'a gider (ücretli API kullanımınızdan düşer). Gemini anahtarı boşsa yalnızca Claude kullanılır. Anahtar yalnızca bu cihazda saklanır ve sadece api.anthropic.com'a gönderilir.
-                    </span>
-                  </div>
                   {isClaudeCliSupported() && (
                     <div style={{ paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                       <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -9814,7 +9789,7 @@ grant execute on function get_db_size() to anon;`}
                               onChange={(e) => { setClaudeCliFirst(e.target.checked); setCliFirst(e.target.checked); }}
                               style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--accent-color)' }}
                             />
-                            Önce bunu dene (kapalıyken sıra: Gemini, Claude Code, Claude API)
+                            Önce bunu dene (kapalıyken sıra: Gemini, sonra Claude Code)
                           </label>
                         </>
                       )}
@@ -9863,8 +9838,6 @@ grant execute on function get_db_size() to anon;`}
                       onClick={() => {
                         setGeminiApiKey(geminiApiKeyInput);
                         setGeminiModel(geminiModelInput);
-                        setClaudeApiKey(claudeApiKeyInput);
-                        setClaudeModel(claudeModelInput);
                         setIsSettingsModalOpen(false);
                       }}
                     >

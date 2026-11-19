@@ -1,12 +1,11 @@
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // "Gelişim Yolu" (rank) özelliğinin AI mentor katmanı (Faz 2). Google Gemini API'sini
 // kullanıcının KENDİ API anahtarıyla doğrudan cihazdan çağırır. Birincil sağlayıcı Gemini'dir;
-// kullanıcı Claude API anahtarı da girdiyse Gemini kotası dolunca/hata verince Claude yedek olur (bkz. claudeApi.ts). Anahtar yalnızca localStorage'da tutulur, Supabase senkron
+// masaüstünde Ayarlar'dan açılırsa Claude Code (yerel, abonelikle) yedek olur (bkz. claudeCli.ts). Ücretli Claude API desteği KALDIRILDI. Anahtar yalnızca localStorage'da tutulur, Supabase senkron
 // bilgilerinin saklanma deseniyle birebir aynı yaklaşım.
 
 import type { DevPathNoteMode } from '../devPaths';
-import { claudeGroundedText, claudeJson, isClaudeConfigured } from './claudeApi';
-import { claudeCliJson, isClaudeCliEnabled, isClaudeCliFirst } from './claudeCli';
+import { claudeCliJson, claudeCliGroundedText, isClaudeCliEnabled, isClaudeCliFirst } from './claudeCli';
 
 const GEMINI_KEY_STORAGE = 'gemini_api_key';
 const GEMINI_MODEL_STORAGE = 'gemini_model';
@@ -44,9 +43,8 @@ export const setGeminiModel = (model: string) => {
   }
 };
 
-// "Yapay zekâ hazır mı?" kapısı: Gemini VEYA Claude anahtarı girilmişse hazır sayılır (Claude, Gemini kotası dolunca yedek ya da
-// yalnızca Claude kullanan kullanıcı için tek sağlayıcıdır). Ad eski kaldı; birçok ekran bu kapıyı kullanıyor.
-export const isGeminiConfigured = (): boolean => !!getGeminiApiKey() || isClaudeConfigured() || isClaudeCliEnabled();
+// "Yapay zekâ hazır mı?" kapısı: Gemini anahtarı girilmişse ya da Claude Code (yerel) açıksa hazır sayılır. Ad eski kaldı; birçok ekran bu kapıyı kullanıyor.
+export const isGeminiConfigured = (): boolean => !!getGeminiApiKey() || isClaudeCliEnabled();
 
 // Gemini hatası Claude'a düşmeyi hak ediyor mu? Kota (429), kimlik/izin (401/403), sunucu (5xx) ve ağ hataları evet;
 // 400 gibi istek hataları hayır (gerçek bir hata gizlenmesin).
@@ -95,15 +93,14 @@ export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Pr
 }
 
 // Yapılandırılmış JSON isteği: sağlayıcılar sırayla denenir. Varsayılan sıra: Gemini (ücretsiz) -> Claude Code (yerel, abonelik; Ayarlar'dan açıldıysa)
-// -> Claude API (ücretli). "Önce Claude Code" seçiliyse yerel olan başa geçer. Bir sağlayıcı kota/sunucu/ağ hatası verirse ya da kullanılamazsa
+// "Önce Claude Code" seçiliyse yerel olan başa geçer. Bir sağlayıcı kota/sunucu/ağ hatası verirse ya da kullanılamazsa
 // sıradakine geçilir (Gemini'nin 400 gibi istek hataları gizlenmez). Hepsi başarısız olursa her birinin nedeni gösterilir.
 export async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
   interface Prov { name: string; run: () => Promise<T>; worthy: (e: any) => boolean }
   const gem: Prov | null = getGeminiApiKey() ? { name: 'Gemini', run: () => callGeminiOnly<T>(prompt, responseSchema), worthy: isFallbackWorthy } : null;
   const cli: Prov | null = isClaudeCliEnabled() ? { name: 'Claude Code (yerel)', run: () => claudeCliJson<T>(prompt, responseSchema), worthy: () => true } : null;
-  const api: Prov | null = isClaudeConfigured() ? { name: 'Claude API', run: () => claudeJson<T>(prompt, responseSchema), worthy: () => true } : null;
-  const order = (isClaudeCliFirst() ? [cli, gem, api] : [gem, cli, api]).filter((x): x is Prov => !!x);
-  if (order.length === 0) throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin ya da Claude Code (yerel) seçeneğini açın.');
+  const order = (isClaudeCliFirst() ? [cli, gem] : [gem, cli]).filter((x): x is Prov => !!x);
+  if (order.length === 0) throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini anahtarı ekleyin ya da (masaüstünde) Claude Code (yerel) seçeneğini açın.');
 
   const errors: string[] = [];
   for (let i = 0; i < order.length; i++) {
@@ -162,19 +159,19 @@ async function callGeminiGroundedOnly(prompt: string): Promise<string> {
   return text;
 }
 
-// Aramalı metin: önce Gemini (google_search); kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude'un web arama aracı.
+// Aramalı metin: önce Gemini (google_search); kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude Code'un (yerel, abonelik) web arama aracı.
 export async function callGeminiGroundedText(prompt: string): Promise<string> {
   if (!getGeminiApiKey()) {
-    if (isClaudeConfigured()) return claudeGroundedText(prompt);
-    throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini ya da Claude anahtarı ekleyin.');
+    if (isClaudeCliEnabled()) return claudeCliGroundedText(prompt);
+    throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini anahtarı ekleyin ya da (masaüstünde) Claude Code (yerel) seçeneğini açın.');
   }
   try {
     return await callGeminiGroundedOnly(prompt);
   } catch (e: any) {
-    if (!(isClaudeConfigured() && isFallbackWorthy(e))) throw e;
-    console.warn("[AI] Gemini araması kullanılamadı, Claude'a geçiliyor:", e?.message || e);
+    if (!(isClaudeCliEnabled() && isFallbackWorthy(e))) throw e;
+    console.warn("[AI] Gemini araması kullanılamadı, Claude Code'a geçiliyor:", e?.message || e);
     try {
-      return await claudeGroundedText(prompt);
+      return await claudeCliGroundedText(prompt);
     } catch (e2: any) {
       throw new Error(`${e.message}
 

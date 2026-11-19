@@ -25,6 +25,14 @@ export const claudeCliStatus = async () => {
   return (window as any).electron.claudeCliStatus();
 };
 
+// Aramalı düz metin (Dışarı işler, video bulma): yalnızca web arama aracı açık olarak çağrılır.
+export async function claudeCliGroundedText(prompt: string): Promise<string> {
+  if (!isClaudeCliSupported()) throw new Error('Claude Code (yerel) yalnızca masaüstü uygulamasında çalışır.');
+  const r = await (window as any).electron.claudeCliRun({ prompt, model: getClaudeCliModel(), search: true, timeoutMs: 150000 });
+  if (!r?.ok) throw new Error(r?.error || 'Claude Code çağrısı başarısız.');
+  return String(r.text || '');
+}
+
 // Yapılandırılmış JSON isteği: şema --json-schema ile verilir; yanıt structured_output'tan, yoksa metinden ayrıştırılır.
 export async function claudeCliJson<T>(prompt: string, schema: any): Promise<T> {
   if (!isClaudeCliSupported()) throw new Error('Claude Code (yerel) yalnızca masaüstü uygulamasında çalışır.');

@@ -59,7 +59,9 @@ const run = (req) => new Promise((resolve) => {
   const exe = findExe();
   if (!exe) return fail('Claude Code komutu bulunamadı (bu bilgisayarda kurulu değil).');
 
-  const args = ['-p', '--output-format', 'json', '--tools', '', '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config'];
+  // Araçlar kapalıdır (dosya/komut erişimi yok). Yalnızca req.search ise SADECE web arama aracı açılır (aramalı metin: Dışarı işler, video bulma).
+  const args = ['-p', '--output-format', 'json', '--tools', req.search ? 'WebSearch' : '', '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config'];
+  if (req.search) args.push('--allowedTools', 'WebSearch');
   if (req.schema && typeof req.schema === 'object') args.push('--json-schema', JSON.stringify(req.schema));
   if (model) args.push('--model', model);
   const timeoutMs = Math.min(Math.max(Number(req.timeoutMs) || 90000, 5000), 180000);
