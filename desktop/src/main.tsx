@@ -15,6 +15,10 @@ import { Buffer } from 'buffer';
 
 import App from './App';
 import './style.css';
+import { installDevDemo } from './devDemo';
+
+// "Geliştir > Önizle" önizlemesinde (adreste ?onizleme=1) Geliştir ekranı örnek verilerle gösterilir; uygulama modülleri yüklendikten sonra kurulur.
+installDevDemo();
 
 interface Props {
   children?: ReactNode;

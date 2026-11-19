@@ -377,6 +377,7 @@ export default function DevView({ fileContents, onSaveNote }: {
   return (
     <div style={{ height: '100%', overflowY: 'auto', boxSizing: 'border-box', padding: '18px 16px' }}>
       <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+        {(window as any).__devDemo && <div style={{ marginBottom: '8px', padding: '6px 10px', borderRadius: '6px', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#f59e0b', fontSize: '12px' }}>DEMO: önizleme için örnek verilerle gösteriliyor; hiçbir gerçek işlem (git, Claude, yayın) yapılmaz.</div>}
         <h1 style={{ margin: 0, fontSize: '22px', display: 'flex', alignItems: 'center', gap: '10px' }}><Hammer size={22} /> Geliştir</h1>
         <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginTop: '4px' }}>Uygulamayı Claude Code ile geliştirin: isteği yazın, plan ve uygulamayı izleyin, farkı onaylayın, birleştirin, yayınlayın. Claude hiçbir zaman gönderme/birleştirme/yayın yapmaz; bunları yalnızca bu ekrandaki düğmeler yapar.</div>
 

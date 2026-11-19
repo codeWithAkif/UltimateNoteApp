@@ -81,7 +81,7 @@ const start = async (req) => {
   while (Date.now() < deadline) {
     if (run.exited) return { ok: false, error: `Önizleme sunucusu açılmadan kapandı:\n${run.logs.replace(/\u001b\[[0-9;]*m/g, '').trim().slice(-600)}` };
     if (current !== run) return { ok: false, error: 'Önizleme durduruldu.' };
-    if (await httpOk(port)) return { ok: true, url: run.url, port };
+    if (await httpOk(port)) return { ok: true, url: run.url + '?onizleme=1', port }; // ?onizleme=1: önizlemede Geliştir ekranı örnek verilerle açılır (bkz. src/devDemo.ts)
     await new Promise(r => setTimeout(r, 400));
   }
   stopAll();
