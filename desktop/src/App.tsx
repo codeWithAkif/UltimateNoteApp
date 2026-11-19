@@ -87,7 +87,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History, Hammer,
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History, Hammer, PiggyBank,
   Languages
 } from 'lucide-react';
 import {
@@ -95,6 +95,7 @@ import {
 } from './services/claudeCli';
 import AssistantView from './components/AssistantView';
 import DevView from './components/DevView';
+import BudgetView from './components/BudgetView';
 import { isDevSupported } from './services/devWork';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -3028,6 +3029,8 @@ export default function App() {
     { id: 'projects', label: 'Proje Yönetimi', icon: KanbanSquare },
     { id: 'library', label: 'Kütüphane', icon: Library },
     { id: 'finance', label: 'Finans', icon: Wallet },
+    // Bütçe Planı: sohbetle/elle gelir-gider girişi, kalan para, grafikler, öneriler, kartsız yaşam planı (aylık notlar: Finans/Bütçe/YYYY-MM.md)
+    { id: 'budget', label: 'Bütçe Planı', icon: PiggyBank },
     { id: 'efor', label: 'Efor', icon: Timer },
     // İSTEK (kullanıcı: "Solo Leveling temalı bir fitness/görev modülü" — telefondan da
     // kullanılacak): Hunter Sistemi, diğer sekmeler gibi App.tsx'in ortak not
@@ -8275,6 +8278,17 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <div style={{ display: activeTab === 'develop' ? 'block' : 'none', height: '100%' }}>
               <DevView fileContents={fileContents} onSaveNote={handleSaveNote} />
             </div>
+          )}
+
+          {activeTab === 'budget' && (
+            <BudgetView
+              fileContents={fileContents}
+              onSaveNote={handleSaveNote}
+              onOpenNote={(path: string) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
+              }}
+            />
           )}
 
           {activeTab === 'assistant' && (
