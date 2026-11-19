@@ -3,7 +3,7 @@ import { Hammer, Download, Monitor, Smartphone, Camera, Play, FileSearch, GitMer
 import { CLAUDE_TASK_MODELS, getTaskModel, setTaskModel, planTask, applyTask, cancelPlan, discardWork, openWorkFolder, isClaudeReady } from '../services/claudeTask';
 import { getProjectFolder, setProjectFolder, pickProjectFolder, inspectProjectFolder, type FolderInfo } from '../services/projectFolders';
 import {
-  isDevSupported, loadDevStore, saveDevStore, newDevId, taskText, buildDevApplyPrompt, buildDevFixPrompt, buildDevRedoPrompt, buildDevFeedbackPrompt, fmtDuration,
+  isDevSupported, loadDevStore, saveDevStore, newDevId, taskText, buildDevApplyPrompt, buildDevFixPrompt, buildDevRedoPrompt, buildDevFeedbackPrompt, planRequestText, planHasQuestions, fmtDuration,
   appendReleaseLog, DEV_LOG_PATH, STAGE_LABEL, STAGE_COLOR, emptyStore, type DevStore, type DevRequest, type DevStage, type DevRelease
 } from '../services/devWork';
 
@@ -223,7 +223,7 @@ export default function DevView({ fileContents, onSaveNote }: {
     if (!dir) return;
     setTaskModel(model); setMsg(''); setLines([]);
     runId.current = newDevId(); setBusy({ id: r.id, kind: 'plan' });
-    const res = await planTask(runId.current, { dir, title: taskText(r), project: PROJECT_LABEL, attachments: [], model }, progress);
+    const res = await planTask(runId.current, { dir, title: planRequestText(r), project: PROJECT_LABEL, attachments: [], model }, progress);
     if (!alive.current) return;
     if (res.ok) patch(r.id, { stage: 'plan', plan: res.text || '', error: undefined }, `Plan çıkarıldı (${fmtDuration(res.ms || 0)})`);
     else if (!res.cancelled) patch(r.id, { error: res.error }, `Plan hatası: ${res.error}`);
@@ -501,6 +501,22 @@ export default function DevView({ fileContents, onSaveNote }: {
                 )}
 
                 {selected.plan && (<><div style={label}>Plan</div><div style={{ maxHeight: '260px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={pre}>{selected.plan}</pre></div></>)}
+                {selected.plan && selected.stage === 'plan' && !isBusy && (
+                  <>
+                    <div style={label}>Sorulara cevaplarınız / ek notunuz</div>
+                    <textarea
+                      value={selected.answers || ''}
+                      onChange={(e) => patch(selected.id, { answers: e.target.value })}
+                      rows={4}
+                      placeholder={'Plandaki "Emin olmadığım noktalar"ı numarasıyla cevaplayın, örn.\n1: (a) sağdaki panel\n2: hepsi\n3: yalnızca iş sürerken\nBoş bırakırsanız Claude varsayımla ilerler.'}
+                      style={{ ...field, resize: 'vertical' }}
+                    />
+                    {planHasQuestions(selected.plan) && !(selected.answers || '').trim() && (
+                      <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '4px' }}>Planda Claude'un size sorduğu noktalar var; cevaplamazsanız Claude kendi varsayımıyla ilerler.</div>
+                    )}
+                    <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '4px' }}>Cevaplarınız uygulamaya "planın varsayımlarından öncelikli" diye iletilir. Çok şey değiştiyse "Planı yeniden çıkar" ile Claude planı cevaplarınıza göre günceller.</div>
+                  </>
+                )}
 
                 {/* eylemler */}
                 {!isBusy && (

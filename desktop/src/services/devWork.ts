@@ -13,6 +13,7 @@ export interface DevRequest {
   updatedAt: number;
   stage: DevStage;
   plan?: string;
+  answers?: string;                 // kullanıcının plandaki sorulara cevapları / ek notları (uygulama istemine eklenir)
   summary?: string;                 // Claude'un son yanıtı (yapılanlar, doğrulama, elle yapılacaklar)
   branch?: string;
   worktree?: string;
@@ -56,12 +57,20 @@ export const newDevId = (): string => `d${Date.now().toString(36)}${Math.random(
 export const taskText = (r: Pick<DevRequest, 'title' | 'detail'>): string => (r.detail.trim() ? `${r.title}\n\n${r.detail.trim()}` : r.title);
 
 // Çalışırken görülen yeni kod kuralları repo kökündeki CLAUDE.md'den okunur; burada yalnızca bu bölüme özgü hatırlatmalar var.
-export const buildDevApplyPrompt = (r: Pick<DevRequest, 'title' | 'detail' | 'plan'>): string =>
+// Plandaki "emin olmadığım noktalar" için kullanıcı cevap yazdıysa istemde planın varsayımlarından ÖNCELİKLİ bölüm olarak verilir
+export const answersBlock = (r: Pick<DevRequest, 'answers'>): string =>
+  r.answers && r.answers.trim() ? `\nKULLANICININ PLAN SORULARINA CEVAPLARI / EK NOTLARI (planın varsayımlarından ÖNCELİKLİDİR; plan bunlarla çelişirse bunlara uy):\n${r.answers.trim().slice(0, 6000)}\n` : '';
+export const planHasQuestions = (plan: string | undefined): boolean => !!plan && /emin olmad[ıi]ğ[ıi]m|sorular|soru:/i.test(plan);
+// Plan istemine eklenecek istek metni: önceki cevaplar varsa planlayıcı da bilsin
+export const planRequestText = (r: Pick<DevRequest, 'title' | 'detail' | 'answers'>): string =>
+  taskText(r) + (r.answers && r.answers.trim() ? `\n\nKULLANICININ ÖNCEKİ PLANDAKİ SORULARA CEVAPLARI (bunları dikkate alıp planı güncelle):\n${r.answers.trim().slice(0, 6000)}` : '');
+
+export const buildDevApplyPrompt = (r: Pick<DevRequest, 'title' | 'detail' | 'plan' | 'answers'>): string =>
   `Sen bu klasördeki uygulamayı (Ultimate NoteFactory) geliştiren deneyimli bir geliştiricisin. Aşağıdaki isteği UYGULA.
 Şu an ayrı bir git dalındaki çalışma kopyasındasın; değişiklikler yalnızca burada kalır, kullanıcı farkı görüp karar verecek.
 
 İSTEK: ${taskText(r)}
-${r.plan ? `\nONAYLANAN PLAN (buna uy; ayrıldığın yerde nedenini son yanıtta yaz):\n${r.plan.slice(0, 20000)}\n` : ''}
+${r.plan ? `\nONAYLANAN PLAN (buna uy; ayrıldığın yerde nedenini son yanıtta yaz):\n${r.plan.slice(0, 20000)}\n` : ''}${answersBlock(r)}
 KURALLAR:
 - Repo kökündeki CLAUDE.md kurallarına uy.
 - Yalnızca isteğin gerektirdiği dosyaları değiştir; kapsam dışı iyileştirme yapma.
@@ -96,7 +105,7 @@ ${shotCount > 0 ? `\nÖnizlemeden ${shotCount} ekran görüntüsü ekte (eklenen
 Yalnızca bu geri bildirimi uygula; başka bir şeyi değiştirme. Tür denetimini sen çalıştırma (uygulama denetler). Kurallar önceki turdakiyle aynı (commit/push yok, sürüme dokunma).
 SON YANITINI Türkçe, 3-5 satırla yaz: ne değiştirdin, doğrulama sonucu.`;
 
-export const buildDevRedoPrompt = (r: Pick<DevRequest, 'title' | 'detail' | 'plan'>, conflictFiles: string[]): string =>
+export const buildDevRedoPrompt = (r: Pick<DevRequest, 'title' | 'detail' | 'plan' | 'answers'>, conflictFiles: string[]): string =>
   `${buildDevApplyPrompt(r)}
 
 NOT: Bu isteği daha önce bir kez uygulamıştın ama ana daldaki yeni değişikliklerle şu dosyalarda ÇAKIŞTI: ${conflictFiles.join(', ') || '(bilinmiyor)'}.
