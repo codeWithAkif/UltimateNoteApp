@@ -25,13 +25,23 @@ export interface ElectronAPI {
   taskSourceClearCredentials?: () => Promise<{ ok: boolean }>;
   taskSourceSync?: (cfg: any) => Promise<{ ok: boolean; code?: string; error?: string; sources?: any[] }>;
   claudeAgentPlan?: (req: { runId: string; dir: string; prompt: string; attachments?: string[]; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number }>;
-  claudeAgentApply?: (req: { runId: string; dir: string; prompt: string; title: string; attachments?: string[]; model?: string; timeoutMs?: number }) => Promise<{
+  claudeAgentApply?: (req: { runId: string; dir: string; prompt: string; title: string; attachments?: string[]; model?: string; timeoutMs?: number; reuse?: { worktree: string; branch: string } }) => Promise<{
     ok: boolean; text?: string; error?: string; cancelled?: boolean; ms: number; cost?: number; turns?: number;
     changed?: boolean; partial?: boolean; dirtyBase?: boolean; branch?: string; worktree?: string; base?: string; stat?: string; files?: { status: string; path: string }[];
   }>;
   claudeAgentDiscard?: (req: { dir: string; worktree: string; branch: string }) => Promise<{ ok: boolean; error?: string }>;
   claudeAgentOpenFolder?: (req: { dir: string; worktree: string }) => Promise<{ ok: boolean; error?: string }>;
   claudeAgentCancel?: (runId: string) => Promise<{ ok: boolean }>;
+  devStatus?: (req: { dir: string }) => Promise<any>;
+  devCheck?: (req: { dir: string; worktree: string; branch: string }) => Promise<any>;
+  devDiff?: (req: { dir: string; worktree: string; branch: string; file?: string }) => Promise<any>;
+  devMerge?: (req: { dir: string; worktree: string; branch: string }) => Promise<any>;
+  devReleasePlan?: (req: { dir: string }) => Promise<any>;
+  devReleaseDo?: (req: { dir: string; version: string; summary?: string }) => Promise<any>;
+  devCi?: (req: { dir: string; tag: string }) => Promise<any>;
+  devStoreGet?: () => Promise<any>;
+  devStoreSet?: (data: any) => Promise<{ ok: boolean; error?: string }>;
+  onDevProgress?: (cb: (d: { text: string }) => void) => () => void;
   onClaudeAgentProgress?: (callback: (data: { runId?: string; text: string }) => void) => () => void;
   pickProjectFolder?: () => Promise<{ canceled: boolean; info?: { ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string } }>;
   inspectProjectFolder?: (dir: string) => Promise<{ ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string }>;

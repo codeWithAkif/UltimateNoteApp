@@ -627,6 +627,35 @@ ipcMain.handle('claude-agent-open-folder', async (event, req) => {
   return err ? { ok: false, error: err } : { ok: true };
 });
 ipcMain.handle('claude-agent-cancel', async (event, runId) => claudeAgent.cancel(runId));
+
+// IPC Handler'lar: "Geliştir" bölümü (bkz. devTools.cjs): kontrol, fark, birleştirme, yayın, derleme takibi. Aynı anda tek git/yayın işlemi.
+const devTools = require('./devTools.cjs');
+let devBusy = false;
+const devGuard = (fn) => async (event, req) => {
+  if (devBusy) return { ok: false, error: 'Başka bir geliştirme işlemi sürüyor; bitmesini bekleyin.' };
+  devBusy = true;
+  try { return await fn(event, { ...(req || {}), vaultDir: DEFAULT_NOTES_DIR }); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  finally { devBusy = false; }
+};
+ipcMain.handle('dev-status', devGuard((e, r) => devTools.status(r)));
+ipcMain.handle('dev-check', devGuard((e, r) => devTools.check(r)));
+ipcMain.handle('dev-diff', devGuard((e, r) => devTools.diff(r)));
+ipcMain.handle('dev-merge', devGuard((e, r) => devTools.merge(r)));
+ipcMain.handle('dev-release-plan', devGuard((e, r) => devTools.releasePlan(r)));
+ipcMain.handle('dev-release-do', devGuard((e, r) => devTools.releaseDo(r, (text) => { try { e.sender.send('dev-progress', { text }); } catch { /* pencere kapanmış olabilir */ } })));
+ipcMain.handle('dev-ci', async (event, req) => devTools.ci({ ...(req || {}), vaultDir: DEFAULT_NOTES_DIR }));
+// Geliştirme istekleri (durum, plan, çalışma kopyası bilgisi) bu cihazda tutulur: userData/dev-requests.json
+const devStorePath = () => path.join(app.getPath('userData'), 'dev-requests.json');
+ipcMain.handle('dev-store-get', async () => { try { return JSON.parse(fs.readFileSync(devStorePath(), 'utf-8')); } catch { return null; } });
+ipcMain.handle('dev-store-set', async (event, data) => {
+  try {
+    const s = JSON.stringify(data);
+    if (typeof s !== 'string' || s.length > 3 * 1024 * 1024) return { ok: false, error: 'Veri çok büyük.' };
+    fs.writeFileSync(devStorePath(), s, 'utf-8');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
 app.on('before-quit', () => { try { claudeAgent.cancelAll(); } catch { /* yoksay */ } });
 
 // IPC Handler: Proje klasörü seçimi (bkz. projectFolder.cjs): Windows'un klasör penceresiyle seçilir, riskli yerler (disk kökü, kullanıcı klasörü,

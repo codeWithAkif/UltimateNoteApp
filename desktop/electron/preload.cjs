@@ -24,6 +24,20 @@ contextBridge.exposeInMainWorld('electron', {
   claudeAgentDiscard: (req) => ipcRenderer.invoke('claude-agent-discard', req),
   claudeAgentOpenFolder: (req) => ipcRenderer.invoke('claude-agent-open-folder', req),
   claudeAgentCancel: (runId) => ipcRenderer.invoke('claude-agent-cancel', runId),
+  devStatus: (req) => ipcRenderer.invoke('dev-status', req),
+  devCheck: (req) => ipcRenderer.invoke('dev-check', req),
+  devDiff: (req) => ipcRenderer.invoke('dev-diff', req),
+  devMerge: (req) => ipcRenderer.invoke('dev-merge', req),
+  devReleasePlan: (req) => ipcRenderer.invoke('dev-release-plan', req),
+  devReleaseDo: (req) => ipcRenderer.invoke('dev-release-do', req),
+  devCi: (req) => ipcRenderer.invoke('dev-ci', req),
+  devStoreGet: () => ipcRenderer.invoke('dev-store-get'),
+  devStoreSet: (data) => ipcRenderer.invoke('dev-store-set', data),
+  onDevProgress: (cb) => {
+    const sub = (_e, d) => cb(d);
+    ipcRenderer.on('dev-progress', sub);
+    return () => ipcRenderer.removeListener('dev-progress', sub);
+  },
   onClaudeAgentProgress: (callback) => {
     const subscription = (event, data) => callback(data);
     ipcRenderer.on('claude-agent-progress', subscription);

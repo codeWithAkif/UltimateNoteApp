@@ -173,7 +173,28 @@ const isOurWorktree = (repoDir, wtPath) => {
 };
 const isOurBranch = (b) => typeof b === 'string' && /^claude\/[a-z0-9][a-z0-9-]{0,40}-[a-z0-9]{4}$/.test(b);
 
+// Çalışma kopyasında derleme/kontrol çalışabilsin diye ana klasörün node_modules'u BAĞLANTI (junction) olarak eklenir; kopya silinirken bağlantı ÖNCE
+// ayrıca kaldırılır ki hiçbir silme işlemi ana klasörün node_modules'una girmesin.
+const LINK_DIRS = ['', 'desktop'];
+const linkModules = (repoDir, wt) => {
+  for (const rel of LINK_DIRS) {
+    try {
+      const src = path.join(repoDir, rel, 'node_modules'), dst = path.join(wt, rel, 'node_modules');
+      if (fs.existsSync(src) && !fs.existsSync(dst) && fs.existsSync(path.dirname(dst))) fs.symlinkSync(src, dst, 'junction');
+    } catch { /* bağlantı kurulamadıysa kontrol "node_modules yok" der */ }
+  }
+};
+const unlinkModules = (wt) => {
+  for (const rel of LINK_DIRS) {
+    const dst = path.join(wt, rel, 'node_modules');
+    try {
+      if (fs.lstatSync(dst).isSymbolicLink()) { try { fs.rmdirSync(dst); } catch { fs.unlinkSync(dst); } }
+    } catch { /* yok */ }
+  }
+};
+
 const removeWork = async (repoDir, wtPath, branch) => {
+  unlinkModules(wtPath);
   await git(repoDir, ['worktree', 'remove', '--force', wtPath]);
   try { fs.rmSync(wtPath, { recursive: true, force: true }); } catch { /* yoksay */ }
   await git(repoDir, ['worktree', 'prune']);
@@ -207,6 +228,8 @@ const apply = (req, onProgress) => new Promise((resolve) => {
     if (!exe) return done({ ok: false, error: 'Claude Code komutu bulunamadı (bu bilgisayarda kurulu değil).' });
     const gv = await git(info.path, ['--version']);
     if (!gv.ok) return done({ ok: false, error: 'git komutu bulunamadı.' });
+    const reuse = !!(req.reuse && req.reuse.worktree && req.reuse.branch);
+    if (reuse && !(isOurWorktree(info.path, req.reuse.worktree) && isOurBranch(req.reuse.branch) && fs.existsSync(req.reuse.worktree))) return done({ ok: false, error: 'Devam edilecek çalışma kopyası bulunamadı ya da uygulamaya ait değil.' });
     const head = await git(info.path, ['rev-parse', '--verify', 'HEAD']);
     if (!head.ok) return done({ ok: false, error: 'Depoda henüz commit yok; önce bir commit atın.' });
 
@@ -216,12 +239,15 @@ const apply = (req, onProgress) => new Promise((resolve) => {
 
     // 1) ayrı dal + çalışma kopyası (ana klasöre dokunmaz)
     const code = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
-    const branch = `claude/${slug(req.title)}-${code}`;
-    const wt = path.join(path.dirname(info.path), `${info.name}-claude-${code}`);
-    if (fs.existsSync(wt)) return done({ ok: false, error: 'Çalışma klasörü zaten var; tekrar deneyin.' });
-    say('Ayrı dal ve çalışma kopyası hazırlanıyor…');
-    const add = await git(info.path, ['worktree', 'add', '-b', branch, wt]);
-    if (!add.ok) return done({ ok: false, error: `Çalışma kopyası açılamadı: ${add.err.slice(0, 300)}` });
+    const branch = reuse ? req.reuse.branch : `claude/${slug(req.title)}-${code}`;
+    const wt = reuse ? path.resolve(req.reuse.worktree) : path.join(path.dirname(info.path), `${info.name}-claude-${code}`);
+    if (!reuse) {
+      if (fs.existsSync(wt)) return done({ ok: false, error: 'Çalışma klasörü zaten var; tekrar deneyin.' });
+      say('Ayrı dal ve çalışma kopyası hazırlanıyor…');
+      const add = await git(info.path, ['worktree', 'add', '-b', branch, wt]);
+      if (!add.ok) return done({ ok: false, error: `Çalışma kopyası açılamadı: ${add.err.slice(0, 300)}` });
+    } else say('Mevcut çalışma kopyasında devam ediliyor…');
+    linkModules(info.path, wt);
 
     // 2) ekleri geçici klasöre kopyala
     let tmpDir = '';
@@ -238,7 +264,7 @@ const apply = (req, onProgress) => new Promise((resolve) => {
       }
     } catch (e) {
       if (tmpDir) try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* yoksay */ }
-      await removeWork(info.path, wt, branch);
+      if (!reuse) await removeWork(info.path, wt, branch);
       return done({ ok: false, error: `Ekler hazırlanamadı: ${String(e.message || e)}` });
     }
     if (model) args.push('--model', model);
@@ -248,7 +274,7 @@ const apply = (req, onProgress) => new Promise((resolve) => {
     // 3) Claude'u çalışma kopyasında çalıştır
     let child;
     try { child = spawn(exe, args, { cwd: wt, windowsHide: true, env: cleanEnv() }); }
-    catch (e) { cleanTmp(); await removeWork(info.path, wt, branch); return done({ ok: false, error: String(e.message || e) }); }
+    catch (e) { cleanTmp(); if (!reuse) await removeWork(info.path, wt, branch); return done({ ok: false, error: String(e.message || e) }); }
     const run = { id: req.runId, child, cancelled: false };
     current = run;
     say('Claude çalışıyor…');
@@ -261,15 +287,20 @@ const apply = (req, onProgress) => new Promise((resolve) => {
       // Değişiklik var mı? Yoksa kopya ve dal silinir.
       const st = await git(wt, ['status', '--porcelain']);
       const changed = st.ok && st.out.trim().length > 0;
-      if (v.cancelled || (v.ok === false && !changed)) { await removeWork(info.path, wt, branch); return done(v); }
-      if (!changed) { await removeWork(info.path, wt, branch); return done({ ...v, ok: true, changed: false }); }
+      if (v.cancelled || (v.ok === false && !changed)) { if (!reuse) await removeWork(info.path, wt, branch); return done(v); }
+      if (!changed) {
+        if (!reuse) { await removeWork(info.path, wt, branch); return done({ ...v, ok: true, changed: false }); }
+        return done({ ...v, ok: true, changed: false, branch, worktree: wt, base: info.branch || '' }); // düzeltme turunda yeni değişiklik olmadı; önceki commit'ler duruyor
+      }
       say('Değişiklikler kaydediliyor (yerel dalda)…');
+      unlinkModules(wt); // bağlantı commit'e girmesin
       await git(wt, ['add', '-A']);
       const msg = `Claude: ${String(req.title || 'görev').slice(0, 120)}\n\nUltimateNotes "Claude başlasın mı?" ile otomatik yapıldı; gözden geçirilmeden birleştirilmemeli.`;
       const cm = await git(wt, ['-c', 'user.name=Claude (UltimateNotes)', '-c', 'user.email=noreply@anthropic.com', 'commit', '-m', msg]);
       if (!cm.ok) return done({ ok: false, error: `Değişiklikler commit edilemedi (çalışma kopyası korundu: ${wt}). ${cm.err.slice(0, 200)}`, worktree: wt, branch });
-      const names = await git(wt, ['diff', '--name-status', 'HEAD~1', 'HEAD']);
-      const stat = await git(wt, ['diff', '--shortstat', 'HEAD~1', 'HEAD']);
+      const baseRef = info.branch && !info.branch.startsWith('(') ? `${info.branch}...HEAD` : 'HEAD~1..HEAD';
+      const names = await git(wt, ['diff', '--name-status', baseRef]);
+      const stat = await git(wt, ['diff', '--shortstat', baseRef]);
       const files = names.out.split('\n').filter(Boolean).slice(0, 200).map(l => { const [s, ...p] = l.split('\t'); return { status: s, path: p.join('\t') }; });
       return done({ ...v, changed: true, branch, worktree: wt, base: info.branch || '', files, stat: stat.out.trim(), partial: v.ok === false, dirtyBase });
     };
@@ -319,5 +350,5 @@ const ownedWorktree = (dir, worktree) => {
   return info.ok && isOurWorktree(info.path, worktree) && fs.existsSync(worktree) ? path.resolve(worktree) : null;
 };
 
-module.exports = { plan, apply, discard, ownedWorktree, cancel, cancelAll };
+module.exports = { plan, apply, discard, ownedWorktree, cancel, cancelAll, git, isOurWorktree, isOurBranch, removeWork, linkModules, unlinkModules };
 

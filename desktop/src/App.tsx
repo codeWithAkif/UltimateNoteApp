@@ -87,13 +87,15 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History,
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History, Hammer,
   Languages
 } from 'lucide-react';
 import {
   isClaudeCliSupported, isClaudeCliEnabled, setClaudeCliEnabled, isClaudeCliFirst, setClaudeCliFirst, getClaudeCliModel, setClaudeCliModel, claudeCliStatus, CLAUDE_CLI_MODELS
 } from './services/claudeCli';
 import AssistantView from './components/AssistantView';
+import DevView from './components/DevView';
+import { isDevSupported } from './services/devWork';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
@@ -334,6 +336,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('active_tab') || 'notfactory';
   });
+  const [devMounted, setDevMounted] = useState(false);
+  useEffect(() => { if (activeTab === 'develop') setDevMounted(true); }, [activeTab]);
   const [browserInitialQuery, setBrowserInitialQuery] = useState<string | null>(null);
   // Seçili metne sağ tık > "Web araştırma": sağda yeniden boyutlandırılabilir bir web bölmesi (yalnızca masaüstü).
   // Hızlı slotlar (Alt+1..9): belirli proje/görünüm, not, günlük, takvim hedefleri.
@@ -3036,6 +3040,8 @@ export default function App() {
     // her gün Günlükler/YYYY-MM-DD.md altında gerçek bir nota karşılık gelir.
     { id: 'diary', label: 'Günlük', icon: NotebookPen },
     { id: 'assistant', label: 'Asistan', icon: Brain },
+    // Geliştir: uygulamayı Claude Code ile geliştirme/takip/yayın (yalnızca masaüstü)
+    ...(isDevSupported() ? [{ id: 'develop', label: 'Geliştir', icon: Hammer }] : []),
   ];
   const titlebarToolItems = [
     { id: 'db', label: 'Depo (Veritabanı)', icon: Database },
@@ -8263,6 +8269,13 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               onRequestFocusCalendar={() => setActiveTab('calendar')}
             />
           </div>
+
+          {/* Geliştir bölümü bir kez açılınca arka planda yaşar: başka sekmeye geçseniz de çalışan Claude işi ve yayın sonucu kaybolmaz */}
+          {(activeTab === 'develop' || devMounted) && (
+            <div style={{ display: activeTab === 'develop' ? 'block' : 'none', height: '100%' }}>
+              <DevView fileContents={fileContents} onSaveNote={handleSaveNote} />
+            </div>
+          )}
 
           {activeTab === 'assistant' && (
             <AssistantView

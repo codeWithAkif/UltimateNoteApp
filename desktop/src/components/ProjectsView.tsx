@@ -108,7 +108,14 @@ const upsertClientTag = (content: string, tagRegex: RegExp, newTag: string): str
 // [durum:beklemede|tamamlandi|arsiv] etiketiyle tutulur (etiket yoksa proje "aktif"tir). Böylece mevcut projeler
 // aynen aktif görünür, durum notla birlikte senkronlanır ve Not Fabrikası dışında da okunabilir.
 type ProjectStatus = 'aktif' | 'beklemede' | 'tamamlandi' | 'arsiv';
-type ProjectFilter = 'open' | 'tamamlandi' | 'arsiv' | 'all';
+type ProjectFilter = 'open' | 'fav' | 'tamamlandi' | 'arsiv' | 'all';
+// FAVORİ: proje notunun içinde [favori] etiketiyle tutulur (durum etiketiyle aynı yaklaşım: notla birlikte senkronlanır). "Favoriler" filtresi açık (aktif/beklemede) favorileri gösterir.
+const FAV_REGEX = /\[favori\]/i;
+const isFavoriteProject = (content: string): boolean => FAV_REGEX.test(content);
+const upsertFavorite = (content: string, on: boolean): string => {
+  const cleaned = content.replace(new RegExp(FAV_REGEX.source, 'gi'), '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+  return on ? `${cleaned}\n[favori]\n` : `${cleaned}\n`;
+};
 const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = { aktif: 'Aktif', beklemede: 'Beklemede', tamamlandi: 'Tamamlandı', arsiv: 'Arşiv' };
 const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = { aktif: '#22c55e', beklemede: '#eab308', tamamlandi: '#3b82f6', arsiv: '#94a3b8' };
 const PROJECT_STATUS_REGEX = /\[durum:(aktif|beklemede|tamamlandi|arsiv)\]/i;
@@ -305,14 +312,28 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
 
   // Durum filtresi: varsayılan "Açık" (aktif + beklemede) — tamamlanan/arşivlenen projeler gizlenir.
   const projectStatusOf = (note: NoteItem): ProjectStatus => parseProjectStatus(scannedContents[note.path] || '');
-  const matchesProjectFilter = (st: ProjectStatus) =>
-    projectFilter === 'all' || (projectFilter === 'open' ? (st === 'aktif' || st === 'beklemede') : st === projectFilter);
-  const visibleProjects = projectNotes.filter(n => matchesProjectFilter(projectStatusOf(n)));
+  const projectIsFav = (note: NoteItem) => isFavoriteProject(scannedContents[note.path] || '');
+  const noteMatchesFilter = (key: ProjectFilter, note: NoteItem) => {
+    const st = projectStatusOf(note);
+    if (key === 'all') return true;
+    if (key === 'open') return st === 'aktif' || st === 'beklemede';
+    if (key === 'fav') return (st === 'aktif' || st === 'beklemede') && projectIsFav(note);
+    return st === key;
+  };
+  // Favoriler listenin başında (aralarında önceki sıra korunur)
+  const visibleProjects = projectNotes.filter(n => noteMatchesFilter(projectFilter, n)).map((n, i) => ({ n, i }))
+    .sort((a, b) => Number(projectIsFav(b.n)) - Number(projectIsFav(a.n)) || a.i - b.i).map(x => x.n);
   const projectFilterCounts = {
     open: projectNotes.filter(n => ['aktif', 'beklemede'].includes(projectStatusOf(n))).length,
+    fav: projectNotes.filter(n => noteMatchesFilter('fav', n)).length,
     tamamlandi: projectNotes.filter(n => projectStatusOf(n) === 'tamamlandi').length,
     arsiv: projectNotes.filter(n => projectStatusOf(n) === 'arsiv').length,
     all: projectNotes.length
+  };
+  const toggleFavorite = async (note: NoteItem) => {
+    const content = scannedContents[note.path];
+    if (!onSaveNote || content === undefined) return;
+    await onSaveNote(note.path, upsertFavorite(content, !isFavoriteProject(content)));
   };
   const setProjectStatus = async (note: NoteItem, status: ProjectStatus) => {
     const content = scannedContents[note.path];
@@ -1105,7 +1126,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
             <h3 style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.5px', marginBottom: '12px' }}>PROJELER ({visibleProjects.length})</h3>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
-              {([['open', 'Açık'], ['tamamlandi', 'Tamamlandı'], ['arsiv', 'Arşiv'], ['all', 'Tümü']] as [ProjectFilter, string][]).map(([key, label]) => (
+              {([['open', 'Açık'], ['fav', '★ Favoriler'], ['tamamlandi', 'Tamamlandı'], ['arsiv', 'Arşiv'], ['all', 'Tümü']] as [ProjectFilter, string][]).map(([key, label]) => (
                 <button
                   key={key}
                   type="button"
@@ -1114,9 +1135,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                     // Seçili proje yeni filtreyle gizleniyorsa seçimi kaldır.
                     if (selectedProject) {
                       const sel = projectNotes.find(n => n.name.replace('.md', '') === selectedProject);
-                      const st = sel ? projectStatusOf(sel) : 'aktif';
-                      const show = key === 'all' || (key === 'open' ? (st === 'aktif' || st === 'beklemede') : st === key);
-                      if (!show) setSelectedProject(null);
+                      if (sel && !noteMatchesFilter(key, sel)) setSelectedProject(null);
                     }
                   }}
                   style={{
@@ -1166,12 +1185,23 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                    <Briefcase size={16} /> 
+                    <Briefcase size={16} />
                     <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '13px' }}>
                       {cleanName}
                     </span>
                     {listStatus !== 'aktif' && (
                       <span style={{ marginLeft: 'auto', fontSize: '10px', color: PROJECT_STATUS_COLORS[listStatus] }}>{PROJECT_STATUS_LABELS[listStatus]}</span>
+                    )}
+                    {onSaveNote && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleFavorite(note); }}
+                        title={projectIsFav(note) ? 'Favorilerden çıkar' : 'Favorilere ekle'}
+                        aria-label={projectIsFav(note) ? 'Favorilerden çıkar' : 'Favorilere ekle'}
+                        style={{ marginLeft: listStatus !== 'aktif' ? '4px' : 'auto', background: 'none', border: 'none', padding: '0 2px', cursor: 'pointer', fontSize: '15px', lineHeight: 1, color: projectIsFav(note) ? '#eab308' : 'var(--text-muted)', opacity: projectIsFav(note) ? 1 : 0.45 }}
+                      >
+                        {projectIsFav(note) ? '★' : '☆'}
+                      </button>
                     )}
                   </div>
                   
