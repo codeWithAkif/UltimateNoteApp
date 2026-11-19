@@ -46,7 +46,7 @@ export const CHAT_SCHEMA = {
   properties: {
     cevap: { type: 'string' },
     senaryo: { type: 'boolean' },
-    eylemler: { type: 'array', items: { type: 'object', properties: ACTION_PROPS, required: ['op'] } }
+    eylemler: { type: 'array', items: { type: 'object', properties: ACTION_PROPS, required: ['op', 'ad', 'tutar'] } }
   },
   required: ['cevap', 'senaryo', 'eylemler']
 };
@@ -69,7 +69,7 @@ ${budgetFacts(o.budget)}
 ${hist ? `SOHBET GEÇMİŞİ:\n${hist}\n\n` : ''}KULLANICININ SON MESAJI:
 ${redactSensitive(o.message).slice(0, 2000)}
 
-GÖREV: Mesajdaki bütçe bilgilerini "eylemler" olarak çıkar (op: ekle | guncelle | sil). Her ekle için kind (gelir/sabit/kart/degisken), ad, tutar gerekir; gün ve taksit yalnızca kullanıcı söylediyse. Zaten listede olan bir kalemi yeniden ekleme, guncelle kullan.
+GÖREV: Mesajdaki bütçe bilgilerini "eylemler" olarak çıkar (op: ekle | guncelle | sil). Her ekle için JSON alanları tam olarak şunlar olmalı: "kind" (gelir/sabit/kart/degisken), "ad" (kalemin kısa adı, örn. "Maaş", "Kira", "Elektrik", "Okul servisi"; ASLA boş bırakma), "tutar" (sayı, TL); ayrıca gün ve taksit yalnızca kullanıcı söylediyse. Zaten listede olan bir kalemi yeniden ekleme, guncelle kullan.
 Kullanıcı "ya ... olsa" gibi bir varsayım soruyorsa senaryo=true yap; eylemler o varsayımın uygulanmış hâlidir (gerçek kayıt değil).
 Mesajda bütçe bilgisi yoksa eylemler boş olsun, cevapta soruya yanıt ver ya da bir sonraki adımı sor.
 "cevap": kısa Türkçe yanıt. Sadece JSON döndür.`;
@@ -85,6 +85,15 @@ const toNum = (v: unknown): number | undefined => {
 };
 const toInt = (v: unknown): number | undefined => { const n = toNum(v); return n === undefined ? undefined : Math.round(n); };
 
+// Model alan adını şemadan sapıp farklı yazabiliyor (isim/name/kalem...); "ad" boş kalırsa kart hiç uygulanamıyordu
+const pickName = (a: any): string | undefined => {
+  for (const k of ['ad', 'isim', 'name', 'kalem', 'baslik', 'başlık', 'aciklama', 'açıklama']) {
+    const v = a?.[k];
+    if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 60);
+  }
+  return undefined;
+};
+
 // Cevabı güvenli bir biçime getirir (sağlayıcı sayıları metin ya da tür adını farklı yazmış olabilir)
 export const normalizeChat = (raw: any): ChatResult => {
   const acts: AIAction[] = [];
@@ -93,8 +102,8 @@ export const normalizeChat = (raw: any): ChatResult => {
     const op = String(a.op || '').toLowerCase().replace('güncelle', 'guncelle');
     const kind = a.kind ? KIND_ALIAS[String(a.kind).toLowerCase().trim()] : undefined;
     acts.push({
-      op: op as AIAction['op'], kind, id: a.id ? String(a.id) : undefined, ad: a.ad ? String(a.ad) : undefined,
-      tutar: toNum(a.tutar), gun: toInt(a.gun) || undefined, taksitKalan: toInt(a.taksitKalan) || undefined, taksitToplam: toInt(a.taksitToplam) || undefined,
+      op: op as AIAction['op'], kind, id: a.id ? String(a.id) : undefined, ad: pickName(a),
+      tutar: toNum(a.tutar ?? a.miktar ?? a.amount), gun: toInt(a.gun) || undefined, taksitKalan: toInt(a.taksitKalan) || undefined, taksitToplam: toInt(a.taksitToplam) || undefined,
       taksitliTutar: toNum(a.taksitliTutar), neden: a.neden ? String(a.neden).slice(0, 200) : undefined
     });
   }
