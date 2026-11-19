@@ -400,12 +400,33 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
   // (b) günlük nota yazılmış ama #proje-slug etiketiyle o projeye bağlanmış olabilir (bkz.
   // CalendarView.tsx'teki "Yeni Görev Ekle" modalındaki PROJE seçici). İkisi de aynı ilerleme
   // yüzdesine/Kanban listesine sayılır — TEK gerçek kopya (günlük nottaki satır), iki görünüm.
-  const isProjectTask = (t: TimelineItem, cleanProjectName: string) => {
+  // Alt görev satırlarına proje etiketi yazılmaz (girintiyle ebeveyne bağlıdır); bu yüzden
+  // üst görev bir projedeyse alt görev de o projededir. Zincir yürümek için id → görev haritası
+  // bir kez kurulur (büyük listelerde her çağrıda aranmasın).
+  const timelineById = useMemo(() => {
+    const m = new Map<string, TimelineItem>();
+    timelineItems.forEach(t => m.set(t.id, t));
+    return m;
+  }, [timelineItems]);
+
+  const ownsProjectTag = (t: TimelineItem, cleanProjectName: string) => {
     const slug = cleanProjectName.toLocaleLowerCase('tr').replace(/\s+/g, '-');
     // BUG DÜZELTMESİ: `tags` (not-geneli birleştirilmiş) yerine `ownTags` (SADECE bu
     // görevin kendi satırı) kullanılır — aksi halde aynı günlük nottaki BAŞKA bir görevin
     // proje etiketi, alakasız görevleri de o projeye sayarmış gibi gösterirdi.
-    return (t.note && t.note.toLowerCase() === cleanProjectName.toLowerCase()) || (t.ownTags || t.tags).includes(slug);
+    return !!((t.note && t.note.toLowerCase() === cleanProjectName.toLowerCase()) || (t.ownTags || t.tags).includes(slug));
+  };
+
+  // Tek süzgeç: hem Kanban listesi hem proje yüzdesi bunu kullanır (çift sayım/tutarsızlık olmasın).
+  const isProjectTask = (t: TimelineItem, cleanProjectName: string) => {
+    let cur: TimelineItem | undefined = t;
+    // Sınır: bozuk/döngüsel parentId zinciri sonsuz döngüye girmesin.
+    for (let i = 0; cur && i < 10; i++) {
+      if (ownsProjectTag(cur, cleanProjectName)) return true;
+      if (!cur.isSubtask || !cur.parentId) return false;
+      cur = timelineById.get(cur.parentId);
+    }
+    return false;
   };
 
   const getProjectProgress = (noteName: string) => {
