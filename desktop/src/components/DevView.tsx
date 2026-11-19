@@ -23,6 +23,8 @@ const btn: React.CSSProperties = {
 };
 const btnPrimary: React.CSSProperties = { ...btn, background: 'var(--accent-color)', border: '1px solid var(--accent-color)', color: '#fff' };
 const pre: React.CSSProperties = { margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px', lineHeight: 1.55, fontFamily: 'inherit', color: 'var(--text-secondary)' };
+// Halka bölümün içeriğine yapışmasın diye iç boşluk verilir; negatif kenar boşluğu düzeni yerinde tutar.
+const secWrap: React.CSSProperties = { padding: '0 10px 10px', margin: '0 -10px', borderRadius: '10px' };
 const label: React.CSSProperties = { fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--text-muted)', margin: '14px 0 6px' };
 
 // Yayın derlemesi bitince yeni sürümü kendiliğinden indirip yükleme durumu
@@ -360,6 +362,18 @@ export default function DevView({ fileContents, onSaveNote }: {
   const history = store.requests.filter(r => ['yayinda', 'reddedildi'].includes(r.stage));
   const folderBad = !!dir && !!folderInfo && !folderInfo.ok;
   const runningHere = (id: string) => busy?.id === id;
+  // Aynı anda tek bölüm parlasın diye, seçili isteğin o anki aşamasına ait bölümü seçer.
+  const activeSection = (r: typeof selected): string => {
+    if (!r) return '';
+    if (runningHere(r.id)) return 'busy';
+    if (r.stage === 'plan') return 'plan';
+    if (r.stage === 'inceleme') return r.check && !r.check.ok ? 'check' : r.files && r.files.length > 0 ? 'files' : r.check ? 'check' : '';
+    if (r.stage === 'birlesti' || r.stage === 'yayinda') return r.summary ? 'summary' : '';
+    if (r.stage === 'istek' || r.stage === 'hata') return r.error ? 'error' : '';
+    return '';
+  };
+  // Halka rengi aşamanın rengidir; CSS değişkeni olduğu için tür dönüşümü gerekir.
+  const glow = (key: string): { className?: string; style?: React.CSSProperties } => (selected && activeSection(selected) === key) ? { className: 'dev-glow', style: { '--dev-glow': STAGE_COLOR[selected.stage] } as React.CSSProperties } : {};
   // Makinede istasyona tıklama yalnızca seçimi değiştirir (işlem tetiklemez): o aşamadaki en yeni isteği seçer
   const pickStation = (i: number) => { const st: DevStage[][] = [['istek', 'hata'], ['plan'], ['yapiliyor'], ['kontrol'], ['inceleme'], ['birlesti'], ['yayinda']]; const r = store.requests.find(x => st[i].includes(x.stage)); if (r) { setSelectedId(r.id); setDiffView(null); setConfirm(''); setMsg(''); setConflict(null); } };
   const card = (r: DevRequest) => (
@@ -486,7 +500,7 @@ export default function DevView({ fileContents, onSaveNote }: {
 
                 {/* çalışıyor */}
                 {runningHere(selected.id) && (
-                  <div style={{ marginTop: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}>
+                  <div className={glow('busy').className} style={{ marginTop: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px', ...glow('busy').style }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px', fontWeight: 600 }}>
                       <RefreshCw size={14} className="animate-spin" /> {busy?.kind === 'plan' ? 'Plan çıkarılıyor' : busy?.kind === 'apply' ? 'Claude çalışıyor' : busy?.kind === 'check' ? 'Kontrol ediliyor' : busy?.kind === 'merge' ? 'Birleştiriliyor' : 'Çalışıyor'} · {fmtDuration(elapsed)}
                       {(busy?.kind === 'plan' || busy?.kind === 'apply') && <button type="button" style={{ ...btn, marginLeft: 'auto', padding: '4px 9px' }} onClick={stop}><Square size={12} /> Durdur</button>}
@@ -498,10 +512,10 @@ export default function DevView({ fileContents, onSaveNote }: {
                 )}
 
                 {selected.error && !runningHere(selected.id) && (
-                  <div style={{ marginTop: '10px', fontSize: '12.5px', color: '#ef4444', display: 'flex', gap: '6px' }}><AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '2px' }} /><span style={{ overflowWrap: 'anywhere' }}>{selected.error}</span></div>
+                  <div className={glow('error').className} style={{ marginTop: '10px', fontSize: '12.5px', color: '#ef4444', display: 'flex', gap: '6px', borderRadius: '8px', padding: '6px 8px', ...glow('error').style }}><AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '2px' }} /><span style={{ overflowWrap: 'anywhere' }}>{selected.error}</span></div>
                 )}
 
-                {selected.plan && (<><div style={label}>Plan</div><div style={{ maxHeight: '260px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={pre}>{selected.plan}</pre></div></>)}
+                {selected.plan && (<div className={glow('plan').className} style={{ ...secWrap, ...glow('plan').style }}><div style={label}>Plan</div><div style={{ maxHeight: '260px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={pre}>{selected.plan}</pre></div></div>)}
                 {selected.plan && selected.stage === 'plan' && !isBusy && (
                   <>
                     <div style={label}>Sorulara cevaplarınız / ek notunuz</div>
@@ -569,16 +583,16 @@ export default function DevView({ fileContents, onSaveNote }: {
 
                 {/* kontrol sonucu */}
                 {selected.check && (
-                  <>
+                  <div className={glow('check').className} style={{ ...secWrap, ...glow('check').style }}>
                     <div style={label}>Kontrol (tür denetimi)</div>
                     {selected.check.ok
                       ? <div style={{ fontSize: '12.5px', color: '#22c55e', display: 'flex', alignItems: 'center', gap: '6px' }}><CheckCircle2 size={14} /> Geçti</div>
                       : <div style={{ maxHeight: '200px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={{ ...pre, color: '#ef4444' }}>{selected.check.output}</pre></div>}
-                  </>
+                  </div>
                 )}
 
                 {selected.files && selected.files.length > 0 && selected.stage === 'inceleme' && (
-                  <>
+                  <div className={glow('files').className} style={{ ...secWrap, ...glow('files').style }}>
                     <div style={label}>Değişen dosyalar {selected.stat ? `· ${selected.stat}` : ''}</div>
                     <div style={{ fontSize: '12px' }}>
                       {selected.files.map(f => (
@@ -587,7 +601,7 @@ export default function DevView({ fileContents, onSaveNote }: {
                         </div>
                       ))}
                     </div>
-                  </>
+                  </div>
                 )}
 
                 {previewLoading && <div style={{ marginTop: '12px', fontSize: '12.5px', display: 'flex', alignItems: 'center', gap: '8px' }}><RefreshCw size={14} className="animate-spin" /> Önizleme sunucusu başlatılıyor…</div>}
@@ -632,7 +646,7 @@ export default function DevView({ fileContents, onSaveNote }: {
                   </>
                 )}
 
-                {selected.summary && (<><div style={label}>Claude'un özeti</div><div style={{ maxHeight: '240px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={pre}>{selected.summary}</pre></div></>)}
+                {selected.summary && (<div className={glow('summary').className} style={{ ...secWrap, ...glow('summary').style }}><div style={label}>Claude'un özeti</div><div style={{ maxHeight: '240px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '10px 12px' }}><pre style={pre}>{selected.summary}</pre></div></div>)}
 
                 {selected.log.length > 0 && (
                   <>

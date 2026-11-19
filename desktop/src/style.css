@@ -9261,6 +9261,22 @@ input:focus, textarea:focus, select:focus {
 }
 @keyframes kb-spin { to { --kb-a: 360deg; } }
 
+/* Geliştir ekranı: seçili isteğin güncel aşamasına ait bölümün çevresinde dönen halka (renk aşamadan gelir) */
+.dev-glow { position: relative; }
+.dev-glow::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--kb-a), transparent 0 62%, var(--dev-glow, #22d3ee) 82%, var(--dev-glow, #22d3ee) 96%, transparent);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: kb-spin 2.6s linear infinite;
+  pointer-events: none;
+}
+
 /* Test: radar / tarama çizgisi (kart boyundan bağımsız, tüm yüksekliği süpürür) */
 .kanban-card.kb-test {
   background-image:
@@ -9348,5 +9364,5 @@ input:focus, textarea:focus, select:focus {
 
 @media (prefers-reduced-motion: reduce) {
   .kanban-card.kb-anim, .kanban-card.kb-anim::before, .kanban-card.kb-anim::after,
-  .kb-eye, .kb-lock, .kb-live-dot, .ai-working::after, .ai-working .ai-dot, .kanban-card .kb-check { animation: none !important; }
+  .dev-glow::before, .kb-eye, .kb-lock, .kb-live-dot, .ai-working::after, .ai-working .ai-dot, .kanban-card .kb-check { animation: none !important; }
 }
