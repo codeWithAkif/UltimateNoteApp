@@ -7,7 +7,9 @@ import {
   appendReleaseLog, DEV_LOG_PATH, STAGE_LABEL, STAGE_COLOR, emptyStore, type DevStore, type DevRequest, type DevStage, type DevRelease
 } from '../services/devWork';
 
-const FOLDER_KEY = 'uygulama-gelistirme';
+import DevMachine from './DevMachine';
+
+const FOLDER_KEY ='uygulama-gelistirme';
 const PROJECT_LABEL = 'Ultimate NoteFactory';
 
 const panel: React.CSSProperties = { background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 14px' };
@@ -247,6 +249,8 @@ export default function DevView({ fileContents, onSaveNote }: {
   const history = store.requests.filter(r => ['yayinda', 'reddedildi'].includes(r.stage));
   const folderBad = !!dir && !!folderInfo && !folderInfo.ok;
   const runningHere = (id: string) => busy?.id === id;
+  // Makinede istasyona tıklama yalnızca seçimi değiştirir (işlem tetiklemez): o aşamadaki en yeni isteği seçer
+  const pickStation = (i: number) => { const st: DevStage[][] = [['istek', 'hata'], ['plan'], ['yapiliyor'], ['kontrol'], ['inceleme'], ['birlesti'], ['yayinda']]; const r = store.requests.find(x => st[i].includes(x.stage)); if (r) { setSelectedId(r.id); setDiffView(null); setConfirm(''); setMsg(''); setConflict(null); } };
   const card = (r: DevRequest) => (
     <div key={r.id} onClick={() => { setSelectedId(r.id); setDiffView(null); setConfirm(''); setMsg(''); setConflict(null); }}
       style={{ padding: '9px 11px', borderRadius: '8px', cursor: 'pointer', marginBottom: '6px', background: selectedId === r.id ? 'var(--bg-hover)' : 'var(--bg-tertiary)', border: `1px solid ${selectedId === r.id ? 'var(--accent-color)' : 'var(--border-color)'}` }}>
@@ -264,6 +268,8 @@ export default function DevView({ fileContents, onSaveNote }: {
       <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
         <h1 style={{ margin: 0, fontSize: '22px', display: 'flex', alignItems: 'center', gap: '10px' }}><Hammer size={22} /> Geliştir</h1>
         <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginTop: '4px' }}>Uygulamayı Claude Code ile geliştirin: isteği yazın, plan ve uygulamayı izleyin, farkı onaylayın, birleştirin, yayınlayın. Claude hiçbir zaman gönderme/birleştirme/yayın yapmaz; bunları yalnızca bu ekrandaki düğmeler yapar.</div>
+
+        <DevMachine stage={selected?.stage ?? null} busyKind={selected && busy?.id === selected.id ? busy.kind : null} elapsed={elapsed} readyCount={readyCount} ci={store.releases[0]?.ci} hasRequest={!!selected} onPick={pickStation} />
 
         {/* Depo ve durum */}
         <div style={{ ...panel, marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '10px 16px', alignItems: 'center' }}>
