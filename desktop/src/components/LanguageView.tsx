@@ -329,11 +329,15 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
     const saved = state.words.find(w => w.word.toLowerCase() === key);
     const g = reading.glossary.find(x => x.word.toLowerCase() === key);
     const cacheKey = `${seg.key}:${key}`;
+    // Metinle birlikte gelen cümle bazlı kelime anlamı: ağ isteği gerekmez. Eski içeriklerde yoktur, o zaman eski yola düşer.
+    const norm = (s: string) => s.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{M}]/gu, '');
+    const sw = reading.sentences[seg.key]?.words?.find(x => norm(x.w) === norm(token.text) || (!!x.native && norm(x.native) === norm(token.text)));
     const cachedExp = reading.explained?.[cacheKey];
     const known = saved
       ? { meaning: saved.meaning, note: `Kayıtlı kelime · ${saved.seen} kez karşılaştın`, native: saved.native }
-      : g ? { meaning: g.meaning, note: '', native: g.native } : cachedExp ?? null;
-    setTransOpen(false);
+      : g ? { meaning: g.meaning, note: '', native: g.native } : sw ? { meaning: sw.meaning, note: '', native: sw.native } : cachedExp ?? null;
+    // Anlam beklenirken cümle çevirisi hemen görünsün; bekleme boşa geçmesin.
+    setTransOpen(!known);
     setPicked({ word: token.text, segKey: seg.key, exp: known, loading: !known });
     if (!known) {
       explainWord(state.language, token.text, seg.text, seg.native)
@@ -779,7 +783,7 @@ export default function LanguageView({ fileContents, onSaveNote, theme = 'dark',
         </div>
         {picked.exp?.native && picked.exp.native !== picked.word && <div style={{ fontFamily: P.read, fontSize: 34, fontWeight: 700, color: P.accent, lineHeight: 1 }}>{picked.exp.native}</div>}
       </div>
-      {picked.loading && <div style={{ color: P.muted }}>Bakılıyor...</div>}
+      {picked.loading && <div style={{ color: P.muted }}>Yapay zekâ anlamı arıyor (birkaç saniye sürebilir)...</div>}
       {picked.exp && <>
         <div style={{ fontSize: 18, fontWeight: 700 }}>{picked.exp.meaning}</div>
         {picked.exp.note && <div style={{ color: P.muted }}>{picked.exp.note}</div>}

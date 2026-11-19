@@ -23,7 +23,9 @@ export interface LabLogEntry { date: string; minutes: number; words: number }
 
 // speaker/tone/gender: sesli okuma içindir. speaker konuşan kişi (anlatıcı ise boş ya da 'Anlatıcı'), tone cümlenin söyleniş duygusu (İngilizce kısa ifade),
 // gender konuşanın cinsiyeti ('f' | 'm'). Eski içeriklerde yoktur; ilk "Tümünü dinle"de bir kez çıkarılıp kaydedilir (bkz. annotateReading).
-export interface LabSentence { text: string; latin?: string; translation: string; newLine?: boolean; speaker?: string; tone?: string; gender?: 'f' | 'm' }
+export interface LabWordMeaning { w: string; meaning: string; native?: string }
+// words: cümledeki kelimelerin anlamları; metinle birlikte üretilir, tıklamada yapay zekâya sormadan anında göstermek içindir. w, latin varsa Latin yazılıştır. Eski içeriklerde yoktur.
+export interface LabSentence { text: string; latin?: string; translation: string; newLine?: boolean; speaker?: string; tone?: string; gender?: 'f' | 'm'; words?: LabWordMeaning[] }
 
 export const sentenceDisplay = (s: LabSentence): string => s.latin?.trim() || s.text;
 
@@ -226,7 +228,7 @@ const READING_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { text: { type: 'string' }, latin: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' }, speaker: { type: 'string' }, tone: { type: 'string' }, gender: { type: 'string' } },
+        properties: { text: { type: 'string' }, latin: { type: 'string' }, translation: { type: 'string' }, newLine: { type: 'boolean' }, speaker: { type: 'string' }, tone: { type: 'string' }, gender: { type: 'string' }, words: { type: 'array', items: { type: 'object', properties: { w: { type: 'string' }, meaning: { type: 'string' }, native: { type: 'string' } }, required: ['w', 'meaning'] } } },
         required: ['text', 'translation']
       }
     },
@@ -254,6 +256,15 @@ const cleanVoiceFields = (x: { speaker?: string; tone?: string; gender?: string 
   return out;
 };
 
+// Kelime anlamlarını doğrular; boşsa alan hiç yazılmaz (kayıt dosyası şişmesin, eski biçim bozulmasın).
+const cleanWords = (ws: unknown): Partial<LabSentence> => {
+  if (!Array.isArray(ws)) return {};
+  const words = ws
+    .filter((x: any) => x && typeof x.w === 'string' && x.w.trim() && typeof x.meaning === 'string' && x.meaning.trim())
+    .map((x: any) => ({ w: unescapeAIText(x.w).trim(), meaning: unescapeAIText(x.meaning).trim(), native: typeof x.native === 'string' && x.native.trim() ? x.native.trim() : undefined }));
+  return words.length ? { words } : {};
+};
+
 const clean = (r: LabReading): LabReading => ({
   title: unescapeAIText(r.title),
   sentences: (Array.isArray(r.sentences) ? r.sentences : [])
@@ -263,14 +274,15 @@ const clean = (r: LabReading): LabReading => ({
       latin: x.latin && x.latin.trim() ? unescapeAIText(x.latin) : undefined,
       translation: unescapeAIText(x.translation || ''),
       newLine: !!x.newLine,
-      ...cleanVoiceFields(x)
+      ...cleanVoiceFields(x),
+      ...cleanWords(x.words)
     })),
   glossary: Array.isArray(r.glossary)
     ? r.glossary.map(g => ({ word: g.word, meaning: g.meaning, native: g.native && g.native.trim() ? g.native : undefined }))
     : []
 });
 
-const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun. Hedef dil Latin alfabesi kullanmıyorsa (ör. Japonca, Korece, Çince, Arapça, Rusça, Hintçe): sentences öğesinde text alanına cümleyi dilin KENDİ yazısıyla, latin alanına aynı cümlenin Latin harfli okunuşunu (Japoncada romaji, Korecede romanizasyon, Çincede pinyin) kelimeler boşlukla ayrılmış şekilde yaz; glossary öğesinde word alanına kelimeyi latin alanındaki Latin yazılışıyla, native alanına aynı kelimeyi dilin kendi yazısıyla koy. Dil Latin alfabesi kullanıyorsa latin ve native alanlarını boş bırak. Sesli okuma için her öğede ayrıca speaker (o cümleyi söyleyen kişinin adı; anlatıcı ise 'Anlatıcı'), tone (cümlenin söyleniş duygusu: İngilizce 2-5 sözcük, örn. 'cheerful and friendly', 'surprised', 'worried, speaking quietly', 'angry', 'sad', 'calm storytelling'; yalnızca ses tonunu anlat, yaş/cinsiyet/aksan yazma) ve gender (konuşan kişi kadınsa 'f', erkekse 'm'; anlatıcı için boş) alanlarını doldur.`;
+const RULES = `Kurallar: Gramer anlatma, kural listesi verme, çeviri alıştırması yapma. Metin tamamen hedef dilde, doğal ve akıcı olsun. Kullanıcının seviyesinin HAFİF ÜSTÜNDE (yaklaşık %90 anlaşılır, %10 yeni) yaz. Glossary alanına metindeki seviyeye göre yeni/zor 8-12 kelimeyi, metinde GEÇTİĞİ HALİYLE (çekimli şekliyle) ve o cümledeki anlamıyla Türkçe olarak koy. Metni cümle cümle sentences alanına böl (diyalogda her konuşma satırı ayrı öğe olsun, konuşmacı adı satırın başında yer alsın); her öğenin translation alanına o cümlenin doğal Türkçe çevirisini yaz. Bir paragraf ya da konuşma satırı bittiğinde newLine true olsun. Hedef dil Latin alfabesi kullanmıyorsa (ör. Japonca, Korece, Çince, Arapça, Rusça, Hintçe): sentences öğesinde text alanına cümleyi dilin KENDİ yazısıyla, latin alanına aynı cümlenin Latin harfli okunuşunu (Japoncada romaji, Korecede romanizasyon, Çincede pinyin) kelimeler boşlukla ayrılmış şekilde yaz; glossary öğesinde word alanına kelimeyi latin alanındaki Latin yazılışıyla, native alanına aynı kelimeyi dilin kendi yazısıyla koy. Dil Latin alfabesi kullanıyorsa latin ve native alanlarını boş bırak. Sesli okuma için her öğede ayrıca speaker (o cümleyi söyleyen kişinin adı; anlatıcı ise 'Anlatıcı'), tone (cümlenin söyleniş duygusu: İngilizce 2-5 sözcük, örn. 'cheerful and friendly', 'surprised', 'worried, speaking quietly', 'angry', 'sad', 'calm storytelling'; yalnızca ses tonunu anlat, yaş/cinsiyet/aksan yazma) ve gender (konuşan kişi kadınsa 'f', erkekse 'm'; anlatıcı için boş) alanlarını doldur. Ayrıca her öğede words alanına o cümledeki her kelimenin (özel adlar ve noktalama hariç) o cümledeki kısa Türkçe karşılığını koy: w kelimenin cümlede GEÇTİĞİ HALİYLE yazılışı (latin alanı varsa onun içindeki Latin yazılış, yoksa text içindeki yazılış; her kelime bir kez), meaning en fazla 4 sözcüklük Türkçe karşılık, native yalnızca Latin olmayan dillerde kelimenin dilin kendi yazısıyla yazılışı.`;
 
 export const generateReading = async (
   language: string,
@@ -331,14 +343,15 @@ export interface WordExplanation { meaning: string; note: string; native?: strin
 const WORD_SCHEMA = {
   type: 'object',
   properties: { meaning: { type: 'string' }, note: { type: 'string' }, native: { type: 'string' } },
-  required: ['meaning', 'note']
+  required: ['meaning']
 };
 
 export const explainWord = async (language: string, word: string, sentence: string, nativeSentence = ''): Promise<WordExplanation> => {
   const original = nativeSentence && nativeSentence !== sentence ? ` (dilin kendi yazısıyla: "${nativeSentence}")` : '';
   const prompt = `${language} dilinde "${word}" kelimesinin bu cümledeki anlamını Türkçe ver: "${sentence}"${original}
-meaning: kısa Türkçe karşılık. native: kelimenin dilin KENDİ yazısıyla yazılışı (dil Latin alfabesi kullanıyorsa boş bırak). note: en fazla bir cümle, bağlamı veya kullanımı anlatan Türkçe not (gramer terimi kullanma). Sadece JSON döndür.`;
-  return callAIJson<WordExplanation>(prompt, WORD_SCHEMA);
+meaning: kısa Türkçe karşılık. native: kelimenin dilin KENDİ yazısıyla yazılışı (dil Latin alfabesi kullanıyorsa boş bırak). note: yalnızca gerçekten gerekliyse (deyim, çok anlamlı kelime) en fazla 8 sözcüklük Türkçe not, değilse boş bırak. Sadece JSON döndür.`;
+  const r = await callAIJson<WordExplanation>(prompt, WORD_SCHEMA);
+  return { ...r, note: r.note || '' };
 };
 
 export interface PlacementPassage { level: LabLevel; text: string; latin?: string }
