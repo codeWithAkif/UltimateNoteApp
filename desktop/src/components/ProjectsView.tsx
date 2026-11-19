@@ -1386,6 +1386,7 @@ export default function ProjectsView({ navRequest, onNavHandled, timelineItems, 
                 dir={claudeTask.dir}
                 attachments={claudeTask.attachments}
                 onNeverAsk={() => setAskEnabled(claudeTask.project, false)}
+                onApplied={() => { if (kanbanColumns.some(c => c.key === 'test')) onChangeTaskStatus(claudeTask.task.id, 'test'); }}
                 onClose={() => setClaudeTask(null)}
               />
             )}

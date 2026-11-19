@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('electron', {
   taskSourceClearCredentials: () => ipcRenderer.invoke('task-source-clear-credentials'),
   taskSourceSync: (cfg) => ipcRenderer.invoke('task-source-sync', cfg),
   claudeAgentPlan: (req) => ipcRenderer.invoke('claude-agent-plan', req),
+  claudeAgentApply: (req) => ipcRenderer.invoke('claude-agent-apply', req),
+  claudeAgentDiscard: (req) => ipcRenderer.invoke('claude-agent-discard', req),
+  claudeAgentOpenFolder: (req) => ipcRenderer.invoke('claude-agent-open-folder', req),
   claudeAgentCancel: (runId) => ipcRenderer.invoke('claude-agent-cancel', runId),
   onClaudeAgentProgress: (callback) => {
     const subscription = (event, data) => callback(data);

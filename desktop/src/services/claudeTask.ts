@@ -1,5 +1,6 @@
 // "Claude başlasın mı?": görev kartı Devam Ediyor'a geçince (ya da karttaki ✨ düğmesiyle) Claude Code proje klasöründe görev için PLAN çıkarır.
-// Bu sürümde yalnızca okur (dosya değiştirmez, komut çalıştırmaz). Asıl iş electron/claudeAgent.cjs'te; burada ayarlar ve istem kurma var.
+// PLAN aşaması yalnızca okur; UYGULA aşaması görevi projenin ayrı bir git dalında/çalışma kopyasında yapar (push/birleştirme yok, farkı kullanıcı görür).
+// Asıl iş electron/claudeAgent.cjs'te; burada ayarlar ve istem kurma var.
 
 import { claudeCliStatus } from './claudeCli';
 
@@ -45,6 +46,49 @@ Planı Türkçe, kısa ve madde madde yaz; şu başlıkları kullan:
 5. Nasıl test edilir
 6. Emin olmadığın noktalar (kullanıcıya sorulacak sorular)
 Görev metni belirsizse bunu açıkça yaz; tahminle ilerleme, soru olarak listele.`;
+
+export const buildApplyPrompt = (o: { title: string; project: string; plan?: string }): string =>
+  `Sen bu klasördeki yazılım projesinde (${o.project}) çalışan deneyimli bir geliştiricisin. Aşağıdaki görevi UYGULA.
+Şu an projenin ayrı bir git dalındaki çalışma kopyasındasın; değişiklikler yalnızca burada kalır, kullanıcı sonra farkı görüp karar verecek.
+
+GÖREV: ${o.title}
+${o.plan ? `\nONAYLANAN PLAN (buna uy; ayrıldığın yerde nedenini son yanıtta yaz):\n${o.plan.slice(0, 20000)}\n` : ''}
+KURALLAR:
+- Yalnızca görevin gerektirdiği dosyaları değiştir; kapsam dışı iyileştirme ya da yeniden düzenleme yapma.
+- Bu klasörün dışındaki hiçbir şeye dokunma. git push, dal değiştirme/silme, commit, birleştirme, bağımlılık kurma (npm install vb.), ağ erişimi YAPMA (zaten kapalı); commit'i uygulama atar.
+- Görev bu klasörün dışında bir eylem gerektiriyorsa (ör. GitHub'da uzak dal silme, deploy, PR açma, mesaj gönderme) onu YAPMA; "Elle yapılacaklar" başlığı altında çalıştırılacak tam komutlarla listele.
+- Derleme/test komutu varsa çalıştır (npm run build, npx tsc --noEmit, testler). Bağımlılıklar yoksa ya da komut izinli değilse bunu açıkça yaz; çalışmış gibi davranma.
+- Görev belirsizse tahminle büyük değişiklik yapma; yapabildiğini yap, geri kalanı soru olarak yaz.
+
+SON YANITINI Türkçe, kısa ve şu başlıklarla yaz:
+1. Yapılanlar
+2. Değişen dosyalar (neden)
+3. Doğrulama (çalıştırdığın komutlar ve sonuçları)
+4. Yapılmayanlar / Elle yapılacaklar / Sorular`;
+
+export interface ApplyResult {
+  ok: boolean; text?: string; error?: string; cancelled?: boolean; ms?: number; cost?: number;
+  changed?: boolean; partial?: boolean; dirtyBase?: boolean; branch?: string; worktree?: string; base?: string; stat?: string; files?: { status: string; path: string }[];
+}
+
+export const applyTask = async (runId: string, req: PlanRequest & { plan?: string }, onProgress: (text: string) => void): Promise<ApplyResult> => {
+  const api = (window as any).electron;
+  if (!api?.claudeAgentApply) return { ok: false, error: 'Yalnızca masaüstü uygulamasında kullanılabilir.' };
+  const unsub = api.onClaudeAgentProgress?.((d: { runId?: string; text: string }) => { if (d.runId === runId) onProgress(d.text); });
+  try {
+    return await api.claudeAgentApply({ runId, dir: req.dir, title: req.title, prompt: buildApplyPrompt({ title: req.title, project: req.project, plan: req.plan }), attachments: req.attachments, model: req.model });
+  } finally { try { unsub?.(); } catch { /* yoksay */ } }
+};
+
+export const discardWork = async (dir: string, worktree: string, branch: string): Promise<{ ok: boolean; error?: string }> => {
+  try { return (await (window as any).electron?.claudeAgentDiscard?.({ dir, worktree, branch })) || { ok: false, error: 'Kullanılamıyor.' }; }
+  catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+};
+
+export const openWorkFolder = async (dir: string, worktree: string): Promise<{ ok: boolean; error?: string }> => {
+  try { return (await (window as any).electron?.claudeAgentOpenFolder?.({ dir, worktree })) || { ok: false, error: 'Kullanılamıyor.' }; }
+  catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+};
 
 export interface PlanRequest { dir: string; title: string; project: string; attachments: string[]; model: string }
 export interface PlanResult { ok: boolean; text?: string; error?: string; cancelled?: boolean; ms?: number; cost?: number }

@@ -615,6 +615,17 @@ ipcMain.handle('claude-agent-plan', async (event, req) => claudeAgent.plan(
   { ...(req || {}), vaultDir: DEFAULT_NOTES_DIR },
   (text) => { try { event.sender.send('claude-agent-progress', { runId: req && req.runId, text }); } catch { /* pencere kapanmış olabilir */ } }
 ));
+ipcMain.handle('claude-agent-apply', async (event, req) => claudeAgent.apply(
+  { ...(req || {}), vaultDir: DEFAULT_NOTES_DIR },
+  (text) => { try { event.sender.send('claude-agent-progress', { runId: req && req.runId, text }); } catch { /* pencere kapanmış olabilir */ } }
+));
+ipcMain.handle('claude-agent-discard', async (event, req) => claudeAgent.discard(req || {}));
+ipcMain.handle('claude-agent-open-folder', async (event, req) => {
+  const p = claudeAgent.ownedWorktree(req && req.dir, req && req.worktree);
+  if (!p) return { ok: false, error: 'Klasör bulunamadı ya da uygulamaya ait değil.' };
+  const err = await require('electron').shell.openPath(p);
+  return err ? { ok: false, error: err } : { ok: true };
+});
 ipcMain.handle('claude-agent-cancel', async (event, runId) => claudeAgent.cancel(runId));
 app.on('before-quit', () => { try { claudeAgent.cancelAll(); } catch { /* yoksay */ } });
 
