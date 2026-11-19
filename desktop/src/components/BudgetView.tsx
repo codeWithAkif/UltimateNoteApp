@@ -2,11 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PiggyBank, Send, Undo2, Trash2, Plus, ChevronLeft, ChevronRight, Sparkles, Check, X, UserCog, AlertTriangle, RefreshCw, FileText, Paperclip } from 'lucide-react';
 import {
   type Budget, type BudgetItem, type BudgetKind, type CheckedAction, KIND_LABEL, KIND_ORDER, monthPath, monthOf, shiftMonth, monthLabel, parseBudgetNote, serializeBudget,
-  rollover, emptyBudget, totals, cashflow, dailyAllowance, transition, checkActions, applyAction, applyActions, retarget, reindex, parseTL, fmtTL, round2
+  rollover, emptyBudget, mergeAnaliz, type SpendRow, recategorize, parseRules, serializeRules, applyRules, RULES_PATH, totals, cashflow, dailyAllowance, transition, checkActions, applyAction, applyActions, retarget, reindex, parseTL, fmtTL, round2
 } from '../services/budget';
 import { PERSONA_PATH, DEFAULT_PERSONA, askBudget, askAdvice, type Advice } from '../services/budgetAI';
 import { isGeminiConfigured } from '../services/geminiMentor';
-import { Waterfall, CashChart } from './BudgetCharts';
+import { Waterfall, CashChart, SpendBars } from './BudgetCharts';
 import { readStatementPdf, type StatementText } from '../services/statementPdf';
 
 // Nakit esaslı mantık: kalemler "o ay hesaptan çıkan/giren" paradır. Bu açıklama çift saymayı önler.
@@ -30,9 +30,12 @@ const KIND_COLOR: Record<BudgetKind, string> = { gelir: '#22c55e', sabit: '#ef44
 interface ActState { check: CheckedAction; target?: { kind: BudgetKind; name: string }; state: 'bekliyor' | 'eklendi' | 'atlandi' | 'hata'; note?: string }
 interface ChatEntry {
   id: string; role: 'user' | 'ai'; text: string; t: number; acts?: ActState[];
+  analiz?: { kart: string; rows: SpendRow[]; toplam?: number; saved?: boolean }; // ekstreden çıkan kategori dağılımı: kart onaylanınca (ya da düğmeyle) nota yazılır
   goTo?: string; // ekstre başka aya ait: kartlar o ayın sohbetine hazırlandı, bu düğme o aya geçirir
   senaryo?: { kalanOnce: number; kalanSonra: number; ayOnce: number | null; aySonra: number | null };
 }
+// Harcama satırlarını kategoriye göre toplar (sohbetteki özet için)
+const byCat = (rows: SpendRow[]): [string, number][] => { const m = new Map<string, number>(); rows.forEach(r => m.set(r.kategori, (m.get(r.kategori) || 0) + r.tutar)); return [...m.entries()].sort((a, z) => z[1] - a[1]); };
 const chatKey = (m: string) => `budget_chat_v1_${m}`;
 const loadChat = (m: string): ChatEntry[] => { try { const a = JSON.parse(localStorage.getItem(chatKey(m)) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
 const saveChat = (m: string, c: ChatEntry[]) => { try { localStorage.setItem(chatKey(m), JSON.stringify(c.slice(-40))); } catch { /* yoksay */ } };
@@ -214,6 +217,18 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
   const updateMsg = (id: string, fn: (m: ChatEntry) => ChatEntry) => setMsgs(ms => ms.map(m => (m.id === id ? fn(m) : m)));
   const setAct = (id: string, idx: number, p: Partial<ActState>) => updateMsg(id, m => ({ ...m, acts: (m.acts || []).map((a, i) => (i === idx ? { ...a, ...p } : a)) }));
 
+  // Harcama kategorisini elle değiştirme: aynı işletmenin hepsi değişir ve kural olarak hatırlanır (sonraki ekstrelerde otomatik uygulanır)
+  const rulesRef = useRef<Record<string, string>>({});
+  useEffect(() => { rulesRef.current = parseRules(fileContents[RULES_PATH]); }, [fileContents[RULES_PATH]]);
+  const [recatMsg, setRecatMsg] = useState('');
+  const recat = (idx: number, cat: string) => {
+    const r = recategorize(budgetRef.current, idx, cat, true);
+    if (!r.changed) return;
+    commit(r.budget);
+    if (r.key && onSaveNote) { rulesRef.current = { ...rulesRef.current, [r.key]: cat }; void onSaveNote(RULES_PATH, serializeRules(rulesRef.current)); }
+    setRecatMsg(r.changed > 1 ? `"${r.key}" işletmesinin ${r.changed} harcaması "${cat}" oldu; sonraki ekstrelerde de böyle girer. (Geri al ile geri dönebilirsiniz.)` : `Harcama "${cat}" kategorisine alındı${r.key ? '; bu işletme sonraki ekstrelerde de böyle girer' : ''}.`);
+  };
+
   // Başka bir ayın bütçesi: kayıtlıysa o, yoksa önceki aydan devir (önceki ay bu ekrandaysa kaydedilmemiş son hâli kullanılır)
   const budgetFor = (m: string, curB: Budget): Budget => {
     const parsed = parseBudgetNote(fileContents[monthPath(m)], m);
@@ -237,12 +252,15 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
       const cur = budgetRef.current;
       const res = await askBudget({ persona, budget: cur, history: msgsRef.current.filter(m => m.id !== um.id).map(m => ({ role: m.role, text: m.text })), message: text, statement: att ? { name: att.name, text: att.text } : undefined });
       // Ekstre seçili aydan başka bir ayın ödemesiyse: kartları o ayın bütçesine göre hazırla, o ayın sohbetine koy, buradan düğmeyle geçilsin
+      const kartAd = res.eylemler.map(a => (a.kind === 'kart' && a.ad ? a.ad : a.id ? cur.items.find(i => i.id === a.id && i.kind === 'kart')?.name : undefined)).find(Boolean);
+      const kartTutar = res.eylemler.find(a => a.kind === 'kart' && typeof a.tutar === 'number')?.tutar ?? (res.eylemler.length === 1 ? res.eylemler[0].tutar : undefined);
+      const analiz = att && res.harcamalar.length ? { kart: kartAd || att.name.replace(/\.pdf$/i, ''), rows: applyRules(res.harcamalar, rulesRef.current), toplam: kartTutar } : undefined;
       const target = att ? res.ekstreAy : undefined;
       if (target && target !== cur.month && res.eylemler.length) {
         const bt = budgetFor(target, cur);
         const ch = checkActions(bt, res.eylemler);
         const tActs: ActState[] = ch.map(c => ({ check: c, state: c.ok ? 'bekliyor' : 'hata', note: c.problem }));
-        saveChat(target, [...loadChat(target), um, { id: newId(), role: 'ai', text: res.cevap, t: Date.now(), acts: tActs }]);
+        saveChat(target, [...loadChat(target), um, { id: newId(), role: 'ai', text: res.cevap, t: Date.now(), acts: tActs, analiz }]);
         setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: `${res.cevap}\n\nBu ekstre ${monthLabel(target)} ödemesi; kartı o ayın bütçesi için hazırladım.`, t: Date.now(), goTo: target }]);
         return;
       }
@@ -257,7 +275,7 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
         const b2 = applyActions(cur, okActs);
         senaryo = { kalanOnce: totals(cur).kalan, kalanSonra: totals(b2).kalan, ayOnce: transition(cur).bitis, aySonra: transition(b2).bitis };
       }
-      setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: res.cevap, t: Date.now(), acts: acts.length ? acts : undefined, senaryo }]);
+      setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: res.cevap, t: Date.now(), acts: acts.length ? acts : undefined, senaryo, analiz }]);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally { setThinking(false); }
@@ -269,6 +287,7 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
     if (!m || !m.acts) return;
     let cur = budgetRef.current;
     const results: Record<number, Partial<ActState>> = {};
+    let kartAdi: string | undefined;
     for (const i of idxs) {
       const a = m.acts[i];
       if (!a || a.state !== 'bekliyor') continue;
@@ -277,10 +296,22 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
       const re = checkActions(cur, [act])[0];
       if (!re || !re.ok) { results[i] = { state: 'hata', note: re?.problem || 'Uygulanamadı' }; continue; }
       cur = applyAction(cur, re.action);
+      if ((a.target?.kind ?? re.action.kind) === 'kart') kartAdi = a.target?.name || re.action.ad || kartAdi;
       results[i] = { state: 'eklendi' };
     }
+    // Kart onaylandıysa ekstreden çıkan harcama dağılımı da aynı anda kaydedilir (aynı kartın eskisi değişir)
+    const savedAnaliz = !!(m.analiz && kartAdi);
+    if (m.analiz && kartAdi) cur = mergeAnaliz(cur, kartAdi, m.analiz.rows);
     if (cur !== budgetRef.current) commit(cur);
-    updateMsg(msgId, mm => ({ ...mm, acts: (mm.acts || []).map((a, i) => (results[i] ? { ...a, ...results[i] } : a)) }));
+    updateMsg(msgId, mm => ({ ...mm, analiz: mm.analiz && savedAnaliz ? { ...mm.analiz, saved: true } : mm.analiz, acts: (mm.acts || []).map((a, i) => (results[i] ? { ...a, ...results[i] } : a)) }));
+  };
+
+  // Kart kalemi zaten doğruysa dağılımı tek başına kaydet
+  const saveAnaliz = (msgId: string) => {
+    const m = msgsRef.current.find(x => x.id === msgId);
+    if (!m?.analiz || m.analiz.saved) return;
+    commit(mergeAnaliz(budgetRef.current, m.analiz.kart, m.analiz.rows));
+    updateMsg(msgId, mm => ({ ...mm, analiz: mm.analiz ? { ...mm.analiz, saved: true } : mm.analiz }));
   };
 
   const getAdvice = async () => {
@@ -372,6 +403,17 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                 {msgs.map(m => (
                   <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'stretch', maxWidth: m.role === 'user' ? '90%' : '100%' }}>
                     <div style={{ background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: m.role === 'user' ? '#fff' : 'var(--text-primary)', borderRadius: '10px', padding: '8px 11px', fontSize: '12.5px', lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.text}</div>
+                    {m.analiz && (
+                      <div style={{ marginTop: '6px', fontSize: '12px', background: 'rgba(249,115,22,0.10)', border: '1px solid rgba(249,115,22,0.35)', borderRadius: '8px', padding: '7px 10px', lineHeight: 1.6 }}>
+                        <b>Harcama dağılımı ({m.analiz.kart}):</b>{' '}
+                        {byCat(m.analiz.rows).slice(0, 7).map(([k, v]) => `${k} ${fmtTL(v)}`).join(' · ')}{byCat(m.analiz.rows).length > 7 ? ' …' : ''}
+                        <div style={{ color: 'var(--text-muted)', fontSize: '11.5px' }}>{m.analiz.rows.length} harcama{(() => { const s = m.analiz.rows.reduce((x, r) => x + r.tutar, 0); return m.analiz.toplam && Math.abs(s - m.analiz.toplam) > Math.max(5, m.analiz.toplam * 0.01) ? ` · toplamı ${fmtTL(s)} (ekstre borcu ${fmtTL(m.analiz.toplam)}; fark önceki dönemden devreden olabilir)` : ` · toplamı ${fmtTL(s)}`; })()}</div>
+                        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '11.5px' }}>
+                          {m.analiz.saved ? <span style={{ color: '#22c55e', fontWeight: 700 }}>✓ kaydedildi</span>
+                            : <><span>Kart kalemini onaylayınca birlikte kaydedilir.</span><button type="button" style={{ ...btn, padding: '3px 8px', fontSize: '11.5px' }} onClick={() => saveAnaliz(m.id)}>Yalnızca dağılımı kaydet</button></>}
+                        </div>
+                      </div>
+                    )}
                     {m.goTo && (
                       <button type="button" style={{ ...btnPrimary, marginTop: '6px' }} onClick={() => setMonth(m.goTo!)}>
                         <ChevronRight size={14} /> {monthLabel(m.goTo)} bütçesine git ve kartı onayla
@@ -441,7 +483,7 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                 <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', flex: 1 }}>Öneriler</div>
                 <button type="button" style={btnPrimary} disabled={advising || T.gelir <= 0} onClick={() => void getAdvice()} title={T.gelir <= 0 ? 'Önce gelir ekleyin' : ''}><Sparkles size={14} /> {advising ? 'Hazırlanıyor…' : 'Öneri al'}</button>
               </div>
-              {!advice && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>Kısılabilecek değişken harcamalar, kademeli kenara atma önerisi ve uyarılar. Sabit giderlere ve kartlara dokunulmaz.</div>}
+              {!advice && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>Ekstrelerdeki harcama dağılımına ve değişken kalemlere göre kısılabilecek yerler, kademeli kenara atma önerisi ve uyarılar. Sabit giderlere ve kartlara dokunulmaz.</div>}
               {advice && (
                 <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {advice.a.ozet && <div style={{ fontSize: '12.5px', lineHeight: 1.6 }}>{advice.a.ozet}</div>}
@@ -449,11 +491,12 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                     <div key={i} style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px 10px' }}>
                       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                         <div style={{ flex: 1, fontSize: '12.5px', fontWeight: 700 }}>{o.baslik} <span style={{ color: '#22c55e' }}>−{fmtTL(o.aylikTasarruf)}/ay</span></div>
-                        {advice.applied.includes(i) ? <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 700 }}>✓ uygulandı</span>
+                        {o.kaynak === 'ekstre' ? <span style={{ color: 'var(--text-muted)', fontSize: '11px' }} title="Karttaki harcama: sonraki ekstrede bu kadar az çıkması hedeflenir">hedef · sonraki ekstre</span>
+                          : advice.applied.includes(i) ? <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 700 }}>✓ uygulandı</span>
                           : <button type="button" style={{ ...btn, padding: '4px 8px' }} onClick={() => applyAdvice(i)} title={`"${o.kalem}" kaleminin tutarını düşürür`}>Limit olarak uygula</button>}
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '3px', lineHeight: 1.5 }}>{o.aciklama}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Kalem: {o.kalem}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{o.kaynak === 'ekstre' ? 'Ekstre kategorisi' : 'Kalem'}: {o.kalem}</div>
                     </div>
                   ))}
                   {advice.a.kenaraAtma.aylik > 0 && (
@@ -497,6 +540,13 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
               })}
             </div>
 
+            {budget.analiz && budget.analiz.length > 0 && (
+              <div style={{ ...panel, marginTop: '14px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', marginBottom: '8px' }}>Ekstre harcama dağılımı</div>
+                <SpendBars b={budget} onRecat={recat} />
+                {recatMsg && <div style={{ fontSize: '11.5px', color: '#22c55e', marginTop: '6px' }}>{recatMsg}</div>}
+              </div>
+            )}
             <div style={{ ...panel, marginTop: '14px' }}>
               <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)' }}>Gelirden kalana</div>
               <Waterfall b={budget} />

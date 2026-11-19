@@ -15,7 +15,107 @@ export interface BudgetItem {
   taksitAmount?: number;                     // yalnızca kart: ekstredeki taksitli (kaydırılamayan) kısım
 }
 
-export interface Budget { month: string; items: BudgetItem[]; reservePct: number }
+// Ekstrelerden çıkarılan kategori bazlı harcama dağılımı. BİLGİDİR: toplamlara girmez (ekstre tutarı zaten kart kaleminde; çift sayılmasın)
+export interface SpendRow { kart: string; kategori: string; tutar: number; ad?: string } // ad: işletme/harcama adı (tek tek harcama satırı)
+export interface Budget { month: string; items: BudgetItem[]; reservePct: number; analiz?: SpendRow[] }
+
+export const SPEND_CATS = ['Market', 'Yemek / Kafe', 'Ulaşım / Akaryakıt', 'Eğlence / Abonelik', 'Giyim', 'Online alışveriş', 'Fatura / Telekom', 'Sağlık', 'Çocuk / Eğitim', 'Ev / Yapı', 'Taksitler', 'Faiz / Ücret', 'Diğer'];
+// Kısılabilir kategoriler: isteğe bağlı harcamalar. Taksit, fatura, sağlık, çocuk/eğitim, ev, faiz kısılamaz.
+export const CUTTABLE_CATS = new Set(['Market', 'Yemek / Kafe', 'Ulaşım / Akaryakıt', 'Eğlence / Abonelik', 'Giyim', 'Online alışveriş', 'Diğer']);
+
+// Yapay zekânın yazdığı kategori adını listedeki kesin ada çevirir (bilinmeyen → Diğer)
+export const normalizeCat = (s: unknown): string => {
+  const raw = String(s ?? '').trim();
+  const lo = raw.toLocaleLowerCase('tr');
+  const exact = SPEND_CATS.find(c => c.toLocaleLowerCase('tr') === lo);
+  if (exact) return exact;
+  const has = (...k: string[]) => k.some(x => lo.includes(x));
+  if (has('taksit')) return 'Taksitler';
+  if (has('faiz', 'ücret', 'komisyon', 'aidat')) return 'Faiz / Ücret';
+  if (has('market', 'gıda', 'bakkal', 'manav', 'kasap')) return 'Market';
+  if (has('yemek', 'kafe', 'restoran', 'kahve', 'lokanta', 'fast')) return 'Yemek / Kafe';
+  if (has('ulaş', 'akaryak', 'yakıt', 'benzin', 'taksi', 'otopark', 'köprü', 'istanbulkart')) return 'Ulaşım / Akaryakıt';
+  if (has('eğlen', 'abone', 'dijital', 'oyun', 'sinema', 'müzik', 'streaming')) return 'Eğlence / Abonelik';
+  if (has('giyim', 'moda', 'ayakkab', 'tekstil')) return 'Giyim';
+  if (has('online', 'e-ticaret', 'internet alış', 'pazaryeri')) return 'Online alışveriş';
+  if (has('fatura', 'telekom', 'telefon', 'elektrik', 'doğalgaz', 'su ')) return 'Fatura / Telekom';
+  if (has('sağlık', 'eczane', 'hastane', 'doktor')) return 'Sağlık';
+  if (has('çocuk', 'eğitim', 'okul', 'oyuncak', 'kırtasiye')) return 'Çocuk / Eğitim';
+  if (/^ev\b|ev \/|yapı|mobilya|dekor|beyaz eşya/.test(lo)) return 'Ev / Yapı';
+  return 'Diğer';
+};
+
+// Bir kartın harcama satırlarını yazar; aynı kartın eski satırları değişir (aynı PDF'i yeniden işlemek yinelemez)
+export const mergeAnaliz = (b: Budget, kart: string, rows: SpendRow[]): Budget => {
+  const k = kart.trim().toLocaleLowerCase('tr');
+  const keep = (b.analiz || []).filter(r => r.kart.trim().toLocaleLowerCase('tr') !== k);
+  const fresh = rows.filter(r => Number.isFinite(r.tutar) && r.tutar > 0).map(r => ({ kart: kart.trim(), kategori: normalizeCat(r.kategori), tutar: round2(r.tutar), ad: r.ad }));
+  const next = [...keep, ...fresh];
+  return { ...b, analiz: next.length ? next : undefined };
+};
+
+// Tüm kartlar birleşik kategori toplamı (büyükten küçüğe); ornek = o kategorideki en büyük 3 işletme
+export const analizByCat = (b: Budget): { kategori: string; tutar: number; ornek: string; kisilabilir: boolean; adet: number }[] => {
+  const m = new Map<string, { tutar: number; adet: number; by: Map<string, number> }>();
+  for (const r of b.analiz || []) {
+    const c = m.get(r.kategori) || { tutar: 0, adet: 0, by: new Map<string, number>() };
+    c.tutar = round2(c.tutar + r.tutar);
+    c.adet += 1;
+    if (r.ad) c.by.set(r.ad, (c.by.get(r.ad) || 0) + r.tutar);
+    m.set(r.kategori, c);
+  }
+  return [...m.entries()].map(([kategori, v]) => ({
+    kategori, tutar: v.tutar, adet: v.adet, kisilabilir: CUTTABLE_CATS.has(kategori),
+    ornek: [...v.by.entries()].sort((x, y) => y[1] - x[1]).slice(0, 3).map(e => e[0]).join(', ').slice(0, 140)
+  })).sort((x, y) => y.tutar - x.tutar);
+};
+
+// ---------------- işletme → kategori kuralları ----------------
+// Elle verilen kategori hatırlanır (Finans/Bütçe/Kategori Kuralları.md): sonraki ekstrelerde aynı işletme otomatik o kategoriye girer
+export const RULES_PATH = 'Finans/Bütçe/Kategori Kuralları.md';
+// Anahtar Türkçe harflerden bağımsızdır (İ/I/ı → i, ç→c, ş→s...): PDF'teki "ANTHROPIC" ile yapay zekânın yazdığı "Anthropic" aynı işletme sayılsın
+export const ruleKey = (ad: string): string => String(ad || '').replace(/[İIı]/g, 'i').toLowerCase().replace(/ç/g, 'c').replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/[0-9*#_.\-\/\\()]+/g, ' ').replace(/\s+/g, ' ').trim();
+export const parseRules = (content: string | undefined): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const raw of String(content || '').split(/\r?\n/)) {
+    const line = raw.trim().replace(/^-\s*/, '');
+    if (!line || line.startsWith('#')) continue;
+    const i = line.lastIndexOf('=');
+    if (i < 1) continue;
+    const key = ruleKey(line.slice(0, i));
+    const cat = SPEND_CATS.find(c => c.toLocaleLowerCase('tr') === line.slice(i + 1).trim().toLocaleLowerCase('tr'));
+    if (key && cat) out[key] = cat;
+  }
+  return out;
+};
+export const serializeRules = (r: Record<string, string>): string =>
+  '# Harcama kategori kuralları\n\nHer satır: işletme adı = Kategori. Bütçe Planı\'nda bir harcamanın kategorisini elle değiştirince buraya yazılır; sonraki ekstrelerde aynı işletme otomatik bu kategoriye girer. Elle de düzenleyebilirsiniz.\n\n' +
+  Object.entries(r).sort((x, y) => x[0].localeCompare(y[0], 'tr')).map(([k, v]) => `- ${k} = ${v}`).join('\n') + '\n';
+export const applyRules = (rows: SpendRow[], rules: Record<string, string>): SpendRow[] => {
+  const entries = Object.entries(rules);
+  if (!entries.length) return rows;
+  return rows.map(r => {
+    const key = ruleKey(r.ad || '');
+    if (!key) return r;
+    const hit = rules[key] ?? entries.find(([rk]) => rk.length >= 4 && key.includes(rk))?.[1];
+    return hit ? { ...r, kategori: normalizeCat(hit) } : r;
+  });
+};
+// Bir harcamanın kategorisini değiştirir; aynı işletmenin diğer harcamaları da (all) birlikte gider. Kural anahtarını döndürür.
+export const recategorize = (b: Budget, idx: number, cat: string, all = true): { budget: Budget; changed: number; key: string } => {
+  const rows = b.analiz || [];
+  const target = rows[idx];
+  if (!target || !SPEND_CATS.includes(cat)) return { budget: b, changed: 0, key: '' };
+  const key = ruleKey(target.ad || '');
+  let changed = 0;
+  const next = rows.map((r, i) => {
+    const same = i === idx || (all && key && ruleKey(r.ad || '') === key);
+    if (!same || r.kategori === cat) return r;
+    changed++;
+    return { ...r, kategori: cat };
+  });
+  return { budget: changed ? { ...b, analiz: next } : b, changed, key };
+};
 
 export const KIND_LABEL: Record<BudgetKind, string> = { gelir: 'Gelir', sabit: 'Sabit gider', kart: 'Kart ekstresi', degisken: 'Değişken harcama' };
 export const KIND_ORDER: BudgetKind[] = ['gelir', 'sabit', 'kart', 'degisken'];
@@ -62,6 +162,7 @@ export const parseBudgetNote = (content: string | undefined, month: string): Bud
   if (!content || !content.trim()) return null;
   const b: Budget = { month, items: [], reservePct: 5 };
   let kind: BudgetKind | null = null;
+  let inAnaliz = false;
   const counters: Record<BudgetKind, number> = { gelir: 0, sabit: 0, kart: 0, degisken: 0 };
   for (const raw of content.split(/\r?\n/)) {
     const line = raw.trim();
@@ -70,7 +171,23 @@ export const parseBudgetNote = (content: string | undefined, month: string): Bud
     const h = line.match(/^##\s+(.*)$/);
     if (h) {
       const t = h[1].toLowerCase();
-      kind = t.startsWith('gelir') ? 'gelir' : t.startsWith('sabit') ? 'sabit' : t.startsWith('kart') ? 'kart' : t.startsWith('değişken') || t.startsWith('degisken') ? 'degisken' : null;
+      inAnaliz = t.startsWith('ekstre harcama');
+      kind = inAnaliz ? null : t.startsWith('gelir') ? 'gelir' : t.startsWith('sabit') ? 'sabit' : t.startsWith('kart') ? 'kart' : t.startsWith('değişken') || t.startsWith('degisken') ? 'degisken' : null;
+      continue;
+    }
+    if (inAnaliz) {
+      if (!line.startsWith('- ')) continue;
+      const ps = line.slice(2).split('|').map(s => s.trim());
+      const tutar = num(ps[1] ?? '');
+      if (!ps[0] || !Number.isFinite(tutar) || tutar <= 0) continue;
+      const row: SpendRow = { kart: '', kategori: normalizeCat(ps[0]), tutar };
+      for (const q of ps.slice(2)) {
+        const kv = q.match(/^([a-zçğıöşü]+):\s*(.+)$/i);
+        if (!kv) continue;
+        const kk = kv[1].toLowerCase();
+        if (kk === 'kart') row.kart = kv[2]; else if (kk === 'ad' || kk === 'örnek') row.ad = kv[2];
+      }
+      (b.analiz ||= []).push(row);
       continue;
     }
     if (!kind || !line.startsWith('- ')) continue;
@@ -103,6 +220,11 @@ export const serializeBudget = (b: Budget): string => {
       if (it.kind === 'kart' && it.taksitAmount) bits.push(`taksitli:${round2(it.taksitAmount)}`);
       out.push(`- ${bits.join(' | ')}`);
     }
+    out.push('');
+  }
+  if (b.analiz && b.analiz.length) {
+    out.push('## Ekstre harcama analizi');
+    for (const r of b.analiz) out.push(`- ${r.kategori} | ${round2(r.tutar)}${r.kart ? ` | kart:${r.kart.replace(/[|\r\n]+/g, ' ')}` : ''}${r.ad ? ` | ad:${r.ad.replace(/[|\r\n]+/g, ' ')}` : ''}`);
     out.push('');
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';

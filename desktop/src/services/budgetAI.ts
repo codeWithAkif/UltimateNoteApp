@@ -5,7 +5,7 @@
 
 import { callGemini } from './geminiMentor';
 import {
-  type Budget, type AIAction, type BudgetKind, KIND_LABEL, totals, cashflow, transition, fmtTL, redactSensitive, round2, parseTL
+  type Budget, type AIAction, type BudgetKind, KIND_LABEL, totals, cashflow, transition, fmtTL, redactSensitive, round2, parseTL, type SpendRow, SPEND_CATS, normalizeCat, CUTTABLE_CATS, analizByCat
 } from './budget';
 
 export const PERSONA_PATH = 'Sistem/Finans Uzmanı.md';
@@ -37,7 +37,7 @@ const TYPE_HELP = `Tür eşlemesi:
 NAKİT ESASLI MANTIK (çift saymayı önler): Bütçedeki her kalem o ay hesaptan çıkan/giren paradır. Kart ekstresi, ÖDENDİĞİ aya girilir (örn. Ekim harcamalarının ekstresi Kasım başında maaşla ödenir → Kasım bütçesine yazılır). Kullanıcı "kartla şunu aldım/harcadım" derse bunu değişken harcama olarak EKLEME: o harcama ekstre gelince ödeme ayına kart kalemi olarak girilecek; cevapta bunu kısaca söyle ve eylem üretme.`;
 
 export interface ChatMsg { role: 'user' | 'ai'; text: string }
-export interface ChatResult { cevap: string; senaryo: boolean; eylemler: AIAction[]; ekstreAy?: string }
+export interface ChatResult { cevap: string; senaryo: boolean; eylemler: AIAction[]; ekstreAy?: string; harcamalar: SpendRow[] }
 
 // Ekstrenin son ödeme ayı "YYYY-AA" olmalı ve bugünden makul uzaklıkta (±8 ay) olmalı; saçma bir ayı sessizce yok sayarız
 export const validMonth = (v: unknown, now: Date = new Date()): string | undefined => {
@@ -58,6 +58,7 @@ export const CHAT_SCHEMA = {
     cevap: { type: 'string' },
     senaryo: { type: 'boolean' },
     ekstreAy: { type: 'string' },
+    islemler: { type: 'array', items: { type: 'object', properties: { ad: { type: 'string' }, tutar: { type: 'number' }, kategori: { type: 'string' } }, required: ['ad', 'tutar', 'kategori'] } },
     eylemler: { type: 'array', items: { type: 'object', properties: ACTION_PROPS, required: ['op', 'ad', 'tutar'] } }
   },
   required: ['cevap', 'senaryo', 'eylemler']
@@ -72,7 +73,7 @@ export const budgetFacts = (b: Budget): string => {
 export interface StatementIn { name: string; text: string }
 
 // Ekstre metni: yapay zekâya yalnızca özet çıkarma görevi verilir; tek tek alışverişler değişken harcama olarak EKLENMEZ (kart tutarı zaten ekstrenin toplamıdır)
-export const statementBlock = (s?: StatementIn, month?: string): string => s ? `\nEKLİ KART EKSTRESİ (${redactSensitive(s.name).slice(0, 80)}) — bilgisayarda metne çevrildi, kimlik numaraları gizlendi:\n"""\n${redactSensitive(s.text).slice(0, 14000)}\n"""\nEKSTRE GÖREVİ: Bu ekstreden TEK bir kart kalemi çıkar: kind=kart, ad=banka/kart adı (örn. "Garanti Bonus"), tutar=bu dönemin ÖDENECEK TOPLAM borcu (asgari ödeme DEĞİL; toplam dönem borcu/ekstre borcu), gun=son ödeme tarihinin günü. Ekstrede taksitli işlemler varsa taksitliTutar = bu ekstreye yansıyan taksitlerin toplamı. Tek tek alışverişleri ekleme. Rakamları kendin topla/doğrula; tutarı belirleyemiyorsan eylem ekleme, cevapta nedenini söyle. Listede aynı kart zaten varsa guncelle kullan. "ekstreAy" alanına ekstrenin SON ÖDEME TARİHİNİN ayını YYYY-AA biçiminde yaz (örn. son ödeme 9 Kasım 2026 ise "2026-11"); ödeme ayı odur, kesim ayı değil.${month ? ` Seçili bütçe ayı ${month}; ekstre başka aya aitse uygulama kartı o aya taşır, sen cevapta yalnızca "bu ekstre X ayına ait" de.` : ''} Son ödeme tarihi bugünden (${new Date().toLocaleDateString('tr-TR')}) önceyse yalnızca "ödediyseniz sorun yok" demen yeterli; kullanıcı ekstreleri tam öder, gecikme faizi uyarısı yapma.\n` : '';
+export const statementBlock = (s?: StatementIn, month?: string): string => s ? `\nEKLİ KART EKSTRESİ (${redactSensitive(s.name).slice(0, 80)}) — bilgisayarda metne çevrildi, kimlik numaraları gizlendi:\n"""\n${redactSensitive(s.text).slice(0, 14000)}\n"""\nEKSTRE GÖREVİ: Bu ekstreden TEK bir kart kalemi çıkar: kind=kart, ad=banka/kart adı (örn. "Garanti Bonus"), tutar=bu dönemin ÖDENECEK TOPLAM borcu (asgari ödeme DEĞİL; toplam dönem borcu/ekstre borcu), gun=son ödeme tarihinin günü. Ekstrede taksitli işlemler varsa taksitliTutar = bu ekstreye yansıyan taksitlerin toplamı. Tek tek alışverişleri ekleme. Rakamları kendin topla/doğrula; tutarı belirleyemiyorsan eylem ekleme, cevapta nedenini söyle. Listede aynı kart zaten varsa guncelle kullan. "islemler" alanına ekstredeki HER harcamayı ayrı satır olarak yaz: ad = işletme/harcama adı (kısa ve okunur; örn. "Migros", "Shell", "Anthropic Claude"; kod/numara ekleme), tutar = bu dönemdeki tutar (pozitif sayı), kategori yalnızca şunlardan biri: ${SPEND_CATS.join(', ')}. Önceki dönem borcu, ödeme ve toplam satırlarını YAZMA. Eski taksitli alışverişin bu döneme yansıyan taksitini ad'ına "(2/3 taksit)" ekleyerek "Taksitler" kategorisiyle yaz. Faiz/ücret varsa "Faiz / Ücret". 150'den fazla harcama varsa en büyük 150'sini yaz, kalanı tek satır "Diğer küçük harcamalar" (kategori Diğer) yap. Toplam, ekstredeki dönem harcamasına eşit olmalı; rakam uydurma. "ekstreAy" alanına ekstrenin SON ÖDEME TARİHİNİN ayını YYYY-AA biçiminde yaz (örn. son ödeme 9 Kasım 2026 ise "2026-11"); ödeme ayı odur, kesim ayı değil.${month ? ` Seçili bütçe ayı ${month}; ekstre başka aya aitse uygulama kartı o aya taşır, sen cevapta yalnızca "bu ekstre X ayına ait" de.` : ''} Son ödeme tarihi bugünden (${new Date().toLocaleDateString('tr-TR')}) önceyse yalnızca "ödediyseniz sorun yok" demen yeterli; kullanıcı ekstreleri tam öder, gecikme faizi uyarısı yapma.\n` : '';
 
 export const buildChatPrompt = (o: { persona: string; budget: Budget; history: ChatMsg[]; message: string; statement?: StatementIn }): string => {
   const hist = o.history.slice(-8).map(m => `${m.role === 'user' ? 'Kullanıcı' : 'Uzman'}: ${redactSensitive(m.text).slice(0, 500)}`).join('\n');
@@ -112,6 +113,20 @@ const pickName = (a: any): string | undefined => {
 };
 
 // Cevabı güvenli bir biçime getirir (sağlayıcı sayıları metin ya da tür adını farklı yazmış olabilir)
+const toSpend = (raw: any): SpendRow[] => {
+  const out: SpendRow[] = [];
+  // islemler (tek tek); eski/aksak yanıt için harcamalar (kategori toplamı) da kabul edilir
+  for (const h of [...(Array.isArray(raw?.islemler) ? raw.islemler : []), ...(Array.isArray(raw?.harcamalar) ? raw.harcamalar : [])]) {
+    const tutar = toNum(h?.tutar);
+    if (tutar === undefined || tutar <= 0 || tutar > 10_000_000) continue;
+    const adRaw = h?.ad ?? h?.ornek;
+    const ad = typeof adRaw === 'string' ? redactSensitive(adRaw).replace(/[|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+    out.push({ kart: '', kategori: normalizeCat(h?.kategori), tutar: round2(tutar), ad: ad || undefined });
+    if (out.length >= 200) break;
+  }
+  return out;
+};
+
 export const normalizeChat = (raw: any): ChatResult => {
   const acts: AIAction[] = [];
   for (const a of Array.isArray(raw?.eylemler) ? raw.eylemler : []) {
@@ -124,7 +139,7 @@ export const normalizeChat = (raw: any): ChatResult => {
       taksitliTutar: toNum(a.taksitliTutar), neden: a.neden ? String(a.neden).slice(0, 200) : undefined
     });
   }
-  return { cevap: String(raw?.cevap ?? '').trim() || 'Anladım.', senaryo: raw?.senaryo === true, eylemler: acts, ekstreAy: validMonth(raw?.ekstreAy) };
+  return { cevap: String(raw?.cevap ?? '').trim() || 'Anladım.', senaryo: raw?.senaryo === true, eylemler: acts, ekstreAy: validMonth(raw?.ekstreAy), harcamalar: toSpend(raw) };
 };
 
 export type AICall = <T>(prompt: string, schema: any) => Promise<T>;
@@ -135,7 +150,7 @@ export const askBudget = async (o: { persona: string; budget: Budget; history: C
 };
 
 // ---------------- öneriler ----------------
-export interface AdviceItem { baslik: string; aciklama: string; kalem: string; aylikTasarruf: number }
+export interface AdviceItem { baslik: string; aciklama: string; kalem: string; aylikTasarruf: number; kaynak?: 'kalem' | 'ekstre' }
 export interface Advice { ozet: string; oneriler: AdviceItem[]; kenaraAtma: { aylik: number; aciklama: string }; uyarilar: string[] }
 
 export const ADVICE_SCHEMA = {
@@ -154,6 +169,10 @@ export const buildAdvicePrompt = (o: { persona: string; budget: Budget }): strin
   const cf = cashflow(o.budget);
   const tr = transition(o.budget);
   const deg = o.budget.items.filter(i => i.kind === 'degisken').map(i => `${i.name} (${round2(i.amount)} TL)`).join(', ') || '(yok)';
+  const cats = analizByCat(o.budget);
+  const dagilim = cats.length
+    ? cats.map(c => `- ${c.kategori}: ${fmtTL(c.tutar)} [${c.kisilabilir ? 'kısılabilir' : 'kısılamaz'}]${c.ornek ? ` — örn. ${redactSensitive(c.ornek)}` : ''}`).join('\n')
+    : '(ekstre dağılımı yok)';
   return `${o.persona.slice(0, 6000)}
 
 BU AYIN BÜTÇESİ (${o.budget.month}) — uygulamanın hesapladığı gerçek rakamlar (bunları aynen kullan, yeniden hesaplama):
@@ -163,10 +182,12 @@ TOPLAMLAR: gelir ${fmtTL(t.gelir)}, sabit giderler ${fmtTL(t.sabit)}, kart ekstr
 NAKİT TAKVİMİ: ay içindeki en düşük bakiye ${fmtTL(cf.min.balance)} (ayın ${cf.min.day}. günü); eksi bakiyeli gün sayısı ${cf.negativeDays.length}.
 KARTSIZ GEÇİŞ (mevcut kalanla): kartlarda kaydırılabilir tutar ${fmtTL(tr.shiftable)}; ${tr.bitis === null ? `geçiş mümkün değil (${tr.neden || 'kalan yetmiyor'})` : tr.bitis === 0 ? 'kaydırılacak tutar yok' : `${tr.bitis} ayda kartsıza geçilebilir`}.
 KISILABİLECEK DEĞİŞKEN KALEMLER: ${deg}
+EKSTRELERDEKİ HARCAMA DAĞILIMI (geçen dönemin kart harcamaları, kategori bazında; bunlar kart ekstresinin İÇİNDEDİR, ayrıca toplanmaz):
+${dagilim}
 
 GÖREV (Türkçe, kısa):
 1. "ozet": durumu 3-4 cümleyle özetle (iyi giden ne, dikkat edilecek ne).
-2. "oneriler": en çok 5 öneri. Yalnızca yukarıdaki DEĞİŞKEN kalemlerden; "kalem" alanına kalem adını BİREBİR yaz; "aylikTasarruf" gerçekçi bir aylık tutar olsun (kalemin yarısını geçmesin). Sabit giderleri, taksitleri ve kartları kısmayı ÖNERME.
+2. "oneriler": en çok 5 öneri. Yalnızca yukarıdaki DEĞİŞKEN kalemlerden ya da EKSTRE DAĞILIMINDAKİ [kısılabilir] kategorilerden; "kalem" alanına kalem/kategori adını BİREBİR yaz; "aylikTasarruf" gerçekçi bir aylık tutar olsun (değişken kalemin yarısını, ekstre kategorisinin %40'ını geçmesin). Ekstre kategorisi önerisinde açıklamada hangi harcamalara/işletmelere dikkat edileceğini somut yaz (örn. "Market 8.100 TL: haftalık liste yapıp BİM/A101'e kaydırmak"). Dağılım varsa 'değişken kalem girilmemiş' deme; onu kullan. Sabit giderleri, "Taksitler", faiz/ücret ve kartın kendisini kısmayı ÖNERME.
 3. "kenaraAtma": her ay kenara ayrılabilecek gerçekçi bir tutar ve kademeli artış fikri (açıklama 1-2 cümle). Tutarı kalan ve önerdiğin tasarruflara göre ver.
 4. "uyarilar": en çok 3 kısa uyarı (örn. maaş günü ile ödeme günleri arasındaki boşluk, günü yazılmayan kalemler). Uyarı yoksa boş dizi.
 Yatırım, kredi ya da ürün tavsiyesi verme. Sadece JSON döndür.`;
@@ -175,13 +196,17 @@ Yatırım, kredi ya da ürün tavsiyesi verme. Sadece JSON döndür.`;
 // Öneriler uygulamanın kurallarına göre temizlenir: yalnızca değişken kalemlere bağlı, makul tutarlı
 export const sanitizeAdvice = (raw: any, b: Budget): Advice => {
   const deg = b.items.filter(i => i.kind === 'degisken');
+  const cats = analizByCat(b).filter(c => c.kisilabilir);
   const oneriler: AdviceItem[] = [];
   for (const o of Array.isArray(raw?.oneriler) ? raw.oneriler : []) {
     const name = String(o?.kalem ?? '').trim().toLocaleLowerCase('tr');
     const item = deg.find(i => i.name.toLocaleLowerCase('tr') === name);
+    const cat = item ? undefined : cats.find(c => c.kategori.toLocaleLowerCase('tr') === name);
     const save = toNum(o?.aylikTasarruf);
-    if (!item || save === undefined || save <= 0) continue;
-    oneriler.push({ baslik: String(o.baslik || item.name).slice(0, 80), aciklama: String(o.aciklama || '').slice(0, 400), kalem: item.name, aylikTasarruf: round2(Math.min(save, item.amount * 0.6)) });
+    if ((!item && !cat) || save === undefined || save <= 0) continue;
+    const label = item ? item.name : cat!.kategori;
+    const cap = item ? item.amount * 0.6 : cat!.tutar * 0.4;
+    oneriler.push({ baslik: String(o.baslik || label).slice(0, 80), aciklama: String(o.aciklama || '').slice(0, 400), kalem: label, aylikTasarruf: round2(Math.min(save, cap)), kaynak: item ? 'kalem' : 'ekstre' });
     if (oneriler.length >= 5) break;
   }
   const ka = toNum(raw?.kenaraAtma?.aylik);

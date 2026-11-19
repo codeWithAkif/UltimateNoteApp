@@ -1,5 +1,5 @@
 import React from 'react';
-import { type Budget, type Cashflow, totals, fmtTL } from '../services/budget';
+import { type Budget, type Cashflow, totals, fmtTL, analizByCat, SPEND_CATS, CUTTABLE_CATS } from '../services/budget';
 
 const GREEN = '#22c55e', RED = '#ef4444', ORANGE = '#f97316', BLUE = '#3b82f6', PURPLE = '#a855f7', GRAY = '#94a3b8';
 const short = (s: string, n = 11) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
@@ -52,6 +52,93 @@ export function Waterfall({ b }: { b: Budget }) {
         );
       })}
     </svg>
+  );
+}
+
+// Ekstre harcama dağılımı: önce kategori genelinde (çubuk), kategoriye tıklayınca tek tek harcamalar; "Tüm harcamalar" düz liste + arama.
+// Her harcamanın kategorisi elle değiştirilebilir (özellikle "Diğer"); onRecat işletmeyi hatırlatır.
+const selStyle: React.CSSProperties = { background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '3px 4px', fontSize: '11.5px', maxWidth: '124px' };
+const chip = (on: boolean): React.CSSProperties => ({ background: on ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: on ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '999px', padding: '3px 11px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 });
+
+export function SpendBars({ b, onRecat }: { b: Budget; onRecat: (idx: number, cat: string) => void }) {
+  const [mode, setMode] = React.useState<'kat' | 'liste'>('kat');
+  const [sel, setSel] = React.useState<string | null>(null);
+  const [q, setQ] = React.useState('');
+  const [limit, setLimit] = React.useState(40);
+  const all = b.analiz || [];
+  if (!all.length) return null;
+  const cats = analizByCat(b);
+  const total = cats.reduce((s, c) => s + c.tutar, 0);
+  const cut = cats.filter(c => c.kisilabilir).reduce((s, c) => s + c.tutar, 0);
+  const maxCat = Math.max(1, ...cats.map(c => c.tutar));
+  const ql = q.trim().toLocaleLowerCase('tr');
+  const list = all.map((r, idx) => ({ r, idx }))
+    .filter(({ r }) => (mode === 'liste' || (sel !== null && r.kategori === sel)) && (!ql || `${r.ad || ''} ${r.kategori} ${r.kart}`.toLocaleLowerCase('tr').includes(ql)))
+    .sort((x, y) => y.r.tutar - x.r.tutar);
+  const maxTx = Math.max(1, ...list.map(x => x.r.tutar));
+  const selCat = sel ? cats.find(c => c.kategori === sel) : undefined;
+
+  const txRow = ({ r, idx }: { r: (typeof all)[number]; idx: number }) => (
+    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+      <div style={{ width: '150px', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${r.ad || '(ad yok)'} · ${r.kart}`}>
+        {r.ad || '(ad yok)'}{mode === 'liste' || cats.length > 1 ? <span style={{ color: 'var(--text-muted)', fontSize: '10.5px' }}> · {r.kart}</span> : null}
+      </div>
+      <div style={{ flex: 1, background: 'var(--bg-tertiary)', borderRadius: '4px', height: '12px', overflow: 'hidden', minWidth: '30px' }}>
+        <div style={{ width: `${Math.max(2, r.tutar / maxTx * 100)}%`, height: '100%', background: CUTTABLE_CATS.has(r.kategori) ? ORANGE : GRAY, opacity: 0.9 }} />
+      </div>
+      <div style={{ width: '84px', textAlign: 'right', fontWeight: 600 }}>{fmtTL(r.tutar)}</div>
+      <select value={r.kategori} onChange={(e) => onRecat(idx, e.target.value)} style={selStyle} aria-label={`${r.ad || 'Harcama'} kategorisi`} title="Kategoriyi değiştir (aynı işletmenin hepsi değişir ve hatırlanır)">
+        {SPEND_CATS.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+        Ekstrelerdeki dönem harcaması <b>{fmtTL(total)}</b> · kısılabilir <b style={{ color: ORANGE }}>{fmtTL(cut)}</b> · kısılamayan (taksit, fatura, sağlık vb.) <b>{fmtTL(total - cut)}</b>
+      </div>
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <button type="button" style={chip(mode === 'kat')} onClick={() => { setMode('kat'); setSel(null); setLimit(40); }}>Kategoriler</button>
+        <button type="button" style={chip(mode === 'liste')} onClick={() => { setMode('liste'); setSel(null); setLimit(40); }}>Tüm harcamalar ({all.length})</button>
+        {(mode === 'liste' || sel !== null) && (
+          <input value={q} onChange={(e) => { setQ(e.target.value); setLimit(40); }} placeholder="Ara (işletme, kategori, kart)" aria-label="Harcamalarda ara"
+            style={{ ...selStyle, maxWidth: 'none', flex: 1, minWidth: '120px', padding: '4px 8px', fontSize: '12px' }} />
+        )}
+      </div>
+
+      {mode === 'kat' && sel === null && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          {cats.map(c => (
+            <button key={c.kategori} type="button" onClick={() => { setSel(c.kategori); setQ(''); setLimit(40); }} title={c.ornek ? `örn. ${c.ornek} — tıklayınca harcamalar açılır` : 'Tıklayınca harcamalar açılır'}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', textAlign: 'left' }}>
+              <div style={{ width: '128px', flexShrink: 0, color: 'var(--text-primary)' }}>{c.kategori} <span style={{ color: 'var(--text-muted)', fontSize: '10.5px' }}>({c.adet})</span></div>
+              <div style={{ flex: 1, background: 'var(--bg-tertiary)', borderRadius: '4px', height: '14px', overflow: 'hidden' }}>
+                <div style={{ width: `${Math.max(2, c.tutar / maxCat * 100)}%`, height: '100%', background: c.kisilabilir ? ORANGE : GRAY, opacity: 0.9 }} />
+              </div>
+              <div style={{ width: '86px', textAlign: 'right', fontWeight: 600 }}>{fmtTL(c.tutar)}</div>
+              <span style={{ color: 'var(--text-muted)' }}>›</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === 'kat' && sel !== null && (
+        <div style={{ marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px' }}>
+          <button type="button" style={chip(false)} onClick={() => { setSel(null); setQ(''); }}>‹ Tüm kategoriler</button>
+          <b>{sel}</b>{selCat ? <span style={{ color: 'var(--text-secondary)' }}>· {fmtTL(selCat.tutar)} · {selCat.adet} harcama</span> : <span style={{ color: 'var(--text-muted)' }}>· bu kategoride harcama kalmadı</span>}
+        </div>
+      )}
+
+      {(mode === 'liste' || sel !== null) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          {list.slice(0, limit).map(txRow)}
+          {list.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Eşleşen harcama yok.</div>}
+          {list.length > limit && <button type="button" style={{ ...chip(false), alignSelf: 'flex-start' }} onClick={() => setLimit(l => l + 60)}>Daha fazla göster ({list.length - limit})</button>}
+        </div>
+      )}
+      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>Bilgi amaçlıdır: bu tutarlar kart ekstresinin içindedir, ayrıca toplanmaz. Kategorisi yanlış olan harcamayı sağdaki listeden değiştirin; aynı işletme hatırlanır.</div>
+    </div>
   );
 }
 
