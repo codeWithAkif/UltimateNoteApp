@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Hammer, Play, FileSearch, GitMerge, Rocket, Trash2, RefreshCw, FolderOpen, X, AlertTriangle, CheckCircle2, Square, ShieldCheck } from 'lucide-react';
+import { Hammer, Download, Play, FileSearch, GitMerge, Rocket, Trash2, RefreshCw, FolderOpen, X, AlertTriangle, CheckCircle2, Square, ShieldCheck } from 'lucide-react';
 import { CLAUDE_TASK_MODELS, getTaskModel, setTaskModel, planTask, applyTask, cancelPlan, discardWork, openWorkFolder, isClaudeReady } from '../services/claudeTask';
 import { getProjectFolder, setProjectFolder, pickProjectFolder, inspectProjectFolder, type FolderInfo } from '../services/projectFolders';
 import {
@@ -24,6 +24,14 @@ const btn: React.CSSProperties = {
 const btnPrimary: React.CSSProperties = { ...btn, background: 'var(--accent-color)', border: '1px solid var(--accent-color)', color: '#fff' };
 const pre: React.CSSProperties = { margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px', lineHeight: 1.55, fontFamily: 'inherit', color: 'var(--text-secondary)' };
 const label: React.CSSProperties = { fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', color: 'var(--text-muted)', margin: '14px 0 6px' };
+
+// Yayın derlemesi bitince yeni sürümü kendiliğinden indirip yükleme durumu
+interface UpdState { version: string; phase: 'waiting' | 'downloading' | 'ready' | 'postponed' | 'installing' | 'error'; percent?: number; text?: string; secs?: number }
+const cmpV = (a: string, b: string): number => {
+  const p = (s: string) => s.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+  const x = p(a), y = p(b);
+  return (x[0] - y[0]) || (x[1] - y[1]) || (x[2] - y[2]);
+};
 
 type Busy = { id: string; kind: 'plan' | 'apply' | 'check' | 'merge' | 'diff' } | null;
 interface RelPlan {
@@ -60,6 +68,10 @@ export default function DevView({ fileContents, onSaveNote }: {
   const [rel, setRel] = useState<{ plan: RelPlan | null; loading: boolean; bump: 'patch' | 'minor' | 'major'; summary: string; running: boolean; progress: string; error: string; findings?: RelPlan['findings']; output?: string } | null>(null);
   const runId = useRef('');
   const alive = useRef(true);
+  const [appVer, setAppVer] = useState('');
+  const [upd, setUpd] = useState<UpdState | null>(null);
+  const updRef = useRef<UpdState | null>(null);
+  updRef.current = upd;
 
   const commit = useCallback((fn: (s: DevStore) => DevStore) => {
     const next = fn(storeRef.current);
@@ -74,6 +86,7 @@ export default function DevView({ fileContents, onSaveNote }: {
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { loadDevStore().then(s => { storeRef.current = s; setStore(s); setLoaded(true); }); }, []);
   useEffect(() => { isClaudeReady().then(setReady).catch(() => setReady(false)); }, []);
+  useEffect(() => { Promise.resolve(api?.getAppVersion?.()).then(v => setAppVer(String(v || ''))).catch(() => undefined); }, [api]);
 
   const refreshStatus = useCallback(async () => {
     if (!dir || !api?.devStatus) { setStatus(null); return; }
@@ -112,6 +125,57 @@ export default function DevView({ fileContents, onSaveNote }: {
     return () => { stop = true; clearInterval(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dir, store.releases.map(r => `${r.version}:${r.ci || ''}`).join('|')]);
+
+  // Otomatik güncelleme: derlemesi başarılı biten, çalışan sürümden yeni bir yayın varsa indirilir ve (iş yokken) kendiliğinden yüklenir.
+  const updTarget = appVer ? store.releases.find(r => r.ci === 'success' && cmpV(r.version, appVer) > 0 && Date.now() - r.at < 24 * 3600 * 1000) : undefined;
+  const updTargetVersion = updTarget?.version || '';
+  useEffect(() => {
+    if (!updTargetVersion || !api?.checkForUpdates || !api?.onUpdateStatus) return;
+    let cancelled = false, attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setUpd({ version: updTargetVersion, phase: 'waiting', text: 'Yeni sürümün GitHub\'da hazır olması bekleniyor…' });
+    const off = api.onUpdateStatus((d: { status: string; version?: string; percent?: number }) => {
+      if (cancelled) return;
+      if (d.status === 'downloading') setUpd(u => (u && u.phase !== 'ready' && u.phase !== 'installing' ? { version: updTargetVersion, phase: 'downloading', percent: d.percent } : u));
+      else if (d.status === 'downloaded' && d.version && cmpV(d.version, updTargetVersion) >= 0) setUpd(u => (u && (u.phase === 'ready' || u.phase === 'installing' || u.phase === 'postponed') ? u : { version: d.version as string, phase: 'ready', secs: 15 }));
+    });
+    const attempt = async () => {
+      if (cancelled) return;
+      attempts++;
+      let res: any;
+      try { res = await api.checkForUpdates(); } catch (e: any) { res = { success: false, error: String(e?.message || e) }; }
+      if (cancelled) return;
+      if (res && res.success === false && res.error) { setUpd({ version: updTargetVersion, phase: 'error', text: String(res.error) }); return; }
+      // Sürüm yayında hazırsa indirme/indirildi olayları gelir; gelmediyse (derleme sonrası GitHub'ın görünür kılması gecikebilir) 30 sn sonra yeniden sorulur
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        const u = updRef.current;
+        if (u && u.phase === 'waiting') {
+          if (attempts < 12) void attempt();
+          else setUpd({ version: updTargetVersion, phase: 'error', text: 'Yeni sürüm GitHub\'da bulunamadı. Biraz sonra Ayarlar > Hakkında > Güncellemeleri Kontrol Et ile deneyin.' });
+        }
+      }, 30000);
+    };
+    void attempt();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); try { off?.(); } catch { /* yoksay */ } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updTargetVersion]);
+
+  const installNow = async () => {
+    setUpd(u => (u ? { ...u, phase: 'installing', text: 'Yeniden başlatılıp yükleniyor…' } : u));
+    try { await saveDevStore(storeRef.current); } catch { /* yoksay */ }
+    await api.restartAndInstall?.({ silent: true });
+  };
+  // geri sayım: iş yokken 0'a inince yükler; Claude işi/yayın sürüyorsa bitmesini bekler
+  useEffect(() => {
+    if (upd?.phase !== 'ready') return;
+    const t = setInterval(() => setUpd(u => (u && u.phase === 'ready' ? { ...u, secs: Math.max(0, (u.secs ?? 0) - 1) } : u)), 1000);
+    return () => clearInterval(t);
+  }, [upd?.phase]);
+  useEffect(() => {
+    if (upd?.phase === 'ready' && (upd.secs ?? 0) <= 0 && !busy && !rel?.running) void installNow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upd?.phase, upd?.secs, busy, rel?.running]);
 
   if (!isDevSupported()) {
     return <div style={{ padding: '24px', color: 'var(--text-muted)' }}>Geliştir bölümü yalnızca masaüstü uygulamasında çalışır (Claude Code orada kurulu).</div>;
@@ -270,6 +334,26 @@ export default function DevView({ fileContents, onSaveNote }: {
         <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginTop: '4px' }}>Uygulamayı Claude Code ile geliştirin: isteği yazın, plan ve uygulamayı izleyin, farkı onaylayın, birleştirin, yayınlayın. Claude hiçbir zaman gönderme/birleştirme/yayın yapmaz; bunları yalnızca bu ekrandaki düğmeler yapar.</div>
 
         <DevMachine stage={selected?.stage ?? null} busyKind={selected && busy?.id === selected.id ? busy.kind : null} elapsed={elapsed} readyCount={readyCount} ci={store.releases[0]?.ci} hasRequest={!!selected} onPick={pickStation} />
+
+        {upd && (
+          <div style={{ ...panel, marginTop: '12px', borderColor: upd.phase === 'error' ? '#ef4444' : 'var(--accent-color)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <Download size={16} style={{ color: upd.phase === 'error' ? '#ef4444' : 'var(--accent-color)' }} />
+              <div style={{ flex: '1 1 240px', fontSize: '12.5px', overflowWrap: 'anywhere' }}>
+                <b>v{upd.version}</b>{' '}
+                {upd.phase === 'waiting' && (upd.text || 'hazırlanıyor…')}
+                {upd.phase === 'downloading' && `indiriliyor %${upd.percent ?? 0}`}
+                {upd.phase === 'ready' && ((upd.secs ?? 0) > 0 ? `indirildi — ${upd.secs} sn sonra yeniden başlatılıp yüklenecek` : 'indirildi — çalışan iş bitince yeniden başlatılıp yüklenecek')}
+                {upd.phase === 'postponed' && 'indirildi; uygulamayı kapattığınızda kendiliğinden yüklenir'}
+                {upd.phase === 'installing' && (upd.text || 'yükleniyor…')}
+                {upd.phase === 'error' && `: ${upd.text}`}
+              </div>
+              {(upd.phase === 'ready' || upd.phase === 'postponed') && <button type="button" style={btnPrimary} onClick={() => void installNow()}>Şimdi yükle</button>}
+              {upd.phase === 'ready' && <button type="button" style={btn} onClick={() => setUpd(u => (u ? { ...u, phase: 'postponed' } : u))}>Ertele</button>}
+            </div>
+            {upd.phase === 'downloading' && <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', marginTop: '8px', overflow: 'hidden' }}><div style={{ height: '100%', width: `${upd.percent ?? 0}%`, background: 'var(--accent-color)' }} /></div>}
+          </div>
+        )}
 
         {/* Depo ve durum */}
         <div style={{ ...panel, marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '10px 16px', alignItems: 'center' }}>

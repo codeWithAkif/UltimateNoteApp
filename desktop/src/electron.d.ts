@@ -53,7 +53,7 @@ export interface ElectronAPI {
   toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>;
   setTitleBarTheme: (theme: 'dark' | 'light') => Promise<{ success: boolean }>;
   getAppVersion: () => Promise<string>;
-  restartAndInstall: () => Promise<{ success: boolean }>;
+  restartAndInstall: (opts?: { silent?: boolean }) => Promise<{ success: boolean }>;
   checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
   onWebResearch?: (callback: (text: string) => void) => () => void;
   transcriptScan?: (folder?: string) => Promise<{ success: boolean; folder?: string; error?: string; files: { path: string; name: string; mtimeMs: number; size: number }[] }>;

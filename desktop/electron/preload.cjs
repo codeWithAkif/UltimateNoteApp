@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('electron', {
   toggleMiniMode: (isMini) => ipcRenderer.invoke('toggle-mini-mode', { isMini }),
   setTitleBarTheme: (theme) => ipcRenderer.invoke('set-titlebar-theme', theme),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  restartAndInstall: () => ipcRenderer.invoke('restart-and-install'),
+  restartAndInstall: (opts) => ipcRenderer.invoke('restart-and-install', opts),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   perfProfilerStart: () => ipcRenderer.invoke('perf-profiler-start'),
   perfProfilerStop: () => ipcRenderer.invoke('perf-profiler-stop'),

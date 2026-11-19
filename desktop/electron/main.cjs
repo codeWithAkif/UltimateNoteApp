@@ -1281,8 +1281,10 @@ ipcMain.handle('google-calendar-delete-event', async (event, { eventId }) => {
   }
 });
 
-ipcMain.handle('restart-and-install', () => {
-  autoUpdater.quitAndInstall();
+// opts.silent: sessiz kurulum + kurulum bitince uygulamayı yeniden aç (Geliştir bölümünün otomatik güncellemesi). Verilmezse eski davranış.
+ipcMain.handle('restart-and-install', (event, opts) => {
+  const silent = !!(opts && opts.silent);
+  autoUpdater.quitAndInstall(silent, silent);
   return { success: true };
 });
 
