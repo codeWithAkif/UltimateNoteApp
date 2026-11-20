@@ -5,7 +5,7 @@ import type { MarketProduct } from './marketPrice';
 
 export const PREFS_PATH = 'Alışveriş/Tercihler.md';
 
-export interface Pref { key: string; label: string; urun?: { id: string; title: string }; marka?: string; kat?: string }
+export interface Pref { key: string; label: string; urun?: { id: string; title: string }; marka?: string; kat?: string; hedef?: number } // hedef: hedef fiyat (TL); ürün bu fiyatın altına inince haber verilir
 
 const clean = (s: string) => s.replace(/[|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
 // Türkçe harflerden bağımsız anahtar (İ/I/ı → i, ç→c...): "Çamaşır" ile "camasir" aynı madde
@@ -38,6 +38,7 @@ export const parsePrefs = (content: string | undefined): Pref[] => {
       else if (k === 'başlık' || k === 'baslik') title = kv[2].trim();
       else if (k === 'marka') p.marka = kv[2].trim();
       else if (k === 'kat') p.kat = kv[2].trim();
+      else if (k === 'hedef') { const v = Number(kv[2].replace(',', '.')); if (Number.isFinite(v) && v > 0 && v < 1e7) p.hedef = Math.round(v * 100) / 100; }
     }
     if (id) p.urun = { id, title: title || label };
     out.push(p);
@@ -47,7 +48,7 @@ export const parsePrefs = (content: string | undefined): Pref[] => {
 
 export const serializePrefs = (prefs: Pref[]): string =>
   '# Alışveriş tercihleri\n\nHer satır: madde | ürün:ID | başlık | marka | kat. Ürün seçtikçe uygulama öğrenir; elle düzenleyebilir ya da silebilirsiniz.\n\n' +
-  prefs.map(p => `- ${[clean(p.label), p.urun ? `ürün:${clean(p.urun.id)}` : '', p.urun ? `başlık:${clean(p.urun.title)}` : '', p.marka ? `marka:${clean(p.marka)}` : '', p.kat ? `kat:${clean(p.kat)}` : ''].filter(Boolean).join(' | ')}`).join('\n') + '\n';
+  prefs.map(p => `- ${[clean(p.label), p.urun ? `ürün:${clean(p.urun.id)}` : '', p.urun ? `başlık:${clean(p.urun.title)}` : '', p.marka ? `marka:${clean(p.marka)}` : '', p.kat ? `kat:${clean(p.kat)}` : '', p.hedef ? `hedef:${p.hedef}` : ''].filter(Boolean).join(' | ')}`).join('\n') + '\n';
 
 // En uygun tercihi bulur: önce tam anahtar, sonra bir tarafın sözcükleri diğerinin içindeyse (en çok ortak sözcük, sonra en uzun anahtar).
 // Örn. "Bingo çamaşır deterjanı" yazılmışsa ve tercih "çamaşır deterjanı → Bingo" ise ya da tersi.
@@ -74,12 +75,12 @@ export const brandOf = (p: { brand?: string; title: string }): string => clean(p
 
 // Tercihi yazar/günceller. Maddede marka adı geçiyorsa ("Bingo çamaşır deterjanı") markasız tür anahtarı da öğrenilir ("çamaşır deterjanı"),
 // böylece telefondan markasız yazılan madde de aynı markaya bağlanır.
-export const learnPref = (prefs: Pref[], text: string, p: { urun?: { id: string; title: string }; marka?: string; kat?: string }): Pref[] => {
+export const learnPref = (prefs: Pref[], text: string, p: { urun?: { id: string; title: string }; marka?: string; kat?: string; hedef?: number }): Pref[] => {
   const key = prefKey(text);
   if (!key) return prefs;
   const set = (list: Pref[], k: string, label: string): Pref[] => {
     const i = list.findIndex(x => x.key === k);
-    const next: Pref = { key: k, label, urun: p.urun ?? (i >= 0 ? list[i].urun : undefined), marka: p.marka ?? (i >= 0 ? list[i].marka : undefined), kat: p.kat ?? (i >= 0 ? list[i].kat : undefined) };
+    const next: Pref = { key: k, label, urun: p.urun ?? (i >= 0 ? list[i].urun : undefined), marka: p.marka ?? (i >= 0 ? list[i].marka : undefined), kat: p.kat ?? (i >= 0 ? list[i].kat : undefined), hedef: p.hedef ?? (i >= 0 ? list[i].hedef : undefined) };
     return i >= 0 ? list.map((x, j) => (j === i ? next : x)) : [...list, next];
   };
   let out = set(prefs, key, clean(text).replace(/\s+[x×]\s?\d{1,2}$/i, ''));
@@ -90,6 +91,25 @@ export const learnPref = (prefs: Pref[], text: string, p: { urun?: { id: string;
       const label = clean(text).split(/\s+/).filter(w => !brand.split(' ').includes(fold(w))).join(' ');
       out = set(out, typeKey, label);
     }
+  }
+  return out;
+};
+
+// Hedef fiyat: tercih satırına yazılır; 0/boş hedefi kaldırır
+export const setHedef = (prefs: Pref[], key: string, hedef: number | null): Pref[] =>
+  prefs.map(p => (p.key === key ? { ...p, hedef: hedef && hedef > 0 ? Math.round(hedef * 100) / 100 : undefined } : p));
+
+export interface TargetHit { pref: Pref; product: MarketProduct; market: string; price: number; hedef: number }
+// Hedef fiyata ulaşıldı mı: ürünün en ucuz teklifi hedefin altında ya da eşitse. skip: ör. boykot listesindeki ürünler atlanır
+export const targetHits = (prefs: Pref[], products: MarketProduct[], skip?: (p: MarketProduct) => boolean): TargetHit[] => {
+  const byId = new Map(products.map(p => [p.id, p]));
+  const out: TargetHit[] = [];
+  for (const pref of prefs) {
+    if (!pref.hedef || !pref.urun) continue;
+    const p = byId.get(pref.urun.id);
+    if (!p || !p.offers.length || (skip && skip(p))) continue;
+    const best = p.offers[0];
+    if (best.price <= pref.hedef) out.push({ pref, product: p, market: best.market, price: best.price, hedef: pref.hedef });
   }
   return out;
 };

@@ -16,7 +16,7 @@ export interface BudgetItem {
 }
 
 // Ekstrelerden çıkarılan kategori bazlı harcama dağılımı. BİLGİDİR: toplamlara girmez (ekstre tutarı zaten kart kaleminde; çift sayılmasın)
-export interface SpendRow { kart: string; kategori: string; tutar: number; ad?: string } // ad: işletme/harcama adı (tek tek harcama satırı)
+export interface SpendRow { kart: string; kategori: string; tutar: number; ad?: string; taksit?: { no: number; toplam: number } } // ad: işletme/harcama adı (tek tek harcama satırı)
 export interface Budget { month: string; items: BudgetItem[]; reservePct: number; analiz?: SpendRow[] }
 
 export const SPEND_CATS = ['Market', 'Yemek / Kafe', 'Ulaşım / Akaryakıt', 'Eğlence / Abonelik', 'Giyim', 'Online alışveriş', 'Fatura / Telekom', 'Sağlık', 'Çocuk / Eğitim', 'Ev / Yapı', 'Taksitler', 'Faiz / Ücret', 'Diğer'];
@@ -45,11 +45,20 @@ export const normalizeCat = (s: unknown): string => {
   return 'Diğer';
 };
 
+// Taksit bilgisi: yapısal alan varsa o, yoksa addaki "(2/3 taksit)" / "2/3. taksit" gibi ifadeden
+export const taksitOf = (r: SpendRow): { no: number; toplam: number } | null => {
+  if (r.taksit && r.taksit.toplam >= r.taksit.no && r.taksit.no >= 1) return r.taksit;
+  const m = /(\d{1,2})\s*\/\s*(\d{1,2})\s*\.?\s*taksit|taksit[^\d]{0,6}(\d{1,2})\s*\/\s*(\d{1,2})/i.exec(r.ad || '');
+  if (!m) return null;
+  const no = Number(m[1] ?? m[3]), toplam = Number(m[2] ?? m[4]);
+  return no >= 1 && toplam >= no && toplam <= 60 ? { no, toplam } : null;
+};
+
 // Bir kartın harcama satırlarını yazar; aynı kartın eski satırları değişir (aynı PDF'i yeniden işlemek yinelemez)
 export const mergeAnaliz = (b: Budget, kart: string, rows: SpendRow[]): Budget => {
   const k = kart.trim().toLocaleLowerCase('tr');
   const keep = (b.analiz || []).filter(r => r.kart.trim().toLocaleLowerCase('tr') !== k);
-  const fresh = rows.filter(r => Number.isFinite(r.tutar) && r.tutar > 0).map(r => ({ kart: kart.trim(), kategori: normalizeCat(r.kategori), tutar: round2(r.tutar), ad: r.ad }));
+  const fresh = rows.filter(r => Number.isFinite(r.tutar) && r.tutar > 0).map(r => ({ kart: kart.trim(), kategori: normalizeCat(r.kategori), tutar: round2(r.tutar), ad: r.ad, taksit: r.taksit }));
   const next = [...keep, ...fresh];
   return { ...b, analiz: next.length ? next : undefined };
 };
@@ -186,6 +195,7 @@ export const parseBudgetNote = (content: string | undefined, month: string): Bud
         if (!kv) continue;
         const kk = kv[1].toLowerCase();
         if (kk === 'kart') row.kart = kv[2]; else if (kk === 'ad' || kk === 'örnek') row.ad = kv[2];
+        else if (kk === 'taksit') { const tm = kv[2].match(/^(\d+)\s*\/\s*(\d+)$/); if (tm && +tm[2] >= +tm[1] && +tm[1] >= 1) row.taksit = { no: +tm[1], toplam: +tm[2] }; }
       }
       (b.analiz ||= []).push(row);
       continue;
@@ -224,7 +234,7 @@ export const serializeBudget = (b: Budget): string => {
   }
   if (b.analiz && b.analiz.length) {
     out.push('## Ekstre harcama analizi');
-    for (const r of b.analiz) out.push(`- ${r.kategori} | ${round2(r.tutar)}${r.kart ? ` | kart:${r.kart.replace(/[|\r\n]+/g, ' ')}` : ''}${r.ad ? ` | ad:${r.ad.replace(/[|\r\n]+/g, ' ')}` : ''}`);
+    for (const r of b.analiz) out.push(`- ${r.kategori} | ${round2(r.tutar)}${r.kart ? ` | kart:${r.kart.replace(/[|\r\n]+/g, ' ')}` : ''}${r.ad ? ` | ad:${r.ad.replace(/[|\r\n]+/g, ' ')}` : ''}${r.taksit ? ` | taksit:${r.taksit.no}/${r.taksit.toplam}` : ''}`);
     out.push('');
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';

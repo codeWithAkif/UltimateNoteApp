@@ -5,7 +5,8 @@ import {
   type ShopWeek, type ShopItem, MARKET_CAT, weekIdOf, weekPath, shiftWeek, weekLabel, parseWeek, serializeWeek, withPlanBlock, listWeeks, recentHistory
 } from '../services/shopping';
 import { LIST_PATH, INBOX_CAT, DEFAULT_LIST_CATS, type LItem, parseList, ensureList, listAdd, listToggle, listRemove, listSetQty, listMove, archiveDone, legacyOpenItems, guessCat } from '../services/shopList';
-import { type Pref, fold, parsePrefs, serializePrefs, findPref, learnPref, removePref, rankProducts, legacySuggestions, brandOf, preferredBrands, PREFS_PATH } from '../services/shopPrefs';
+import { type Pref, fold, parsePrefs, serializePrefs, findPref, learnPref, removePref, rankProducts, legacySuggestions, brandOf, preferredBrands, PREFS_PATH, setHedef, targetHits, type TargetHit } from '../services/shopPrefs';
+import { notifyNow, requestNotifyPermission } from '../services/shopNotify';
 import { type BoycottEntry, BOYCOTT_PATH, parseBoycott, serializeBoycott, addBoycott, removeBoycott, matchBoycott, pickAlternatives } from '../services/boycott';
 import { proposeBoycott, askOwner, type BoycottCandidate, type OwnerInfo } from '../services/boycottAI';
 import {
@@ -377,6 +378,48 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
     } catch (e: any) { setRadar({ loading: false, hits: [], falling: [], n: 0, err: String(e?.message || e) }); }
   };
 
+  // ---- hedef fiyat uyarısı: ürüne hedef fiyat konur; fiyat hedefe inince banner + (izin varsa) bildirim. Günde bir kez otomatik kontrol edilir.
+  const [hedefHits, setHedefHits] = useState<TargetHit[]>([]);
+  const [targetBusy, setTargetBusy] = useState(false);
+  const hedefCount = prefs.filter(p => p.hedef && p.urun).length;
+  const checkTargets = async (manual = false) => {
+    if (targetBusy) return;
+    if (!loc || !supported) { if (manual) setMsg('Hedef fiyat kontrolü için konumunuzu girin (Konum ve market ayarları).'); return; }
+    const withT = prefs.filter(p => p.hedef && p.urun).slice(0, 10);
+    if (!withT.length) { if (manual) setMsg('Hedef fiyatı olan ürün yok: bir market maddesinin altındaki "hedef ₺" kutusuna fiyat yazın.'); return; }
+    setTargetBusy(true);
+    try {
+      const got: MarketProduct[] = [];
+      for (const pf of withT) { const pr = await refreshProduct(loc, pf.urun!.id, pf.urun!.title); if (pr) got.push(pr); }
+      saveHistory(got);
+      setPrices(m => ({ ...m, ...Object.fromEntries(got.map(g => [g.id, g])) }));
+      const hits = targetHits(withT, got, pr => !!matchBoycott(pr, boycott));
+      setHedefHits(hits);
+      const today = dayOf(new Date());
+      let seen: Record<string, string> = {};
+      try { seen = JSON.parse(localStorage.getItem('shop_target_notified_v1') || '{}'); } catch { /* yoksay */ }
+      for (const h of hits) if (seen[h.pref.key] !== today) { await notifyNow('Hedef fiyata ulaşıldı', `${h.product.title}: ${marketLabel(h.market)} ${tl(h.price)} (hedef ${tl(h.hedef)})`); seen[h.pref.key] = today; }
+      try { localStorage.setItem('shop_target_notified_v1', JSON.stringify(seen)); } catch { /* yoksay */ }
+      if (manual) setMsg(hits.length ? `${hits.length} ürün hedef fiyata ulaştı.` : `${got.length} ürün kontrol edildi; hedef fiyata ulaşan yok.`);
+    } catch (e: any) { if (manual) setMsg(String(e?.message || e)); }
+    finally { setTargetBusy(false); }
+  };
+  // ekran açılınca günde bir kez (notlar yüklendikten sonra)
+  useEffect(() => {
+    if (!ready || !supported || !loc || hedefCount === 0) return;
+    const today = dayOf(new Date());
+    try { if (localStorage.getItem('shop_target_check_v1') === today) return; localStorage.setItem('shop_target_check_v1', today); } catch { /* yoksay */ }
+    void checkTargets(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, hedefCount]);
+  const saveHedef = (prefKey: string, raw: string) => {
+    const v = Number(raw.replace(',', '.'));
+    if (!raw.trim()) { writePrefs(setHedef(curPrefs(), prefKey, null)); return; }
+    if (!Number.isFinite(v) || v <= 0) { setMsg('Hedef fiyat pozitif bir sayı olmalı.'); return; }
+    writePrefs(setHedef(curPrefs(), prefKey, v));
+    void requestNotifyPermission(); // izin yalnızca hedef koyulunca istenir
+  };
+
   const wm = useMemo(() => weeklyMarketBudget(fileContents), [fileContents]);
   const [remOn, setRemOn] = useState(() => isReminderOn());
   const [remMsg, setRemMsg] = useState('');
@@ -469,6 +512,7 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
               <>
                 <button type="button" onClick={() => openPicker(it)} title="Ürünü değiştir" style={btnSm}>{u.title}</button>
                 {pref?.marka && <span style={muted}>tercih: {pref.marka}</span>}
+                {pref && <label style={{ ...muted, display: 'inline-flex', alignItems: 'center', gap: '4px' }} title="Fiyat bu tutarın altına inince haber verilir">hedef ₺<input key={pref.key + (pref.hedef ?? '')} defaultValue={pref.hedef ?? ''} inputMode="decimal" aria-label={`${it.text} hedef fiyat`} onBlur={(e) => { if (e.target.value !== String(pref.hedef ?? '')) saveHedef(pref.key, e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={{ ...field, width: '64px', padding: '2px 5px', fontSize: '11.5px' }} /></label>}
                 {pr && <span style={muted}>en ucuz: <b style={{ color: '#22c55e' }}>{marketLabel(pr.offers[0].market)} {tl(pr.offers[0].price)}</b>{pr.offers[1] ? ` · ${marketLabel(pr.offers[1].market)} ${tl(pr.offers[1].price)}` : ''}</span>}
               </>
             ) : <button type="button" onClick={() => openPicker(it)} style={{ ...btnSm }}><Search size={11} /> Ürün seç</button>}
@@ -557,6 +601,12 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+              {hedefHits.length > 0 && (
+                <div style={{ ...banner, borderColor: '#22c55e', flexDirection: 'column', alignItems: 'flex-start' }}>
+                  <b style={{ color: '#22c55e' }}>Hedef fiyata ulaşıldı</b>
+                  {hedefHits.map(h => <div key={h.pref.key} style={{ fontSize: '12.5px' }}>{h.product.title}: <b>{marketLabel(h.market)} {tl(h.price)}</b> <span style={muted}>(hedef {tl(h.hedef)})</span></div>)}
+                </div>
+              )}
               {!ready && <div style={{ ...banner, borderColor: '#f59e0b' }}><RefreshCw size={15} className="animate-spin" /><span>Notlar yükleniyor ve bulutla senkronlanıyor… Bu sırada değişiklik yapılmaz (kaydedilmemiş bir not ezilmesin diye).</span></div>}
               {isNative && !isPinned && onPinWidget && (
                 <div style={banner}><Pin size={15} /><span style={{ flex: 1 }}>Telefon widget'ı şu an {pinnedWidget ? <b>{pinnedWidget}</b> : 'hiçbir notu'} gösteriyor. Alışveriş listesini widget'ta görmek için sabitleyin.</span>
@@ -702,6 +752,10 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
                     <button type="button" style={btn} disabled={!supported || radar?.loading} onClick={() => void runRadar()}>{radar?.loading ? <RefreshCw size={13} className="animate-spin" /> : <Sparkles size={13} />} Tara</button>
                   </div>
                   {!radar && <div style={{ ...muted, marginTop: '6px', lineHeight: 1.55 }}>Listenizdeki ve tercih ettiğiniz ürünlerde indirim ve fiyat düşüşü arar.</div>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                    <span style={muted}>Hedef fiyatı olan ürün: <b>{hedefCount}</b> (günde bir kez kendiliğinden kontrol edilir)</span>
+                    <button type="button" style={btnSm} disabled={!supported || targetBusy} onClick={() => void checkTargets(true)}>{targetBusy ? <RefreshCw size={11} className="animate-spin" /> : null} Şimdi kontrol et</button>
+                  </div>
                   {radar?.loading && <div style={{ ...muted, marginTop: '6px' }}>{radar.n} ürün taranıyor…</div>}
                   {radar?.err && <div style={{ fontSize: '12px', color: '#f59e0b', marginTop: '6px', overflowWrap: 'anywhere' }}>{radar.err}</div>}
                   {radar && !radar.loading && !radar.err && (
@@ -798,7 +852,7 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
                 {prefs.length === 0 && <div style={muted}>Henüz tercih yok. Bir market maddesine "Ürün seç" ile ürün bağlayın.</div>}
                 {prefs.map(p => (
                   <div key={p.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', borderTop: '1px solid var(--border-color)', padding: '6px 0', fontSize: '12.5px' }}>
-                    <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.label}</b>{p.marka ? <span style={muted}> · marka: {p.marka}</span> : null}{p.kat ? <span style={muted}> · {p.kat}</span> : null}{p.urun ? <div style={muted}>{p.urun.title}</div> : null}</div>
+                    <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}><b>{p.label}</b>{p.marka ? <span style={muted}> · marka: {p.marka}</span> : null}{p.kat ? <span style={muted}> · {p.kat}</span> : null}{p.hedef ? <span style={{ ...muted, color: '#22c55e' }}> · hedef ≤ {tl(p.hedef)}</span> : null}{p.urun ? <div style={muted}>{p.urun.title}</div> : null}</div>
                     <button type="button" style={btnSm} onClick={() => writePrefs(removePref(curPrefs(), p.key))} aria-label={`${p.label} tercihini sil`}><Trash2 size={11} /></button>
                   </div>
                 ))}

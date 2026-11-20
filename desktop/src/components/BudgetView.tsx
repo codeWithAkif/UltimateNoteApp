@@ -7,6 +7,7 @@ import {
 import { PERSONA_PATH, DEFAULT_PERSONA, askBudget, askAdvice, type Advice } from '../services/budgetAI';
 import { isGeminiConfigured } from '../services/geminiMentor';
 import { Waterfall, CashChart, SpendBars } from './BudgetCharts';
+import BudgetInsights from './BudgetInsights';
 import { readStatementPdf, type StatementText } from '../services/statementPdf';
 
 // Nakit esaslı mantık: kalemler "o ay hesaptan çıkan/giren" paradır. Bu açıklama çift saymayı önler.
@@ -613,6 +614,8 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                 Bir kartı kapatmadan önce: bağlı otomatik ödemeleri ve abonelikleri taşıyın, puan/mili kullanın, yazılı kapatma onayı isteyin, 1 ay sonra ekstreyi kontrol edin.
               </div>
             </div>
+            {/* Kartsız yaşam kokpiti: taksit takvimi + borç eğrisi, alabilir miyim?, abonelikler, aylık karne */}
+            <BudgetInsights fileContents={fileContents} budget={budget} onSaveNote={onSaveNote} />
             <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <FileText size={12} /> Bu ay <code>{path}</code> notunda saklanır.
               {onOpenNote && fileContents[path] !== undefined && <button type="button" style={{ ...btn, padding: '2px 7px', fontSize: '11px' }} onClick={() => onOpenNote(path)}>Notu aç</button>}
