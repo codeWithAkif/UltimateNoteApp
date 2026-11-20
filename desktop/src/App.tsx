@@ -1541,6 +1541,16 @@ export default function App() {
     }
   };
 
+  // Alışveriş/ klasörü (canlı liste, haftalık kayıtlar, tercihler...) görev tarayan ekranlara verilmez: liste maddeleri "- [ ]" biçimindedir
+  // (telefon widget'ı bunu bekler) ve panoda/takvimde kart olarak görünmemeli. Notlar, Bütçe ve Alışveriş ekranları tam listeyi kullanır.
+  const isShopPath = (p: string) => p.startsWith('Alışveriş/');
+  const taskNotes = useMemo(() => notes.filter(n => !isShopPath(n.path)), [notes]);
+  const taskFileContents = useMemo(() => {
+    const o: Record<string, string> = {};
+    for (const k of Object.keys(fileContents)) if (!isShopPath(k)) o[k] = fileContents[k];
+    return o;
+  }, [fileContents]);
+
   const getNoteStats = (path: string) => {
     const content = fileContents[path] || '';
     const lineCount = content.split('\n').length;
@@ -7667,7 +7677,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <NoteFactoryView
               onProcessInput={handleProcessInput}
               folders={folders}
-              notes={notes}
+              notes={taskNotes}
               tags={tags}
             />
           )}
@@ -7676,9 +7686,9 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
             <DashboardView
               onProcessInput={handleProcessInput}
               folders={folders}
-              notes={notes}
+              notes={taskNotes}
               tags={tags}
-              fileContents={fileContents}
+              fileContents={taskFileContents}
               onSelectNote={(path) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
@@ -7702,7 +7712,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'inbox' && (
             <InboxView
-              notes={notes}
+              notes={taskNotes}
               folders={folders}
               tags={tags}
               readNoteContent={handleReadNoteContent}
@@ -8162,10 +8172,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               autoWriteReady={firstSyncSettled}
               clientsFolder={clientsFolder}
                         embedded
-                        notes={notes}
+                        notes={taskNotes}
                         folders={folders}
                         tags={tags}
-                        fileContents={fileContents}
+                        fileContents={taskFileContents}
                         readNoteContent={handleReadNoteContent}
                         onSaveNote={handleSaveNote}
                         onCreateNote={handleCreateNote}
@@ -8201,7 +8211,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'tasks' && (
             <TasksView
-              notes={notes}
+              notes={taskNotes}
               folders={folders}
               tags={tags}
               readNoteContent={handleReadNoteContent}
@@ -8222,8 +8232,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               selectedFolder={selectedFolder}
               onToggleTodo={handleToggleTodo}
               onOpenNote={handleOpenTimelineNote}
-              notes={notes}
-              scannedContents={fileContents}
+              notes={taskNotes}
+              scannedContents={taskFileContents}
               onOpenNotePath={(path: string) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
@@ -8240,10 +8250,10 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               autoWriteReady={firstSyncSettled}
               onExternalEvents={(evts) => { externalEventsRef.current = evts; }}
               clientsFolder={clientsFolder}
-              notes={notes}
+              notes={taskNotes}
               folders={folders}
               tags={tags}
-              fileContents={fileContents}
+              fileContents={taskFileContents}
               readNoteContent={handleReadNoteContent}
               onSaveNote={handleSaveNote}
               onCreateNote={handleCreateNote}
@@ -8297,6 +8307,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           {activeTab === 'shopping' && (
             <ShoppingView
               fileContents={fileContents}
+              pinnedWidget={pinnedWidgetList}
+              onPinWidget={(path: string) => updatePinnedWidgets([...pinnedWidgetLists.filter(x => x !== path), path], path)}
               onSaveNote={handleSaveNote}
               onOpenNote={(path: string) => {
                 handleSetActiveNotePath(path);
@@ -8325,8 +8337,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
               timelineItems={timelineItems}
               navRequest={projectNav}
               onNavHandled={() => setProjectNav(null)}
-              notes={notes}
-              scannedContents={fileContents}
+              notes={taskNotes}
+              scannedContents={taskFileContents}
               onChangeTaskStatus={handleChangeTaskStatus}
               onSaveNote={handleSaveNote}
               onTasksAdded={() => { loadAllData(); }}
@@ -8382,8 +8394,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'efor' && (
             <EforView
-              notes={notes}
-              fileContents={fileContents}
+              notes={taskNotes}
+              fileContents={taskFileContents}
               projectNames={projectNames}
             />
           )}
@@ -8403,8 +8415,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'analytics' && (
             <AnalyticsView
-              notes={notes}
-              fileContents={fileContents}
+              notes={taskNotes}
+              fileContents={taskFileContents}
               onSelectNote={(path) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
@@ -8414,8 +8426,8 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'city' && (
             <CityBuilderView
-              notes={notes}
-              fileContents={fileContents}
+              notes={taskNotes}
+              fileContents={taskFileContents}
               onSelectNote={(path) => {
                 handleSetActiveNotePath(path);
                 setActiveTab('notes');
