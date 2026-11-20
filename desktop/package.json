@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "1.76.0",
+  "version": "1.77.0",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -38,6 +38,7 @@
     "@capacitor/local-notifications": "^8.2.0",
     "@capacitor/preferences": "^8.0.1",
     "@capgo/capacitor-updater": "^8.51.2",
+    "@fontsource/inter": "^5.3.0",
     "@supabase/supabase-js": "^2.108.2",
     "buffer": "^6.0.3",
     "electron-updater": "^6.3.9",

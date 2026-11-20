@@ -100,6 +100,7 @@ import ShoppingView from './components/ShoppingView';
 import { isDevSupported } from './services/devWork';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import AppAssistant from './components/AppAssistant';
 
 interface ShortcutKey {
   key: string;
@@ -11825,6 +11826,7 @@ grant execute on function get_db_size() to anon;`}
           </button>
         </div>
       )}
+      <AppAssistant ready={filesLoaded && firstSyncSettled} tab={activeTab} onNavigate={(id) => setActiveTab(id as any)} activeNotePath={activeNotePath} fileContents={fileContents} saveNote={(p, c) => handleSaveNote(p, c)} />
     </div>
   );
 }

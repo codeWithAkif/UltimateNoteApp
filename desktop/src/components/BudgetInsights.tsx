@@ -45,14 +45,17 @@ function Bars({ data, color = ORANGE, color2 = BLUE, h = 150 }: { data: { label:
   );
 }
 
-type Tab = 'taksit' | 'alabilir' | 'abonelik' | 'karne';
+export type InsightTab = 'taksit' | 'alabilir' | 'abonelik' | 'karne';
+type Tab = InsightTab;
 
-export default function BudgetInsights({ fileContents, budget, onSaveNote }: {
+export default function BudgetInsights({ fileContents, budget, onSaveNote, section }: {
   fileContents: Record<string, string>;
   budget: Budget;
   onSaveNote?: (path: string, content: string) => Promise<void>;
+  section?: InsightTab; // verilirse yalnızca o bölüm (kendi sekme çubuğu ve çerçevesi olmadan) gösterilir
 }) {
-  const [tab, setTab] = useState<Tab>('taksit');
+  const [tabState, setTab] = useState<Tab>('taksit');
+  const tab: Tab = section ?? tabState;
   const months = useMemo(() => loadMonths(fileContents), [fileContents]);
   const loaded = Object.keys(fileContents).length > 0; // notlar yüklenmeden karar notu yazılmaz (yüklenmemiş notun ezilmesini önler)
   const tabBtn = (t: Tab): React.CSSProperties => ({ ...btn, background: tab === t ? 'var(--accent-color)' : 'var(--bg-hover)', color: tab === t ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (tab === t ? 'var(--accent-color)' : 'var(--border-color)') });
@@ -87,14 +90,14 @@ export default function BudgetInsights({ fileContents, budget, onSaveNote }: {
   const verdictUi = (v: AffordResult['verdict']) => v === 'olur' ? { c: GREEN, t: 'Olur', I: CheckCircle2 } : v === 'dikkat' ? { c: ORANGE, t: 'Dikkat', I: AlertTriangle } : { c: RED, t: 'Olmaz', I: XCircle };
 
   return (
-    <div style={{ ...panel, marginTop: '14px' }}>
-      <div style={{ ...label, marginBottom: '8px' }}>Kartsız yaşam kokpiti</div>
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+    <div style={section ? {} : { ...panel, marginTop: '14px' }}>
+      {!section && <div style={{ ...label, marginBottom: '8px' }}>Kartsız yaşam kokpiti</div>}
+      {!section && <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
         <button type="button" style={tabBtn('taksit')} onClick={() => setTab('taksit')}><CreditCard size={13} /> Taksit &amp; Borç</button>
         <button type="button" style={tabBtn('alabilir')} onClick={() => setTab('alabilir')}><Calculator size={13} /> Alabilir miyim?</button>
         <button type="button" style={tabBtn('abonelik')} onClick={() => setTab('abonelik')}><Repeat size={13} /> Abonelikler</button>
         <button type="button" style={tabBtn('karne')} onClick={() => setTab('karne')}><ClipboardList size={13} /> Karne</button>
-      </div>
+      </div>}
 
       {/* ===== TAKSİT & BORÇ ===== */}
       {tab === 'taksit' && (

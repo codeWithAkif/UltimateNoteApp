@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PiggyBank, Send, Undo2, Trash2, Plus, ChevronLeft, ChevronRight, Sparkles, Check, X, UserCog, AlertTriangle, RefreshCw, FileText, Paperclip } from 'lucide-react';
+import { PiggyBank, Send, Undo2, Trash2, Plus, ChevronLeft, ChevronRight, Sparkles, Check, X, UserCog, AlertTriangle, RefreshCw, FileText, Paperclip, MessageCircle, Route, CalendarRange, Calculator, Repeat, Award } from 'lucide-react';
+// Inter yazı tipi uygulamaya gömülüdür (internet gerekmez); Türkçe harfler için latin-ext dahil
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-ext-400.css';
+import '@fontsource/inter/latin-ext-500.css';
+import '@fontsource/inter/latin-ext-600.css';
+import { loadMonths, installmentPlan } from '../services/insights';
 import {
   type Budget, type BudgetItem, type BudgetKind, type CheckedAction, KIND_LABEL, KIND_ORDER, monthPath, monthOf, shiftMonth, monthLabel, parseBudgetNote, serializeBudget,
   rollover, emptyBudget, mergeAnaliz, type SpendRow, recategorize, parseRules, serializeRules, applyRules, RULES_PATH, totals, cashflow, dailyAllowance, transition, checkActions, applyAction, applyActions, retarget, reindex, parseTL, fmtTL, round2
@@ -348,171 +356,359 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
   };
 
   const clearChat = () => setMsgs([]);
+
+  // ---- yeni düzen: üstte kalan özeti, beş sekme, sağdan içeriğin ÜSTÜNE açılan sohbet çekmecesi (içeriği sıkıştırmaz)
+  type BTab = 'genel' | 'kalem' | 'harcama' | 'kartsiz' | 'oneri';
+  type KSec = 'yol' | 'taksit' | 'alabilir' | 'abonelik' | 'karne';
+  const TABS: [BTab, string][] = [['genel', 'Genel'], ['kalem', 'Kalemler'], ['harcama', 'Harcamalar'], ['kartsiz', 'Kartsız yaşam'], ['oneri', 'Öneriler']];
+  const [tab, setTab] = useState<BTab>(() => { try { const v = localStorage.getItem('budget_tab_v1') as BTab; return TABS.some(x => x[0] === v) ? v : 'genel'; } catch { return 'genel'; } });
+  const [kSec, setKSec] = useState<KSec>('yol');
+  const [chatOpen, setChatOpen] = useState<boolean>(() => { try { return localStorage.getItem('budget_chat_open_v1') === '1'; } catch { return false; } });
+  const pickTab = (t: BTab) => { setTab(t); try { localStorage.setItem('budget_tab_v1', t); } catch { /* yoksay */ } };
+  const setChatPanel = (o: boolean) => { setChatOpen(o); try { localStorage.setItem('budget_chat_open_v1', o ? '1' : '0'); } catch { /* yoksay */ } };
+  const pendingCount = msgs.reduce((n, m) => n + (m.acts || []).filter(a => a.state === 'bekliyor').length, 0);
+
+  const instPlan = useMemo(() => installmentPlan(loadMonths(fileContents)), [fileContents]);
+  const todayD = new Date();
+  const dayNow = month === monthOf(todayD) ? todayD.getDate() : 0;
+  const nextPay = budget.items.filter(i => (i.kind === 'kart' || i.kind === 'sabit') && i.day && i.day >= dayNow).sort((a, z) => (a.day as number) - (z.day as number))[0];
+
+  const card: React.CSSProperties = { ...panel, borderRadius: '12px', padding: '14px 16px', minWidth: 0 };
+  const lab: React.CSSProperties = { fontSize: '12px', color: 'var(--text-muted)' };
+  const grid = (min: number): React.CSSProperties => ({ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(${min}px, 1fr))`, gap: '16px' });
   const kalanColor = T.kalan >= 0 ? '#22c55e' : '#ef4444';
-  const stat = (lab: string, val: string, color?: string, sub?: string) => (
-    <div style={{ ...panel, padding: '9px 12px', flex: '1 1 120px', minWidth: '110px' }}>
-      <div style={{ fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', fontWeight: 700 }}>{lab}</div>
-      <div style={{ fontSize: '17px', fontWeight: 800, color: color || 'var(--text-primary)', marginTop: '2px' }}>{val}</div>
-      {sub && <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginTop: '1px' }}>{sub}</div>}
-    </div>
-  );
-  const trRow = (title: string, r: ReturnType<typeof transition>, hint: string) => (
-    <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline', padding: '5px 0', borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap' }}>
-      <div style={{ flex: '1 1 150px', fontSize: '12.5px', fontWeight: 600 }}>{title}<div style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-muted)' }}>{hint}</div></div>
-      <div style={{ fontSize: '13px', fontWeight: 700, color: r.bitis === null ? '#ef4444' : r.bitis === 0 ? 'var(--text-muted)' : '#22c55e' }}>
-        {r.bitis === null ? 'mümkün değil' : r.bitis === 0 ? 'kaydırılacak yok' : `${r.bitis} ayda`}
+  const seg = [
+    { k: 'Sabit', v: T.sabit, c: '#E24B4A' }, { k: 'Kart ekstresi', v: T.kart, c: '#D85A30' }, { k: 'Değişken', v: T.degisken, c: '#a855f7' },
+    { k: 'Beklenmeyen', v: T.reserve, c: '#888780' }, { k: 'Kalan', v: Math.max(0, T.kalan), c: '#378ADD' }
+  ].filter(s => s.v > 0);
+  const segTotal = Math.max(T.gelir, seg.reduce((s, x) => s + x.v, 0)) || 1;
+  const plan = (tNum > 0 && kNum > 0 ? trBoth : tNum > 0 ? trTampon : kNum > 0 ? trKisinti : trNow);
+  const monthsText = (r: ReturnType<typeof transition>) => (r.bitis === null ? 'mümkün değil' : r.bitis === 0 ? 'kaydırılacak yok' : `${r.bitis} ay`);
+
+  const tabBtn = (active: boolean): React.CSSProperties => ({ background: 'none', border: 'none', borderBottom: `2px solid ${active ? 'var(--accent-color)' : 'transparent'}`, color: active ? 'var(--text-primary)' : 'var(--text-muted)', padding: '10px 12px', fontSize: '13px', fontWeight: active ? 500 : 400, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
+  const railBtn = (active: boolean): React.CSSProperties => ({ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', border: 'none', borderRadius: '8px', padding: '8px 10px', fontSize: '13px', fontFamily: 'inherit', cursor: 'pointer', background: active ? 'var(--bg-tertiary)' : 'none', color: active ? 'var(--text-primary)' : 'var(--text-muted)', whiteSpace: 'nowrap' });
+  const KSECS: [KSec, string, React.ReactNode][] = [
+    ['yol', 'Yol haritası', <Route size={14} key="y" />], ['taksit', 'Taksitler', <CalendarRange size={14} key="t" />], ['alabilir', 'Alabilir miyim?', <Calculator size={14} key="a" />],
+    ['abonelik', 'Abonelikler', <Repeat size={14} key="b" />], ['karne', 'Karne', <Award size={14} key="k" />]
+  ];
+
+  const chatDrawer = (
+    <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 'min(380px, 100%)', background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', zIndex: 5 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 12px', borderBottom: '1px solid var(--border-color)' }}>
+        <div style={{ fontSize: '13px', fontWeight: 500, flex: 1 }}>Finans uzmanı</div>
+        <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={openPersona} title="Yapay zekâya verilen kişilik metnini düzenleyin"><UserCog size={13} /> Kişilik</button>
+        {msgs.length > 0 && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={clearChat} title="Sohbeti temizle (kalemler silinmez)">Temizle</button>}
+        <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setChatPanel(false)} aria-label="Sohbeti kapat"><X size={14} /></button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {msgs.length === 0 && (
+          <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            Örnek: "Maaşım 50 bin, her ayın 5'inde yatıyor. Kira 12 bin, aidat 1500, çocuğun okulu 6 bin (9 taksitin 3'ü kaldı). Yapı Kredi ekstresi 18 bin, son ödeme 3'ü; bunun 4 bini taksit."<br />
+            Ya da kart ekstresi PDF'ini ataçla ekleyin; "ya ayda 3 bin market kıssam?" gibi senaryolar da sorabilirsiniz.
+          </div>
+        )}
+        {msgs.map(m => (
+          <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'stretch', maxWidth: m.role === 'user' ? '90%' : '100%' }}>
+            <div style={{ background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: m.role === 'user' ? '#fff' : 'var(--text-primary)', borderRadius: '10px', padding: '8px 11px', fontSize: '12.5px', lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.text}</div>
+            {m.analiz && (
+              <div style={{ marginTop: '6px', fontSize: '12px', background: 'rgba(249,115,22,0.10)', border: '1px solid rgba(249,115,22,0.35)', borderRadius: '8px', padding: '7px 10px', lineHeight: 1.6 }}>
+                <b>Harcama dağılımı ({m.analiz.kart}):</b>{' '}
+                {byCat(m.analiz.rows).slice(0, 7).map(([k, v]) => `${k} ${fmtTL(v)}`).join(' · ')}{byCat(m.analiz.rows).length > 7 ? ' …' : ''}
+                <div style={{ color: 'var(--text-muted)', fontSize: '11.5px' }}>{m.analiz.rows.length} harcama{(() => { const s = m.analiz.rows.reduce((x, r) => x + r.tutar, 0); return m.analiz.toplam && Math.abs(s - m.analiz.toplam) > Math.max(5, m.analiz.toplam * 0.01) ? ` · toplamı ${fmtTL(s)} (ekstre borcu ${fmtTL(m.analiz.toplam)}; fark önceki dönemden devreden olabilir)` : ` · toplamı ${fmtTL(s)}`; })()}</div>
+                <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '11.5px', flexWrap: 'wrap' }}>
+                  {m.analiz.saved ? <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ kaydedildi</span>
+                    : <><span>Kart kalemini onaylayınca birlikte kaydedilir.</span><button type="button" style={{ ...btn, padding: '3px 8px', fontSize: '11.5px' }} onClick={() => saveAnaliz(m.id)}>Yalnızca dağılımı kaydet</button></>}
+                </div>
+              </div>
+            )}
+            {m.goTo && (
+              <button type="button" style={{ ...btnPrimary, marginTop: '6px' }} onClick={() => setMonth(m.goTo!)}>
+                <ChevronRight size={14} /> {monthLabel(m.goTo)} bütçesine git ve kartı onayla
+              </button>
+            )}
+            {m.acts && m.acts.length > 0 && (
+              <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {m.senaryo && (
+                  <div style={{ fontSize: '12px', background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '8px', padding: '7px 10px', lineHeight: 1.55 }}>
+                    <b>Senaryo (kayıt değil):</b> kalan {fmtTL(m.senaryo.kalanOnce)} → <b style={{ color: m.senaryo.kalanSonra >= m.senaryo.kalanOnce ? '#22c55e' : '#ef4444' }}>{fmtTL(m.senaryo.kalanSonra)}</b>
+                    {m.senaryo.ayOnce !== m.senaryo.aySonra && <> · kartsız geçiş: {m.senaryo.ayOnce === null ? 'mümkün değil' : `${m.senaryo.ayOnce} ay`} → {m.senaryo.aySonra === null ? 'mümkün değil' : `${m.senaryo.aySonra} ay`}</>}
+                  </div>
+                )}
+                {m.acts.map((a, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-tertiary)', border: `1px solid ${a.state === 'hata' ? 'rgba(239,68,68,0.4)' : 'var(--border-color)'}`, borderRadius: '8px', padding: '6px 9px', fontSize: '12px' }}>
+                    <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', opacity: a.state === 'atlandi' ? 0.5 : 1, textDecoration: a.state === 'atlandi' ? 'line-through' : 'none' }}>
+                      {a.check.label}
+                      {a.state === 'hata' && <div style={{ color: '#ef4444', fontSize: '11px' }}>{a.note || 'Uygulanamaz'}</div>}
+                      {a.check.action.neden && a.state === 'bekliyor' && <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{a.check.action.neden}</div>}
+                    </div>
+                    {a.state === 'bekliyor' && (
+                      <>
+                        <button type="button" style={{ ...btnPrimary, padding: '4px 8px' }} onClick={() => applyActs(m.id, [i])} title={m.senaryo ? 'Gerçekten uygula' : 'Ekle'}><Check size={13} /> {m.senaryo ? 'Uygula' : 'Ekle'}</button>
+                        <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setAct(m.id, i, { state: 'atlandi' })} title="Atla" aria-label="Atla"><X size={13} /></button>
+                      </>
+                    )}
+                    {a.state === 'eklendi' && <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 600 }}>✓ uygulandı</span>}
+                  </div>
+                ))}
+                {m.acts.filter(a => a.state === 'bekliyor').length > 1 && (
+                  <button type="button" style={{ ...btnPrimary, alignSelf: 'flex-start' }} onClick={() => applyActs(m.id, m.acts!.map((_, i) => i))}><Check size={14} /> Hepsini {m.senaryo ? 'uygula' : 'ekle'}</button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        {thinking && <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={13} className="animate-spin" /> Düşünüyor… {waitSec} sn{waitSec >= 20 ? ' (uzun sürerse otomatik yedeğe geçer ya da hata gösterir)' : ''}</div>}
+        <div ref={chatEnd} />
+      </div>
+      <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border-color)' }}>
+        {err && <div style={{ fontSize: '12px', color: '#ef4444', marginBottom: '6px', overflowWrap: 'anywhere' }}>{err}</div>}
+        {!aiReady && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginBottom: '6px' }}>Yapay zekâ ayarlı değil (Ayarlar &gt; AI Mentor). Kalemleri Kalemler sekmesinden elle girebilirsiniz.</div>}
+        {(stmt || reading) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+            <FileText size={13} />
+            {reading ? 'PDF okunuyor…' : <>
+              <span style={{ fontWeight: 500 }}>{stmt!.name}</span>
+              <span style={{ color: 'var(--text-muted)' }}>· {stmt!.pages} sayfa{stmt!.truncated ? ' (ilk bölümü okunacak)' : ''} · kart/IBAN/TC numaraları gizlendi</span>
+              <button type="button" onClick={() => setStmt(null)} aria-label="Eki kaldır" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, display: 'flex' }}><X size={13} /></button>
+            </>}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-end' }}>
+          <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void pickPdf(f); }} />
+          <button type="button" style={{ ...btn, padding: '8px' }} disabled={thinking || reading} onClick={() => fileRef.current?.click()} aria-label="Kart ekstresi PDF ekle" title="Kart ekstresi PDF'i ekle"><Paperclip size={14} /></button>
+          <textarea
+            value={input} onChange={(e) => setInput(e.target.value)} rows={2} aria-label="Mesajınız"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+            placeholder="Bu ay maaşım…, kira…, kart ekstresi…" style={{ ...field, flex: 1, resize: 'none' }}
+          />
+          <button type="button" style={{ ...btnPrimary, opacity: (input.trim() || stmt) && !thinking && !reading ? 1 : 0.6 }} disabled={(!input.trim() && !stmt) || thinking || reading} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
+        </div>
       </div>
     </div>
   );
-  const plan = (tNum > 0 && kNum > 0 ? trBoth : tNum > 0 ? trTampon : kNum > 0 ? trKisinti : trNow);
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', boxSizing: 'border-box', padding: '18px 16px' }}>
-      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <h1 style={{ margin: 0, fontSize: '22px', display: 'flex', alignItems: 'center', gap: '10px' }}><PiggyBank size={22} /> Bütçe Planı</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: 'auto' }}>
-            <button type="button" style={{ ...btn, padding: '5px 7px' }} onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Önceki ay"><ChevronLeft size={15} /></button>
-            <div style={{ minWidth: '130px', textAlign: 'center', fontWeight: 700, fontSize: '14px', textTransform: 'capitalize' }}>{monthLabel(month)}</div>
-            <button type="button" style={{ ...btn, padding: '5px 7px' }} onClick={() => setMonth(shiftMonth(month, 1))} aria-label="Sonraki ay"><ChevronRight size={15} /></button>
-            {month !== monthOf(new Date()) && <button type="button" style={btn} onClick={() => setMonth(monthOf(new Date()))}>Bu ay</button>}
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', overflow: 'hidden', fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", fontSize: '13px', fontVariantNumeric: 'tabular-nums' }}>
+      {/* üst çubuk */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '14px 20px 0' }}>
+        <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}><PiggyBank size={20} color="var(--accent-color)" /> Bütçe Planı</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '6px' }}>
+          <button type="button" style={{ ...btn, padding: '5px 7px' }} onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Önceki ay"><ChevronLeft size={15} /></button>
+          <div style={{ minWidth: '112px', textAlign: 'center', fontWeight: 500, fontSize: '14px', textTransform: 'capitalize' }}>{monthLabel(month)}</div>
+          <button type="button" style={{ ...btn, padding: '5px 7px' }} onClick={() => setMonth(shiftMonth(month, 1))} aria-label="Sonraki ay"><ChevronRight size={15} /></button>
+          {month !== monthOf(new Date()) && <button type="button" style={btn} onClick={() => setMonth(monthOf(new Date()))}>Bu ay</button>}
+        </div>
+        <span style={{ flex: 1 }} />
+        <button type="button" style={{ ...btn, opacity: undo.length ? 1 : 0.5 }} disabled={undo.length === 0} onClick={doUndo} title="Son değişikliği geri al"><Undo2 size={14} /> Geri al</button>
+        <button type="button" style={{ ...btn, borderColor: chatOpen ? 'var(--accent-color)' : undefined, color: chatOpen ? 'var(--accent-color)' : undefined }} onClick={() => setChatPanel(!chatOpen)} aria-label="Finans uzmanı sohbetini aç veya kapat" aria-pressed={chatOpen}>
+          <MessageCircle size={14} /> Finans uzmanı
+          {pendingCount > 0 && <span style={{ background: 'var(--accent-color)', color: '#fff', borderRadius: '10px', padding: '0 7px', fontSize: '11.5px' }}>{pendingCount}</span>}
+        </button>
+      </div>
+
+      {/* kalan özeti + gelirin dağılımı */}
+      <div style={{ padding: '14px 20px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '16px', flexWrap: 'wrap' }}>
+          <div>
+            <div style={lab}>Bu ay kalan</div>
+            <div style={{ fontSize: '28px', fontWeight: 500, lineHeight: 1.15, color: kalanColor }}>{fmtTL(T.kalan)}</div>
+          </div>
+          <div style={{ ...lab, marginLeft: 'auto', paddingBottom: '4px' }}>
+            Gelir <b style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{fmtTL(T.gelir)}</b>
+            {allowance !== null && <> · günlük harcama payı <b style={{ fontWeight: 500, color: T.kalan > 0 ? 'var(--text-primary)' : '#ef4444' }}>{T.kalan > 0 ? `~${fmtTL(allowance)}` : 'yok, bu ay açık veriyor'}</b></>}
           </div>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.5 }}>
-          Gelirinizi, sabit giderlerinizi (fatura, aidat, okul…) ve kart ekstrelerinizi sohbetle ya da elle girin. Yapay zekâ önerdiği her kalemi onayınıza sunar; rakamları uygulama hesaplar. Kart/IBAN/TC numaraları yapay zekâya gitmeden gizlenir. Öneriler genel bütçe önerileridir, karar sizindir.
-        </div>
+        {seg.length > 0 ? (
+          <>
+            <div style={{ display: 'flex', height: '10px', borderRadius: '5px', overflow: 'hidden', marginTop: '10px', background: 'var(--bg-tertiary)' }} role="img" aria-label="Gelirin dağılımı: sabit, kart, değişken, beklenmeyen, kalan">
+              {seg.map(s => <div key={s.k} style={{ width: `${s.v / segTotal * 100}%`, background: s.c }} title={`${s.k}: ${fmtTL(s.v)}`} />)}
+            </div>
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginTop: '8px', ...lab }}>
+              {seg.map(s => <span key={s.k}><i style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '2px', background: s.c, marginRight: '6px' }} />{s.k} {fmtTL(s.v)}</span>)}
+            </div>
+          </>
+        ) : <div style={{ ...lab, marginTop: '8px' }}>Gelir ve giderler eklenince dağılım burada görünür.</div>}
         {rolled && <div style={{ marginTop: '8px', fontSize: '12px', color: '#f59e0b' }}>Önceki aydan gelir ve sabit giderler devredildi (taksitler 1 azaldı). Bir değişiklik yaptığınızda bu ay kaydedilir.</div>}
+      </div>
 
-        {/* özet */}
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
-          {stat('Gelir', fmtTL(T.gelir), KIND_COLOR.gelir)}
-          {stat('Sabit giderler', fmtTL(T.sabit))}
-          {stat('Kart ekstreleri', fmtTL(T.kart))}
-          {stat('Değişken', fmtTL(T.degisken))}
-          {stat('Beklenmeyen', fmtTL(T.reserve), undefined, `gelirin %${budget.reservePct}'i`)}
-          {stat('KALAN', fmtTL(T.kalan), kalanColor, allowance !== null ? (T.kalan > 0 ? `günlük ~${fmtTL(allowance)} rahat pay` : 'bu ay açık veriyor') : undefined)}
-        </div>
+      {/* sekmeler */}
+      <div style={{ display: 'flex', gap: '2px', padding: '0 20px', marginTop: '10px', borderBottom: '1px solid var(--border-color)', overflowX: 'auto' }} role="tablist">
+        {TABS.map(([id, text]) => <button key={id} type="button" role="tab" aria-selected={tab === id} style={tabBtn(tab === id)} onClick={() => pickTab(id)}>{text}</button>)}
+      </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginTop: '14px', alignItems: 'flex-start' }}>
-          {/* SOL: sohbet */}
-          <div style={{ flex: '1 1 340px', minWidth: 0, maxWidth: '520px' }}>
-            <div style={{ ...panel, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', flex: 1 }}>Finans uzmanıyla sohbet</div>
-                <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={openPersona} title="Yapay zekâya verilen kişilik metnini düzenleyin"><UserCog size={13} /> Kişilik</button>
-                {msgs.length > 0 && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={clearChat} title="Sohbeti temizle (kalemler silinmez)">Temizle</button>}
+      {/* içerik + sohbet çekmecesi */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <div style={{ height: '100%', overflowY: 'auto', padding: '18px 20px 24px', boxSizing: 'border-box' }}>
+
+          {tab === 'genel' && (
+            <>
+              <div style={grid(300)}>
+                <div style={card}><div style={{ ...lab, marginBottom: '6px' }}>Gelirden kalana</div><Waterfall b={budget} /></div>
+                <div style={card}>
+                  <div style={{ ...lab, marginBottom: '6px' }}>Ay içi nakit takvimi</div>
+                  {budget.items.length === 0 ? <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>Kalemler eklenince burada gün gün bakiyeniz görünür.</div> : <CashChart cf={CF} />}
+                  {CF.negativeDays.length > 0 && (
+                    <div style={{ display: 'flex', gap: '6px', fontSize: '12.5px', color: '#ef4444', marginTop: '6px', lineHeight: 1.5 }}>
+                      <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <span>Bakiye ayın {CF.negativeDays[0]}. gününden {CF.negativeDays[CF.negativeDays.length - 1]}. gününe kadar eksiye düşüyor (en düşük {fmtTL(CF.min.balance)}). Maaş günü ile ödeme günleri arasındaki boşluğa dikkat.</span>
+                    </div>
+                  )}
+                  {CF.undated.length > 0 && <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>Günü yazılmayan kalemler ayın 1'inde varsayıldı: {CF.undated.join(', ')}. Gün ekleyerek takvimi netleştirin.</div>}
+                </div>
               </div>
-              <div style={{ minHeight: '180px', maxHeight: '460px', overflowY: 'auto', marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {msgs.length === 0 && (
-                  <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                    Örnek: "Maaşım 50 bin, her ayın 5'inde yatıyor. Kira 12 bin, aidat 1500, çocuğun okulu 6 bin (9 taksitin 3'ü kaldı). Yapı Kredi ekstresi 18 bin, son ödeme 3'ü; bunun 4 bini taksit."<br />
-                    Ya da "ya ayda 3 bin market kıssam?" gibi senaryolar sorun.
-                  </div>
-                )}
-                {msgs.map(m => (
-                  <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'stretch', maxWidth: m.role === 'user' ? '90%' : '100%' }}>
-                    <div style={{ background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: m.role === 'user' ? '#fff' : 'var(--text-primary)', borderRadius: '10px', padding: '8px 11px', fontSize: '12.5px', lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.text}</div>
-                    {m.analiz && (
-                      <div style={{ marginTop: '6px', fontSize: '12px', background: 'rgba(249,115,22,0.10)', border: '1px solid rgba(249,115,22,0.35)', borderRadius: '8px', padding: '7px 10px', lineHeight: 1.6 }}>
-                        <b>Harcama dağılımı ({m.analiz.kart}):</b>{' '}
-                        {byCat(m.analiz.rows).slice(0, 7).map(([k, v]) => `${k} ${fmtTL(v)}`).join(' · ')}{byCat(m.analiz.rows).length > 7 ? ' …' : ''}
-                        <div style={{ color: 'var(--text-muted)', fontSize: '11.5px' }}>{m.analiz.rows.length} harcama{(() => { const s = m.analiz.rows.reduce((x, r) => x + r.tutar, 0); return m.analiz.toplam && Math.abs(s - m.analiz.toplam) > Math.max(5, m.analiz.toplam * 0.01) ? ` · toplamı ${fmtTL(s)} (ekstre borcu ${fmtTL(m.analiz.toplam)}; fark önceki dönemden devreden olabilir)` : ` · toplamı ${fmtTL(s)}`; })()}</div>
-                        <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '11.5px' }}>
-                          {m.analiz.saved ? <span style={{ color: '#22c55e', fontWeight: 700 }}>✓ kaydedildi</span>
-                            : <><span>Kart kalemini onaylayınca birlikte kaydedilir.</span><button type="button" style={{ ...btn, padding: '3px 8px', fontSize: '11.5px' }} onClick={() => saveAnaliz(m.id)}>Yalnızca dağılımı kaydet</button></>}
-                        </div>
+              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap', marginTop: '18px' }}>
+                <div><div style={lab}>Sıradaki ödeme</div><div style={{ fontWeight: 500 }}>{nextPay ? `${nextPay.name}, ayın ${nextPay.day}'i · ${fmtTL(nextPay.amount)}` : 'Bu ay ödeme kalmadı'}</div></div>
+                <div><div style={lab}>Kartsız geçiş</div><div style={{ fontWeight: 500 }}>{monthsText(trNow)}</div></div>
+                <div><div style={lab}>Taksitler biter</div><div style={{ fontWeight: 500 }}>{instPlan.items.length ? (instPlan.bosAy ? monthLabel(instPlan.bosAy) : '—') : 'taksit yok'}</div></div>
+              </div>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '18px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <FileText size={12} /> Bu ay <code>{path}</code> notunda saklanır.
+                {onOpenNote && fileContents[path] !== undefined && <button type="button" style={{ ...btn, padding: '2px 7px', fontSize: '11px' }} onClick={() => onOpenNote(path)}>Notu aç</button>}
+              </div>
+            </>
+          )}
+
+          {tab === 'kalem' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                <label style={{ ...lab, display: 'inline-flex', alignItems: 'center', gap: '6px' }} title="Bayram, tamir, hastalık gibi beklenmeyenler için gelirden ayrılan pay">
+                  Beklenmeyen payı %
+                  <input type="number" min={0} max={50} step={1} value={budget.reservePct} onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0 && v <= 50) commit({ ...budget, reservePct: v }); }} aria-label="Beklenmeyenler payı yüzdesi" style={{ ...field, width: '60px', textAlign: 'center' }} />
+                </label>
+                <span style={lab}>Satırları elle düzenleyebilirsiniz; yapay zekâ önerdiği her kalemi sohbette onayınıza sunar.</span>
+              </div>
+              <div style={grid(420)}>
+                {KIND_ORDER.map(kind => {
+                  const rows = budget.items.filter(i => i.kind === kind);
+                  return (
+                    <div key={kind} style={card}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: KIND_COLOR[kind], display: 'inline-block' }} />
+                        <span style={{ fontWeight: 500 }}>{KIND_LABEL[kind]}</span><span style={lab}>· {fmtTL(rows.reduce((s, r) => s + r.amount, 0))}</span>
+                        <button type="button" style={{ ...btn, marginLeft: 'auto', padding: '3px 8px', fontSize: '11.5px' }} onClick={() => addItem(kind)}><Plus size={12} /> Ekle</button>
                       </div>
-                    )}
-                    {m.goTo && (
-                      <button type="button" style={{ ...btnPrimary, marginTop: '6px' }} onClick={() => setMonth(m.goTo!)}>
-                        <ChevronRight size={14} /> {monthLabel(m.goTo)} bütçesine git ve kartı onayla
-                      </button>
-                    )}
-                    {m.acts && m.acts.length > 0 && (
-                      <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                        {m.senaryo && (
-                          <div style={{ fontSize: '12px', background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '8px', padding: '7px 10px', lineHeight: 1.55 }}>
-                            <b>Senaryo (kayıt değil):</b> kalan {fmtTL(m.senaryo.kalanOnce)} → <b style={{ color: m.senaryo.kalanSonra >= m.senaryo.kalanOnce ? '#22c55e' : '#ef4444' }}>{fmtTL(m.senaryo.kalanSonra)}</b>
-                            {m.senaryo.ayOnce !== m.senaryo.aySonra && <> · kartsız geçiş: {m.senaryo.ayOnce === null ? 'mümkün değil' : `${m.senaryo.ayOnce} ay`} → {m.senaryo.aySonra === null ? 'mümkün değil' : `${m.senaryo.aySonra} ay`}</>}
-                          </div>
-                        )}
-                        {m.acts.map((a, i) => (
-                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-tertiary)', border: `1px solid ${a.state === 'hata' ? 'rgba(239,68,68,0.4)' : 'var(--border-color)'}`, borderRadius: '8px', padding: '6px 9px', fontSize: '12px' }}>
-                            <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', opacity: a.state === 'atlandi' ? 0.5 : 1, textDecoration: a.state === 'atlandi' ? 'line-through' : 'none' }}>
-                              {a.check.label}
-                              {a.state === 'hata' && <div style={{ color: '#ef4444', fontSize: '11px' }}>{a.note || 'Uygulanamaz'}</div>}
-                              {a.check.action.neden && a.state === 'bekliyor' && <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{a.check.action.neden}</div>}
+                      {HINT[kind] && <div style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '3px 0 4px' }}>{HINT[kind]}</div>}
+                      {rows.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>—</div>}
+                      {rows.map(it => <Row key={it.id} it={it} onChange={(p) => patchItem(it.id, p)} onRemove={() => removeItem(it.id)} />)}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {tab === 'harcama' && (
+            budget.analiz && budget.analiz.length > 0 ? (
+              <div style={card}>
+                <div style={{ ...lab, marginBottom: '8px' }}>Ekstre harcama dağılımı</div>
+                <SpendBars b={budget} onRecat={recat} />
+                {recatMsg && <div style={{ fontSize: '11.5px', color: '#22c55e', marginTop: '6px' }}>{recatMsg}</div>}
+              </div>
+            ) : (
+              <div style={{ ...card, textAlign: 'center', padding: '32px 16px' }}>
+                <div style={{ fontWeight: 500, marginBottom: '6px' }}>Harcama dağılımı henüz yok</div>
+                <div style={{ ...lab, lineHeight: 1.6, marginBottom: '12px' }}>Kart ekstresi PDF'ini sohbetten eklediğinizde harcamalar kategorilere ayrılır ve burada tek tek görünür.</div>
+                <button type="button" style={btnPrimary} onClick={() => setChatPanel(true)}><MessageCircle size={14} /> Sohbeti aç</button>
+              </div>
+            )
+          )}
+
+          {tab === 'kartsiz' && (
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ width: '168px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '2px' }} role="tablist" aria-label="Kartsız yaşam bölümleri">
+                {KSECS.map(([id, text, icon]) => <button key={id} type="button" role="tab" aria-selected={kSec === id} style={railBtn(kSec === id)} onClick={() => setKSec(id)}>{icon} {text}</button>)}
+              </div>
+              <div style={{ flex: '1 1 380px', minWidth: 0 }}>
+                {kSec === 'yol' && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '16px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                      <div><div style={lab}>Kartsız yaşama</div><div style={{ fontSize: '30px', fontWeight: 500, lineHeight: 1.1, color: plan.bitis === null ? '#ef4444' : 'var(--accent-color)' }}>{monthsText(plan)}</div></div>
+                      <div style={{ ...lab, flex: 1, minWidth: '200px', lineHeight: 1.55, paddingBottom: '4px' }}>
+                        Kaydırılabilir kart borcu <b style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{fmtTL(trNow.shiftable)}</b>.
+                        {trNow.sabitKartYuku > 0 && <> Taksitli <b style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{fmtTL(trNow.sabitKartYuku)}</b> taksit bitince kendiliğinden düşer.</>}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                      <label style={{ ...lab, display: 'flex', flexDirection: 'column', gap: '3px', flex: '1 1 150px' }}>
+                        Tek seferlik tampon (₺)
+                        <input value={tampon} onChange={(e) => setTampon(e.target.value)} inputMode="decimal" placeholder="örn. 20000" style={{ ...field, width: '100%' }} />
+                      </label>
+                      <label style={{ ...lab, display: 'flex', flexDirection: 'column', gap: '3px', flex: '1 1 150px' }}>
+                        Aylık ek kısıntı (₺)
+                        <input value={kisinti} onChange={(e) => setKisinti(e.target.value)} inputMode="decimal" placeholder="örn. 3000" style={{ ...field, width: '100%' }} />
+                      </label>
+                    </div>
+                    <div style={{ ...grid(140), gap: '10px', marginBottom: '14px' }}>
+                      {([['Mevcut kalanla', trNow, true], ['Tamponla', trTampon, tNum > 0], ['Kısıntıyla', trKisinti, kNum > 0], ['İkisi birlikte', trBoth, tNum > 0 && kNum > 0]] as [string, ReturnType<typeof transition>, boolean][]).map(([t, r, on]) => (
+                        <div key={t} style={{ ...card, padding: '10px 12px', opacity: on ? 1 : 0.5 }}>
+                          <div style={lab}>{t}</div>
+                          <div style={{ fontSize: '17px', fontWeight: 500, color: !on ? 'var(--text-muted)' : r.bitis === null ? '#ef4444' : '#22c55e' }}>{on ? monthsText(r) : '—'}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {plan.neden && <div style={{ fontSize: '12px', color: '#f59e0b', marginBottom: '10px' }}>{plan.neden}</div>}
+                    {plan.kapanis.length > 0 && (
+                      <div style={card}>
+                        <div style={{ ...lab, marginBottom: '6px' }}>Kartlar hangi ay kapanır</div>
+                        {plan.kapanis.map((c, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 0', borderBottom: i < plan.kapanis.length - 1 ? '1px solid var(--border-color)' : 'none' }}>
+                            <span style={{ width: '104px', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                            <div style={{ flex: 1, height: '10px', background: 'var(--bg-tertiary)', borderRadius: '5px', position: 'relative' }}>
+                              {c.ay !== null && <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.min(100, c.ay / Math.max(1, plan.bitis || c.ay) * 100)}%`, background: '#378ADD', borderRadius: '5px' }} />}
                             </div>
-                            {a.state === 'bekliyor' && (
-                              <>
-                                <button type="button" style={{ ...btnPrimary, padding: '4px 8px' }} onClick={() => applyActs(m.id, [i])} title={m.senaryo ? 'Gerçekten uygula' : 'Ekle'}><Check size={13} /> {m.senaryo ? 'Uygula' : 'Ekle'}</button>
-                                <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setAct(m.id, i, { state: 'atlandi' })} title="Atla" aria-label="Atla"><X size={13} /></button>
-                              </>
-                            )}
-                            {a.state === 'eklendi' && <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 700 }}>✓ uygulandı</span>}
+                            <b style={{ fontWeight: 500, width: '64px', textAlign: 'right' }}>{c.ay ? `${c.ay}. ay` : '—'}</b>
                           </div>
                         ))}
-                        {m.acts.filter(a => a.state === 'bekliyor').length > 1 && (
-                          <button type="button" style={{ ...btnPrimary, alignSelf: 'flex-start' }} onClick={() => applyActs(m.id, m.acts!.map((_, i) => i))}><Check size={14} /> Hepsini {m.senaryo ? 'uygula' : 'ekle'}</button>
-                        )}
+                        {plan.kapanis.some(c => c.taksitKalan > 0) && <div style={{ ...lab, marginTop: '6px' }}>Taksitli kartlar, taksitleri bitince fiilen kapanabilir (Taksitler bölümüne bakın).</div>}
                       </div>
                     )}
-                  </div>
-                ))}
-                {thinking && <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={13} className="animate-spin" /> Düşünüyor… {waitSec} sn{waitSec >= 20 ? ' (uzun sürerse otomatik yedeğe geçer ya da hata gösterir)' : ''}</div>}
-                <div ref={chatEnd} />
-              </div>
-              {err && <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '6px', overflowWrap: 'anywhere' }}>{err}</div>}
-              {!aiReady && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '6px' }}>Yapay zekâ ayarlı değil (Ayarlar &gt; AI Mentor). Kalemleri sağdaki tablolardan elle girebilirsiniz.</div>}
-              {(stmt || reading) && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
-                  <FileText size={13} />
-                  {reading ? 'PDF okunuyor…' : <>
-                    <span style={{ fontWeight: 600 }}>{stmt!.name}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>· {stmt!.pages} sayfa{stmt!.truncated ? ' (ilk bölümü okunacak)' : ''} · kart/IBAN/TC numaraları gizlendi</span>
-                    <button type="button" onClick={() => setStmt(null)} aria-label="Eki kaldır" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, display: 'flex' }}><X size={13} /></button>
-                  </>}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: '6px', marginTop: '8px', alignItems: 'flex-end' }}>
-                <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void pickPdf(f); }} />
-                <button type="button" style={{ ...btn, padding: '8px' }} disabled={thinking || reading} onClick={() => fileRef.current?.click()} aria-label="Kart ekstresi PDF ekle" title="Kart ekstresi PDF'i ekle"><Paperclip size={14} /></button>
-                <textarea
-                  value={input} onChange={(e) => setInput(e.target.value)} rows={2} aria-label="Mesajınız"
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
-                  placeholder="Bu ay maaşım…, kira…, kart ekstresi…" style={{ ...field, flex: 1, resize: 'vertical' }}
-                />
-                <button type="button" style={{ ...btnPrimary, opacity: (input.trim() || stmt) && !thinking && !reading ? 1 : 0.6 }} disabled={(!input.trim() && !stmt) || thinking || reading} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
+                    {plan.months.length > 0 && (
+                      <details style={{ marginTop: '12px' }}>
+                        <summary style={{ ...lab, cursor: 'pointer' }}>Ay ay plan</summary>
+                        <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', gap: '4px 10px', marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          <b style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Ay</b><b style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Nakde çevrilen</b><b style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Kartta kalan</b>
+                          {plan.months.slice(0, 24).map(m => (<React.Fragment key={m.ay}><span>{m.ay}.</span><span>{fmtTL(m.kayan)}</span><span>{fmtTL(m.kartKalan)}</span></React.Fragment>))}
+                        </div>
+                      </details>
+                    )}
+                    <div style={{ ...lab, marginTop: '14px', lineHeight: 1.55 }}>Bir kartı kapatmadan önce: bağlı otomatik ödemeleri ve abonelikleri taşıyın, puan/mili kullanın, yazılı kapatma onayı isteyin, 1 ay sonra ekstreyi kontrol edin.</div>
+                  </>
+                )}
+                {kSec !== 'yol' && <BudgetInsights section={kSec} fileContents={fileContents} budget={budget} onSaveNote={onSaveNote} />}
               </div>
             </div>
+          )}
 
-            {/* öneriler */}
-            <div style={{ ...panel, marginTop: '14px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', flex: 1 }}>Öneriler</div>
+          {tab === 'oneri' && (
+            <div style={card}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ ...lab, flex: 1 }}>Öneriler</div>
                 <button type="button" style={btnPrimary} disabled={advising || T.gelir <= 0} onClick={() => void getAdvice()} title={T.gelir <= 0 ? 'Önce gelir ekleyin' : ''}><Sparkles size={14} /> {advising ? 'Hazırlanıyor…' : 'Öneri al'}</button>
                 {advice?.cached && !advising && <button type="button" style={btn} onClick={() => void getAdvice(true)} title="Bütçe değişmedi; yeni öneri ister (rakamlar yine aynı kurallarla hesaplanır)"><RefreshCw size={13} /> Yenile</button>}
               </div>
-              {!advice && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>Ekstrelerdeki harcama dağılımına ve değişken kalemlere göre kısılabilecek yerler, kademeli kenara atma önerisi ve uyarılar. Sabit giderlere ve kartlara dokunulmaz.</div>}
+              {!advice && <div style={{ ...lab, marginTop: '8px', lineHeight: 1.55 }}>Ekstrelerdeki harcama dağılımına ve değişken kalemlere göre kısılabilecek yerler, kademeli kenara atma önerisi ve uyarılar. Sabit giderlere ve kartlara dokunulmaz.</div>}
               {advice && (
-                <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {advice.cached && <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kayıtlı öneri: bütçeniz değişmediği için aynı sonuç gösteriliyor.</div>}
-                  {advice.a.ozet && <div style={{ fontSize: '12.5px', lineHeight: 1.6 }}>{advice.a.ozet}</div>}
-                  {advice.a.oneriler.map((o, i) => (
-                    <div key={i} style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px 10px' }}>
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <div style={{ flex: 1, fontSize: '12.5px', fontWeight: 700 }}>{o.baslik} <span style={{ color: '#22c55e' }}>−{fmtTL(o.aylikTasarruf)}/ay</span></div>
-                        {o.kaynak === 'ekstre' ? <span style={{ color: 'var(--text-muted)', fontSize: '11px' }} title="Karttaki harcama: sonraki ekstrede bu kadar az çıkması hedeflenir">hedef · sonraki ekstre</span>
-                          : advice.applied.includes(i) ? <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 700 }}>✓ uygulandı</span>
-                          : <button type="button" style={{ ...btn, padding: '4px 8px' }} onClick={() => applyAdvice(i)} title={`"${o.kalem}" kaleminin tutarını düşürür`}>Limit olarak uygula</button>}
+                  {advice.a.ozet && <div style={{ fontSize: '13px', lineHeight: 1.6 }}>{advice.a.ozet}</div>}
+                  <div style={{ ...grid(260), gap: '10px' }}>
+                    {advice.a.oneriler.map((o, i) => (
+                      <div key={i} style={{ background: 'var(--bg-tertiary)', borderRadius: '10px', padding: '10px 12px' }}>
+                        <div style={{ fontWeight: 500 }}>{o.baslik}</div>
+                        <div style={{ color: '#22c55e', margin: '2px 0 4px' }}>−{fmtTL(o.aylikTasarruf)}/ay</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{o.aciklama}</div>
+                        <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{o.kaynak === 'ekstre' ? 'Ekstre kategorisi' : 'Kalem'}: {o.kalem}</span>
+                          {o.kaynak === 'ekstre' ? <span style={{ color: 'var(--text-muted)', fontSize: '11px' }} title="Karttaki harcama: sonraki ekstrede bu kadar az çıkması hedeflenir">hedef · sonraki ekstre</span>
+                            : advice.applied.includes(i) ? <span style={{ color: '#22c55e', fontSize: '11.5px', fontWeight: 600 }}>✓ uygulandı</span>
+                            : <button type="button" style={{ ...btn, padding: '3px 8px', fontSize: '11.5px' }} onClick={() => applyAdvice(i)} title={`"${o.kalem}" kaleminin tutarını düşürür`}>Limit olarak uygula</button>}
+                        </div>
                       </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '3px', lineHeight: 1.5 }}>{o.aciklama}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{o.kaynak === 'ekstre' ? 'Ekstre kategorisi' : 'Kalem'}: {o.kalem}</div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                   {advice.a.kenaraAtma.aylik > 0 && (
                     <div style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: '8px', padding: '8px 10px', fontSize: '12.5px', lineHeight: 1.55 }}>
-                      <b>Kenara atma:</b> ayda ~{fmtTL(advice.a.kenaraAtma.aylik)}. {advice.a.kenaraAtma.aciklama}
+                      <b style={{ fontWeight: 500 }}>Kenara atma:</b> ayda ~{fmtTL(advice.a.kenaraAtma.aylik)}. {advice.a.kenaraAtma.aciklama}
                     </div>
                   )}
                   {advice.a.uyarilar.map((u, i) => (
@@ -521,107 +717,9 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
                 </div>
               )}
             </div>
-          </div>
-
-          {/* SAĞ: tablolar + grafikler + geçiş planı */}
-          <div style={{ flex: '2 1 480px', minWidth: 0 }}>
-            <div style={panel}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', flex: 1 }}>Kalemler (elle düzenleyebilirsiniz)</div>
-                <label style={{ fontSize: '11.5px', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '5px' }} title="Bayram, tamir, hastalık gibi beklenmeyenler için gelirden ayrılan pay">
-                  Beklenmeyen payı %
-                  <input type="number" min={0} max={50} step={1} value={budget.reservePct} onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0 && v <= 50) commit({ ...budget, reservePct: v }); }} aria-label="Beklenmeyenler payı yüzdesi" style={{ ...field, width: '56px', textAlign: 'center' }} />
-                </label>
-                <button type="button" style={{ ...btn, opacity: undo.length ? 1 : 0.5 }} disabled={undo.length === 0} onClick={doUndo} title="Son değişikliği geri al"><Undo2 size={14} /> Geri al</button>
-              </div>
-              {KIND_ORDER.map(kind => {
-                const rows = budget.items.filter(i => i.kind === kind);
-                return (
-                  <div key={kind}>
-                    <div style={{ ...label, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: KIND_COLOR[kind], display: 'inline-block' }} />
-                      {KIND_LABEL[kind]} <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}>· {fmtTL(rows.reduce((s, r) => s + r.amount, 0))}</span>
-                      <button type="button" style={{ ...btn, marginLeft: 'auto', padding: '3px 8px', fontSize: '11.5px' }} onClick={() => addItem(kind)}><Plus size={12} /> Ekle</button>
-                    </div>
-                    {HINT[kind] && <div style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '1px 0 4px' }}>{HINT[kind]}</div>}
-                    {rows.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>—</div>}
-                    {rows.map(it => <Row key={it.id} it={it} onChange={(p) => patchItem(it.id, p)} onRemove={() => removeItem(it.id)} />)}
-                  </div>
-                );
-              })}
-            </div>
-
-            {budget.analiz && budget.analiz.length > 0 && (
-              <div style={{ ...panel, marginTop: '14px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', marginBottom: '8px' }}>Ekstre harcama dağılımı</div>
-                <SpendBars b={budget} onRecat={recat} />
-                {recatMsg && <div style={{ fontSize: '11.5px', color: '#22c55e', marginTop: '6px' }}>{recatMsg}</div>}
-              </div>
-            )}
-            <div style={{ ...panel, marginTop: '14px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)' }}>Gelirden kalana</div>
-              <Waterfall b={budget} />
-            </div>
-
-            <div style={{ ...panel, marginTop: '14px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)' }}>Ay içi nakit takvimi</div>
-              {budget.items.length === 0 ? <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>Kalemler eklenince burada gün gün bakiyeniz görünür.</div> : <CashChart cf={CF} />}
-              {CF.negativeDays.length > 0 && (
-                <div style={{ display: 'flex', gap: '6px', fontSize: '12.5px', color: '#ef4444', marginTop: '6px', lineHeight: 1.5 }}>
-                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <span>Bakiye ayın {CF.negativeDays[0]}. gününden {CF.negativeDays[CF.negativeDays.length - 1]}. gününe kadar eksiye düşüyor (en düşük {fmtTL(CF.min.balance)}). Maaş günü ile ödeme günleri arasındaki boşluğa dikkat.</span>
-                </div>
-              )}
-              {CF.undated.length > 0 && <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '6px' }}>Günü yazılmayan kalemler ayın 1'inde varsayıldı: {CF.undated.join(', ')}. Gün ekleyerek takvimi netleştirin.</div>}
-            </div>
-
-            <div style={{ ...panel, marginTop: '14px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)' }}>Kartsız yaşam planı</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.55 }}>
-                Her ay kart harcamasının bir kısmını nakde/banka kartına çevirirsiniz; o ayki ek yük çevirdiğiniz tutardır ve aylık kalanınızla karşılanır. Taksitli kısım bitene kadar kartta kalır. Kaydırılabilir tutar: <b>{fmtTL(trNow.shiftable)}</b>
-                {trNow.sabitKartYuku > 0 && <> · kartta kalan taksit yükü: <b>{fmtTL(trNow.sabitKartYuku)}</b></>}.
-              </div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '8px' }}>
-                <label style={{ fontSize: '11.5px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '3px', flex: '1 1 140px' }}>
-                  Tek seferlik tampon (₺)
-                  <input value={tampon} onChange={(e) => setTampon(e.target.value)} inputMode="decimal" placeholder="örn. 20000" style={{ ...field, width: '100%' }} />
-                </label>
-                <label style={{ fontSize: '11.5px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '3px', flex: '1 1 140px' }}>
-                  Aylık ek kısıntı (₺)
-                  <input value={kisinti} onChange={(e) => setKisinti(e.target.value)} inputMode="decimal" placeholder="örn. 3000" style={{ ...field, width: '100%' }} />
-                </label>
-              </div>
-              <div style={{ marginTop: '8px' }}>
-                {trRow('Mevcut kalanla', trNow, `aylık kalan ${fmtTL(Math.max(0, T.kalan))}`)}
-                {trRow('Tamponla', trTampon, tNum > 0 ? `1. ay +${fmtTL(tNum)}` : 'tampon girin')}
-                {trRow('Kısıntıyla', trKisinti, kNum > 0 ? `her ay +${fmtTL(kNum)}` : 'kısıntı girin')}
-                {tNum > 0 && kNum > 0 && trRow('Tampon + kısıntı', trBoth, 'ikisi birlikte')}
-              </div>
-              {plan.neden && <div style={{ fontSize: '12px', color: '#f59e0b', marginTop: '6px' }}>{plan.neden}</div>}
-              {plan.months.length > 0 && (
-                <div style={{ marginTop: '8px', fontSize: '12px' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', gap: '4px 10px', color: 'var(--text-secondary)' }}>
-                    <b style={{ color: 'var(--text-muted)' }}>Ay</b><b style={{ color: 'var(--text-muted)' }}>Nakde çevrilen</b><b style={{ color: 'var(--text-muted)' }}>Kartta kalan</b>
-                    {plan.months.slice(0, 24).map(m => (<React.Fragment key={m.ay}><span>{m.ay}.</span><span>{fmtTL(m.kayan)}</span><span>{fmtTL(m.kartKalan)}</span></React.Fragment>))}
-                  </div>
-                  <div style={{ marginTop: '8px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                    <b>Kapatma sırası:</b>{' '}
-                    {plan.kapanis.map((c, i) => <span key={i}>{i > 0 ? ' → ' : ''}{c.name}{c.ay ? ` (${c.ay}. ay${c.taksitKalan > 0 ? ', taksit bitince' : ''})` : ''}</span>)}
-                  </div>
-                </div>
-              )}
-              <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '10px', lineHeight: 1.5 }}>
-                Bir kartı kapatmadan önce: bağlı otomatik ödemeleri ve abonelikleri taşıyın, puan/mili kullanın, yazılı kapatma onayı isteyin, 1 ay sonra ekstreyi kontrol edin.
-              </div>
-            </div>
-            {/* Kartsız yaşam kokpiti: taksit takvimi + borç eğrisi, alabilir miyim?, abonelikler, aylık karne */}
-            <BudgetInsights fileContents={fileContents} budget={budget} onSaveNote={onSaveNote} />
-            <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <FileText size={12} /> Bu ay <code>{path}</code> notunda saklanır.
-              {onOpenNote && fileContents[path] !== undefined && <button type="button" style={{ ...btn, padding: '2px 7px', fontSize: '11px' }} onClick={() => onOpenNote(path)}>Notu aç</button>}
-            </div>
-          </div>
+          )}
         </div>
+        {chatOpen && chatDrawer}
       </div>
     </div>
   );

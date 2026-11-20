@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
+// Inter yazı tipi uygulamaya gömülüdür (Türkçe harfler için latin-ext dahil)
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-ext-400.css';
+import '@fontsource/inter/latin-ext-500.css';
+import '@fontsource/inter/latin-ext-600.css';
 import { ShoppingCart, Plus, Trash2, Check, Search, ChevronLeft, ChevronRight, MapPin, Sparkles, RefreshCw, X, Copy, AlertTriangle, FileText, Pin, ArrowDownUp, Archive, Download, Ban } from 'lucide-react';
 import {
   type ShopWeek, type ShopItem, MARKET_CAT, weekIdOf, weekPath, shiftWeek, weekLabel, parseWeek, serializeWeek, withPlanBlock, listWeeks, recentHistory
@@ -578,7 +585,7 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
   };
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', boxSizing: 'border-box', padding: '16px 14px 70px', color: 'var(--text-primary)' }}>
+    <div style={{ height: '100%', overflowY: 'auto', boxSizing: 'border-box', padding: '16px 14px 70px', color: 'var(--text-primary)', fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", fontSize: '13px', fontVariantNumeric: 'tabular-nums' }}>
       <div style={{ maxWidth: '1180px', margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <ShoppingCart size={22} color="var(--accent-color)" />
