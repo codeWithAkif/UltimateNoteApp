@@ -135,7 +135,7 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
     setReading(true);
     try { setStmt(await readStatementPdf(f)); } catch (e: any) { setStmt(null); setErr(String(e?.message || e)); } finally { setReading(false); }
   };
-  const [advice, setAdvice] = useState<{ a: Advice; applied: number[] } | null>(null);
+  const [advice, setAdvice] = useState<{ a: Advice; applied: number[]; cached?: boolean } | null>(null);
   const [advising, setAdvising] = useState(false);
   const [tampon, setTampon] = useState('');
   const [kisinti, setKisinti] = useState('');
@@ -314,13 +314,21 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
     updateMsg(msgId, mm => ({ ...mm, analiz: mm.analiz ? { ...mm.analiz, saved: true } : mm.analiz }));
   };
 
-  const getAdvice = async () => {
+  // Öneri bütçe değişmedikçe kayıtlıdır: aynı bütçeye her basışta aynı sonuç görünür ("Yenile" ile yeniden istenir)
+  const adviceKey = `budget_advice_v1_${month}`;
+  const getAdvice = async (force = false) => {
     if (advising) return;
+    const sig = serializeBudget(budgetRef.current);
+    if (!force) {
+      try { const c = JSON.parse(localStorage.getItem(adviceKey) || 'null'); if (c && c.sig === sig && c.a) { setAdvice({ a: c.a, applied: [], cached: true }); return; } } catch { /* yoksay */ }
+    }
     if (!aiReady) { setErr('Yapay zekâ ayarlı değil: Ayarlar > AI Mentor\'dan Gemini anahtarı ekleyin ya da masaüstünde Claude Code\'u açın.'); return; }
     setAdvising(true); setErr('');
     try {
       const persona = (fileContents[PERSONA_PATH] || '').trim() || DEFAULT_PERSONA;
-      setAdvice({ a: await askAdvice({ persona, budget }), applied: [] });
+      const a = await askAdvice({ persona, budget });
+      setAdvice({ a, applied: [] });
+      try { localStorage.setItem(adviceKey, JSON.stringify({ sig, a })); } catch { /* yoksay */ }
     } catch (e: any) { setErr(String(e?.message || e)); }
     finally { setAdvising(false); }
   };
@@ -482,10 +490,12 @@ export default function BudgetView({ fileContents, onSaveNote, onOpenNote }: {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', flex: 1 }}>Öneriler</div>
                 <button type="button" style={btnPrimary} disabled={advising || T.gelir <= 0} onClick={() => void getAdvice()} title={T.gelir <= 0 ? 'Önce gelir ekleyin' : ''}><Sparkles size={14} /> {advising ? 'Hazırlanıyor…' : 'Öneri al'}</button>
+                {advice?.cached && !advising && <button type="button" style={btn} onClick={() => void getAdvice(true)} title="Bütçe değişmedi; yeni öneri ister (rakamlar yine aynı kurallarla hesaplanır)"><RefreshCw size={13} /> Yenile</button>}
               </div>
               {!advice && <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>Ekstrelerdeki harcama dağılımına ve değişken kalemlere göre kısılabilecek yerler, kademeli kenara atma önerisi ve uyarılar. Sabit giderlere ve kartlara dokunulmaz.</div>}
               {advice && (
                 <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {advice.cached && <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kayıtlı öneri: bütçeniz değişmediği için aynı sonuç gösteriliyor.</div>}
                   {advice.a.ozet && <div style={{ fontSize: '12.5px', lineHeight: 1.6 }}>{advice.a.ozet}</div>}
                   {advice.a.oneriler.map((o, i) => (
                     <div key={i} style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px 10px' }}>

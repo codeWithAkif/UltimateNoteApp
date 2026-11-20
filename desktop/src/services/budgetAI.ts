@@ -150,6 +150,12 @@ export const askBudget = async (o: { persona: string; budget: Budget; history: C
 };
 
 // ---------------- öneriler ----------------
+// Tasarruf hedefleri KODDA sabit yüzdelerle hesaplanır: aynı bütçe her basışta aynı rakamı verir (yapay zekâ her seferinde farklı tutar uyduruyordu).
+// Yapay zekâ yalnızca hangi kalemlerin öne çıkacağını ve "nasıl"ı (açıklama) yazar.
+export const CUT_PCT: Record<string, number> = { 'Market': 0.12, 'Yemek / Kafe': 0.15, 'Ulaşım / Akaryakıt': 0.08, 'Eğlence / Abonelik': 0.15, 'Giyim': 0.20, 'Online alışveriş': 0.15, 'Diğer': 0.08 };
+export const ITEM_CUT_PCT = 0.10; // elle girilmiş değişken kalemler
+const round50 = (n: number) => Math.max(50, Math.round(n / 50) * 50);
+export const cutTarget = (base: number, pct: number): number => (base > 0 ? round50(base * pct) : 0);
 export interface AdviceItem { baslik: string; aciklama: string; kalem: string; aylikTasarruf: number; kaynak?: 'kalem' | 'ekstre' }
 export interface Advice { ozet: string; oneriler: AdviceItem[]; kenaraAtma: { aylik: number; aciklama: string }; uyarilar: string[] }
 
@@ -171,7 +177,7 @@ export const buildAdvicePrompt = (o: { persona: string; budget: Budget }): strin
   const deg = o.budget.items.filter(i => i.kind === 'degisken').map(i => `${i.name} (${round2(i.amount)} TL)`).join(', ') || '(yok)';
   const cats = analizByCat(o.budget);
   const dagilim = cats.length
-    ? cats.map(c => `- ${c.kategori}: ${fmtTL(c.tutar)} [${c.kisilabilir ? 'kısılabilir' : 'kısılamaz'}]${c.ornek ? ` — örn. ${redactSensitive(c.ornek)}` : ''}`).join('\n')
+    ? cats.map(c => `- ${c.kategori}: ${fmtTL(c.tutar)} [${c.kisilabilir ? `kısılabilir, aylık hedef −${fmtTL(cutTarget(c.tutar, CUT_PCT[c.kategori] ?? 0.08))}` : 'kısılamaz'}]${c.ornek ? ` — örn. ${redactSensitive(c.ornek)}` : ''}`).join('\n')
     : '(ekstre dağılımı yok)';
   return `${o.persona.slice(0, 6000)}
 
@@ -187,8 +193,8 @@ ${dagilim}
 
 GÖREV (Türkçe, kısa):
 1. "ozet": durumu 3-4 cümleyle özetle (iyi giden ne, dikkat edilecek ne).
-2. "oneriler": en çok 5 öneri. Yalnızca yukarıdaki DEĞİŞKEN kalemlerden ya da EKSTRE DAĞILIMINDAKİ [kısılabilir] kategorilerden; "kalem" alanına kalem/kategori adını BİREBİR yaz; "aylikTasarruf" gerçekçi bir aylık tutar olsun (değişken kalemin yarısını, ekstre kategorisinin %40'ını geçmesin). Ekstre kategorisi önerisinde açıklamada hangi harcamalara/işletmelere dikkat edileceğini somut yaz (örn. "Market 8.100 TL: haftalık liste yapıp BİM/A101'e kaydırmak"). Dağılım varsa 'değişken kalem girilmemiş' deme; onu kullan. Sabit giderleri, "Taksitler", faiz/ücret ve kartın kendisini kısmayı ÖNERME.
-3. "kenaraAtma": her ay kenara ayrılabilecek gerçekçi bir tutar ve kademeli artış fikri (açıklama 1-2 cümle). Tutarı kalan ve önerdiğin tasarruflara göre ver.
+2. "oneriler": en çok 5 öneri. Yalnızca yukarıdaki DEĞİŞKEN kalemlerden ya da EKSTRE DAĞILIMINDAKİ [kısılabilir] kategorilerden; "kalem" alanına kalem/kategori adını BİREBİR yaz; "aylikTasarruf" için 0 yaz: tasarruf tutarlarını uygulama sabit yüzdelerle kendisi hesaplar. "aciklama" ve "ozet" metinlerinde TL tutarı YAZMA (tutarı uygulama gösterir); yalnızca nasıl yapılacağını yaz. Ekstre kategorisi önerisinde açıklamada hangi harcamalara/işletmelere dikkat edileceğini somut yaz (örn. "Market 8.100 TL: haftalık liste yapıp BİM/A101'e kaydırmak"). Dağılım varsa 'değişken kalem girilmemiş' deme; onu kullan. Sabit giderleri, "Taksitler", faiz/ücret ve kartın kendisini kısmayı ÖNERME.
+3. "kenaraAtma": her ay kenara ayrılabilecek gerçekçi bir tutar ve kademeli artış fikri (açıklama 1-2 cümle). "aylik" için 0 yaz (uygulama hesaplar); "aciklama"da TL tutarı yazma, kademeli artış fikrini anlat.
 4. "uyarilar": en çok 3 kısa uyarı (örn. maaş günü ile ödeme günleri arasındaki boşluk, günü yazılmayan kalemler). Uyarı yoksa boş dizi.
 Yatırım, kredi ya da ürün tavsiyesi verme. Sadece JSON döndür.`;
 };
@@ -202,18 +208,18 @@ export const sanitizeAdvice = (raw: any, b: Budget): Advice => {
     const name = String(o?.kalem ?? '').trim().toLocaleLowerCase('tr');
     const item = deg.find(i => i.name.toLocaleLowerCase('tr') === name);
     const cat = item ? undefined : cats.find(c => c.kategori.toLocaleLowerCase('tr') === name);
-    const save = toNum(o?.aylikTasarruf);
-    if ((!item && !cat) || save === undefined || save <= 0) continue;
+    if (!item && !cat) continue;
     const label = item ? item.name : cat!.kategori;
-    const cap = item ? item.amount * 0.6 : cat!.tutar * 0.4;
-    oneriler.push({ baslik: String(o.baslik || label).slice(0, 80), aciklama: String(o.aciklama || '').slice(0, 400), kalem: label, aylikTasarruf: round2(Math.min(save, cap)), kaynak: item ? 'kalem' : 'ekstre' });
+    if (oneriler.some(x => x.kalem === label)) continue; // aynı kalem iki kez önerilmez
+    const target = item ? cutTarget(item.amount, ITEM_CUT_PCT) : cutTarget(cat!.tutar, CUT_PCT[cat!.kategori] ?? 0.08);
+    oneriler.push({ baslik: String(o.baslik || label).slice(0, 80), aciklama: String(o.aciklama || '').slice(0, 400), kalem: label, aylikTasarruf: target, kaynak: item ? 'kalem' : 'ekstre' });
     if (oneriler.length >= 5) break;
   }
-  const ka = toNum(raw?.kenaraAtma?.aylik);
+  // Kenara atma tutarı sabit kural: kalanın yarısı + öneri tasarrufları (yapay zekâ tutar uydurmaz)
   return {
     ozet: String(raw?.ozet ?? '').slice(0, 800),
     oneriler,
-    kenaraAtma: { aylik: ka !== undefined && ka > 0 ? round2(Math.min(ka, Math.max(0, totals(b).kalan) + oneriler.reduce((s, x) => s + x.aylikTasarruf, 0))) : 0, aciklama: String(raw?.kenaraAtma?.aciklama ?? '').slice(0, 400) },
+    kenaraAtma: { aylik: (() => { const kalan = Math.max(0, totals(b).kalan), sav = oneriler.reduce((s, x) => s + x.aylikTasarruf, 0); return kalan + sav > 0 ? Math.min(round50(kalan * 0.5 + sav), Math.floor((kalan + sav) / 50) * 50) : 0; })(), aciklama: String(raw?.kenaraAtma?.aciklama ?? '').slice(0, 400) },
     uyarilar: (Array.isArray(raw?.uyarilar) ? raw.uyarilar : []).map((x: unknown) => String(x).slice(0, 200)).filter(Boolean).slice(0, 3)
   };
 };

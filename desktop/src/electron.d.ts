@@ -49,6 +49,8 @@ export interface ElectronAPI {
   pickProjectFolder?: () => Promise<{ canceled: boolean; info?: { ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string } }>;
   inspectProjectFolder?: (dir: string) => Promise<{ ok: boolean; path?: string; name?: string; isGit?: boolean; branch?: string; error?: string; warning?: string }>;
   claudeCliRun?: (req: { prompt: string; schema?: any; model?: string; timeoutMs?: number }) => Promise<{ ok: boolean; structured?: any; text?: string; error?: string; ms: number }>;
+  marketNearest?: (req: { latitude: number; longitude: number; distance: number }) => Promise<{ ok: boolean; data?: any; error?: string }>;
+  marketSearch?: (req: { keywords: string; latitude: number; longitude: number; distance: number; depots: string[]; size?: number; pages?: number }) => Promise<{ ok: boolean; data?: any; error?: string }>;
   claudeCliStatus?: () => Promise<{ available: boolean; version?: string; loggedIn?: boolean; authMethod?: string; error?: string }>;
   resolveArchiveTrack: (identifier: string) => Promise<string>;
   resolveYoutubePlaylist: (playlistId: string) => Promise<any[]>;

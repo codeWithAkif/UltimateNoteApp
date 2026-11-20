@@ -87,7 +87,7 @@ import {
   Play, Pause, SkipForward, SkipBack, Columns, Globe, X, Info, Layout, Minimize2,
   ArrowRight, Search, GripVertical,
   Zap, CheckSquare, Clock, KanbanSquare, Wallet, Building2, Volume2, FlaskConical, Compass, BarChart2, Headphones, Wrench,
-  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History, Hammer, PiggyBank,
+  Award, Link2, Camera as CameraIcon, Receipt, MessageCircle, Gauge, Timer, RotateCcw, Library, Swords, NotebookPen, Brain, History, Hammer, PiggyBank, ShoppingCart,
   Languages
 } from 'lucide-react';
 import {
@@ -96,6 +96,7 @@ import {
 import AssistantView from './components/AssistantView';
 import DevView from './components/DevView';
 import BudgetView from './components/BudgetView';
+import ShoppingView from './components/ShoppingView';
 import { isDevSupported } from './services/devWork';
 import { MeetingTranscriptModal } from './components/MeetingTranscript';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -3031,6 +3032,8 @@ export default function App() {
     { id: 'finance', label: 'Finans', icon: Wallet },
     // Bütçe Planı: sohbetle/elle gelir-gider girişi, kalan para, grafikler, öneriler, kartsız yaşam planı (aylık notlar: Finans/Bütçe/YYYY-MM.md)
     { id: 'budget', label: 'Bütçe Planı', icon: PiggyBank },
+    // Alışveriş: haftalık liste notları (Alışveriş/Haftalık/), marketfiyati.org.tr ile en uygun fiyat dağıtımı
+    { id: 'shopping', label: 'Alışveriş', icon: ShoppingCart },
     { id: 'efor', label: 'Efor', icon: Timer },
     // İSTEK (kullanıcı: "Solo Leveling temalı bir fitness/görev modülü" — telefondan da
     // kullanılacak): Hunter Sistemi, diğer sekmeler gibi App.tsx'in ortak not
@@ -8282,6 +8285,17 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'budget' && (
             <BudgetView
+              fileContents={fileContents}
+              onSaveNote={handleSaveNote}
+              onOpenNote={(path: string) => {
+                handleSetActiveNotePath(path);
+                setActiveTab('notes');
+              }}
+            />
+          )}
+
+          {activeTab === 'shopping' && (
+            <ShoppingView
               fileContents={fileContents}
               onSaveNote={handleSaveNote}
               onOpenNote={(path: string) => {

@@ -50,6 +50,8 @@ contextBridge.exposeInMainWorld('electron', {
   inspectProjectFolder: (dir) => ipcRenderer.invoke('inspect-project-folder', dir),
   claudeCliRun: (req) => ipcRenderer.invoke('claude-cli-run', req),
   claudeCliStatus: () => ipcRenderer.invoke('claude-cli-status'),
+  marketNearest: (req) => ipcRenderer.invoke('market-nearest', req),
+  marketSearch: (req) => ipcRenderer.invoke('market-search', req),
   resolveArchiveTrack: (identifier) => ipcRenderer.invoke('resolve-archive-track', identifier),
   resolveYoutubePlaylist: (playlistId) => ipcRenderer.invoke('resolve-youtube-playlist', playlistId),
   fileExists: (relativePath) => ipcRenderer.invoke('file-exists', relativePath),

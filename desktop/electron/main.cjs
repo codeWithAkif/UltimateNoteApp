@@ -693,6 +693,11 @@ const claudeCli = require('./claudeCli.cjs');
 ipcMain.handle('claude-cli-run', async (event, req) => claudeCli.run(req));
 ipcMain.handle('claude-cli-status', async () => claudeCli.status());
 
+// IPC Handler: market fiyatları (bkz. marketApi.cjs): renderer CORS'a takılmasın diye ana süreçten, tek yetkili sunucuya.
+const marketApi = require('./marketApi.cjs');
+ipcMain.handle('market-nearest', async (event, req) => marketApi.nearest(req));
+ipcMain.handle('market-search', async (event, req) => marketApi.search(req));
+
 // IPC Handler: Takvim (ICS) bağlantısını uygulamanın kendi tarafında okur. Renderer'dan doğrudan fetch tarayıcı kurallarına
 // (CORS) takılabiliyor; eskiden bu durumda gizli takvim adresi üçüncü taraf bir vekile gönderiliyordu. Artık hiçbir yere gönderilmez.
 // Yalnızca https (webcal:// https'e çevrilir), en çok 5 yönlendirme, 15 sn zaman aşımı, 5 MB sınır.
