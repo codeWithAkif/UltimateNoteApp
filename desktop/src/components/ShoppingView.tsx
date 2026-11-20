@@ -34,7 +34,7 @@ const banner: React.CSSProperties = { ...{ background: 'var(--bg-secondary)', bo
 const tl = (n: number) => `${n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₺`;
 const MAX_MARKETS_KEY = 'market_max_v1';
 const EXCLUDE_KEY = 'shop_exclude_boycott_v1';
-const IMPORTED_KEY = 'shop_imported_v1';
+const IMPORTED_KEY = 'shop_imported_v2';
 const PIN_HINT_KEY = 'shop_pin_hint_hidden_v1';
 const sameText = (a: string, b: string) => a.toLocaleLowerCase('tr') === b.toLocaleLowerCase('tr');
 
@@ -42,34 +42,36 @@ interface Picker { key: string; q: string; loading: boolean; results: MarketProd
 type Tab = 'liste' | 'haftalar' | 'tercih';
 
 // Bir notun içeriğini yerel olarak da tutar: kayıt dosya sistemine yansıyana kadar ekran eski hâle dönmesin, art arda işlemler son içeriği kullansın
-function useNote(path: string, fileContents: Record<string, string>, onSaveNote?: (p: string, c: string) => Promise<void>) {
+function useNote(path: string, fileContents: Record<string, string>, onSaveNote: ((p: string, c: string) => Promise<void>) | undefined, ready: boolean) {
   const [local, setLocal] = useState<{ path: string; content: string } | null>(null);
   const raw = fileContents[path];
   const content = local && local.path === path ? local.content : raw;
   const ref = useRef<string | undefined>(content); ref.current = content;
   useEffect(() => { if (local && local.path === path && raw === local.content) setLocal(null); }, [raw]); // eslint-disable-line react-hooks/exhaustive-deps
-  const write = (c: string) => { if (c === ref.current) return; ref.current = c; setLocal({ path, content: c }); void onSaveNote?.(path, c); };
+  // VERİ KAYBI KORUMASI: notlar henüz yüklenmediyse (fileContents boş) ya da ilk bulut senkronu bitmediyse yazılmaz; "yok" görünen not aslında yüklenmemiş olabilir
+  const write = (c: string) => { if (!ready || c === ref.current) return; ref.current = c; setLocal({ path, content: c }); void onSaveNote?.(path, c); };
   return { content, ref, write };
 }
 
-export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pinnedWidget, onPinWidget }: {
+export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pinnedWidget, onPinWidget, ready = true }: {
   fileContents: Record<string, string>;
   onSaveNote?: (path: string, content: string) => Promise<void>;
   onOpenNote?: (path: string) => void;
   pinnedWidget?: string | null;
   onPinWidget?: (path: string) => void | Promise<void>;
+  ready?: boolean; // notlar yüklendi ve ilk senkron bitti
 }) {
   const thisWeek = weekIdOf(new Date());
   const isNative = Capacitor.isNativePlatform();
   const [tab, setTab] = useState<Tab>('liste');
 
   // ---- notlar: canlı liste, tercihler, boykot listesi, fiyat geçmişi, bu haftanın arşivi ve gezilen hafta
-  const listNote = useNote(LIST_PATH, fileContents, onSaveNote);
-  const prefsNote = useNote(PREFS_PATH, fileContents, onSaveNote);
-  const boyNote = useNote(BOYCOTT_PATH, fileContents, onSaveNote);
-  const thisWeekNote = useNote(weekPath(thisWeek), fileContents, onSaveNote);
+  const listNote = useNote(LIST_PATH, fileContents, onSaveNote, ready);
+  const prefsNote = useNote(PREFS_PATH, fileContents, onSaveNote, ready);
+  const boyNote = useNote(BOYCOTT_PATH, fileContents, onSaveNote, ready);
+  const thisWeekNote = useNote(weekPath(thisWeek), fileContents, onSaveNote, ready);
   const [weekId, setWeekId] = useState(thisWeek);
-  const viewWeekNote = useNote(weekPath(weekId), fileContents, onSaveNote);
+  const viewWeekNote = useNote(weekPath(weekId), fileContents, onSaveNote, ready);
 
   const model = useMemo(() => parseList(listNote.content), [listNote.content]);
   const items = model.items;
@@ -77,12 +79,6 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
   const boycott = useMemo(() => parseBoycott(boyNote.content), [boyNote.content]);
   const thisWeekData = useMemo(() => parseWeek(thisWeekNote.content, thisWeek), [thisWeekNote.content, thisWeek]);
   const viewWeek = useMemo(() => parseWeek(viewWeekNote.content, weekId), [viewWeekNote.content, weekId]);
-
-  // İlk açılışta canlı liste yoksa şablonla oluşturulur (widget bu nota sabitlenecek)
-  useEffect(() => {
-    if (fileContents[LIST_PATH] === undefined && onSaveNote) listNote.write(ensureList(undefined));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const writeList = (c: string) => listNote.write(c);
   const curList = () => ensureList(listNote.ref.current);
@@ -272,7 +268,7 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
   };
 
   // ---- fiyat geçmişi (Alışveriş/Fiyat Geçmişi.md)
-  const histNote = useNote(HISTORY_PATH, fileContents, onSaveNote);
+  const histNote = useNote(HISTORY_PATH, fileContents, onSaveNote, ready);
   const histRef = useRef<PriceRec[]>(parseHistory(histNote.content));
   useEffect(() => { histRef.current = parseHistory(histNote.content); }, [histNote.content]);
   const saveHistory = (products: MarketProduct[]) => {
@@ -561,9 +557,10 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+              {!ready && <div style={{ ...banner, borderColor: '#f59e0b' }}><RefreshCw size={15} className="animate-spin" /><span>Notlar yükleniyor ve bulutla senkronlanıyor… Bu sırada değişiklik yapılmaz (kaydedilmemiş bir not ezilmesin diye).</span></div>}
               {isNative && !isPinned && onPinWidget && (
                 <div style={banner}><Pin size={15} /><span style={{ flex: 1 }}>Telefon widget'ı şu an {pinnedWidget ? <b>{pinnedWidget}</b> : 'hiçbir notu'} gösteriyor. Alışveriş listesini widget'ta görmek için sabitleyin.</span>
-                  <button type="button" style={btnPrimary} onClick={() => void onPinWidget(LIST_PATH)}><Pin size={13} /> Widget'a sabitle</button></div>
+                  <button type="button" style={btnPrimary} onClick={() => { if (listNote.ref.current === undefined) writeList(ensureList(undefined)); void onPinWidget(LIST_PATH); }}><Pin size={13} /> Widget'a sabitle</button></div>
               )}
               {isNative && isPinned && <div style={{ ...banner, borderColor: '#22c55e' }}><Pin size={15} color="#22c55e" /><span>Bu liste widget'a sabitlenmiş ✓</span></div>}
               {!isNative && !pinHintHidden && (
@@ -596,7 +593,7 @@ export default function ShoppingView({ fileContents, onSaveNote, onOpenNote, pin
                       <option value="__yeni">+ Yeni kategori…</option>
                     </select>
                     {kat === '__yeni' && <input value={newKat} onChange={(e) => setNewKat(e.target.value)} placeholder="Kategori adı" aria-label="Yeni kategori adı" style={{ ...field, width: '130px' }} />}
-                    <button type="button" style={{ ...btnPrimary, opacity: text.trim() ? 1 : 0.6 }} disabled={!text.trim()} onClick={add}><Plus size={14} /> Ekle</button>
+                    <button type="button" style={{ ...btnPrimary, opacity: text.trim() && ready ? 1 : 0.6 }} disabled={!text.trim() || !ready} onClick={add}><Plus size={14} /> Ekle</button>
                   </div>
                 </div>
 

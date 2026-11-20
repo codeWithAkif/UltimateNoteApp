@@ -8306,6 +8306,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
 
           {activeTab === 'shopping' && (
             <ShoppingView
+              ready={filesLoaded && firstSyncSettled}
               fileContents={fileContents}
               pinnedWidget={pinnedWidgetList}
               onPinWidget={(path: string) => updatePinnedWidgets([...pinnedWidgetLists.filter(x => x !== path), path], path)}
