@@ -5,7 +5,7 @@ import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
 import '@fontsource/inter/latin-ext-500.css';
 import { isGeminiConfigured } from '../services/geminiMentor';
-import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, SCREENS } from '../services/assistant/assistantAI';
+import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, TASK_PATH, SCREENS } from '../services/assistant/assistantAI';
 import { designNote, lineDiff, type DesignResult, type DiffOp } from '../services/assistant/noteDesign';
 import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl } from '../services/assistant/pageAgent';
 import { type Rule, RULES_PATH, parseRules, serializeRules, addRule, schedLabel, dueRules } from '../services/assistant/automation';
@@ -113,6 +113,15 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     const [y, m, d] = a.tarih.split('-').map(Number), [h, mi] = a.saat.split(':').map(Number);
     const native = await scheduleReminderNative(a.baslik, a.mesaj || 'Hatırlatma', new Date(y, m - 1, d, h, mi));
     patchCard(msgId, c.id, { state: 'yapildi', not: `Kuruldu: ${path} (alarm ${a.saat})${native ? ' · telefona bildirim de zamanlandı' : ''}` });
+  };
+
+  // Görev: inbox.md'ye etiketli satır eklenir; Takvim/Görev Havuzu tüm notları taradığı için ayrıca bir kayıt gerekmez.
+  const doTask = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.tarih || !a.baslik) return;
+    try {
+      await saveNote(TASK_PATH, appendTask(filesRef.current[TASK_PATH], a.baslik, a.tarih, a.saat, a.bitis));
+      patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${ymdLabel(a.tarih)}${a.saat ? ` ${a.saat}-${a.bitis}` : ''} (Gelen Kutusu / inbox.md). Takvim ve Görev Havuzu'nda görünür.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
   const doRule = async (msgId: string, c: CardT) => {
@@ -226,6 +235,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         {stateNote(c)}
       </div>
     );
+    if (a.tur === 'gorev') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, `Görev: ${a.baslik}`)}
+        <div style={lab}>{ymdLabel(a.tarih || '')}{a.saat ? ` · ${a.saat}-${a.bitis}` : ' · saat yok'}</div>
+        {!done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doTask(m.id, c)}><Check size={13} /> Ekle</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
+        {stateNote(c)}
+      </div>
+    );
     if (a.tur === 'otomasyon') return (
       <div key={c.id} style={card}>{head(<Repeat size={14} />, `Otomasyon: ${a.ad}`)}
         <div style={lab}>{a.sched ? schedLabel(a.sched) : ''} → {a.eylem?.tur === 'ac' ? `${screenById(a.eylem.ekran)?.ad || a.eylem.ekran} ekranını aç` : `bildirim: ${a.eylem?.baslik}`}</div>
@@ -249,7 +265,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
 
   const suggestions = noteOpen
     ? ['Başlığı mavi yap, altını 3 parçaya böl: solda görev listesi, ortada madde işaretleri', 'Bu notun en üstüne bir uyarı kutusu ekle', 'Bu ekranda ne yapabilirim?']
-    : ['Bu ekranda ne yapabilirim?', 'Yarın sabah 9\'da annemi aramayı hatırlat', 'Her pazartesi 09:00\'da alışveriş ekranını aç'];
+    : ['Bu ekranda ne yapabilirim?', 'Yarın sabah 9\'da annemi aramayı hatırlat', 'Cuma 14:00-15:30 takvime sunum hazırlığı görevi ekle', 'Her pazartesi 09:00\'da alışveriş ekranını aç'];
 
   const wrapStyle: React.CSSProperties = { fontFamily: FONT, fontSize: '13px', color: 'var(--text-primary)' };
   return (

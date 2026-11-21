@@ -41,13 +41,14 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
   talimat?: string;               // notu_tasarla / ui
   baslik?: string; mesaj?: string; // hatirlat / otomasyon(bildir)
-  tarih?: string; saat?: string;   // hatirlat
+  tarih?: string; saat?: string;   // hatirlat / gorev (saat = başlangıç)
+  bitis?: string;                  // gorev: bitiş saati (saat varsa)
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
@@ -64,7 +65,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -93,7 +94,8 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 2. tur="notu_tasarla", talimat=<kullanıcının tasarım/biçim isteği, kendi cümleleriyle>: YALNIZCA bir not açıkken ve kullanıcı o notun görünümünü/düzenini/içeriğini değiştirmek istiyorsa ("başlığı mavi yap", "altını 3 sütuna böl", "şunu ekle", "tabloya çevir").
 3. tur="hatirlat", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat): tek seferlik hatırlatma/alarm. Tarih/saat belirsizse eylem ekleme, cevapta sor.
 4. tur="otomasyon", ad, zamanlama ("her-gun 08:30" | "haftalik pzt 09:00" | "aylik 5 09:00" | "bir 2026-12-01 09:00"; gün adları pzt sal car per cum cmt paz), eylemTuru ("bildir" ya da "ac"), baslik (bildir için), ekran (ac için ekran kimliği), mesaj (isteğe bağlı): tekrarlayan kural. Kural yalnızca bildirim gösterir ya da bir ekranı açar.
-5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil.
+6. tur="gorev", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM, isteğe bağlı), bitis (HH:MM, isteğe bağlı): Takvime/Görev Havuzu'na yeni GÖREV ekler. "Takvime ekle", "görev ekle", "yapılacak olarak yaz", "toplantı/iş planla" gibi isteklerde bunu kullan; saat verilmediyse saat/bitis'i boş bırak, yalnızca başlangıç verildiyse bitis'i boş bırak (1 saat sayılır). Alarm/bildirim istenirse ("hatırlat") 3'ü kullan, görev için 6'yı. Tarih belirsizse eylem ekleme, cevapta sor.
+5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
 KULLANICININ MESAJI:
@@ -127,6 +129,14 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
         if (et === 'ac' && screenById(str(a.ekran, 20))) out.push({ tur, ad, sched, eylem: { tur: 'ac', ekran: str(a.ekran, 20), mesaj: str(a.mesaj, 160) || undefined } });
         else if (et === 'bildir' && str(a.baslik, 80)) out.push({ tur, ad, sched, eylem: { tur: 'bildir', baslik: str(a.baslik, 80), mesaj: str(a.mesaj, 160) || undefined } });
       }
+    } else if (tur === 'gorev') {
+      const tarih = str(a.tarih, 12), baslik = str(a.baslik, 120);
+      let saat = str(a.saat, 6), bitis = str(a.bitis, 6);
+      if (!validTime(saat)) { saat = ''; bitis = ''; }
+      if (saat && !validTime(bitis)) { const [h, mi] = saat.split(':').map(Number); bitis = `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(mi).padStart(2, '0')}`; }
+      if (saat && bitis <= saat) bitis = '23:59';
+      // Geçmiş güne görev eklenmez: model tarihi yanlış hesapladıysa kullanıcı kartı görüp düzeltsin diye eylem düşer, cevapta sorulur.
+      if (/^\d{4}-\d{2}-\d{2}$/.test(tarih) && baslik && tarih >= ymd(ctx.now)) out.push({ tur, baslik, tarih, saat: saat || undefined, bitis: bitis || undefined });
     } else if (tur === 'ui') {
       if (str(a.talimat, 600)) out.push({ tur, talimat: str(a.talimat, 600) });
     }
@@ -144,5 +154,15 @@ export const reminderLine = (baslik: string, saat: string, mesaj?: string): stri
 export const appendReminder = (existing: string | undefined, tarih: string, baslik: string, saat: string, mesaj?: string): string => {
   const line = reminderLine(baslik, saat, mesaj);
   const base = existing && existing.trim() ? existing.replace(/\s*$/, '\n') : `# Hatırlatmalar ${tarih}\n\n`;
+  return base.includes(line) ? base : base + line + '\n';
+};
+
+// Görev: Görev Havuzu'nun "yeni görev" ekleme deseniyle aynı — kök inbox.md'ye etiketli checklist satırı. Takvim ve Görev Havuzu tüm notları taradığı için görev anında görünür.
+export const TASK_PATH = 'inbox.md';
+export const taskLine = (baslik: string, tarih: string, saat?: string, bitis?: string): string =>
+  `- [ ] ${str(baslik, 120)} [due:${tarih}]${saat && bitis ? ` [plannedtime:${saat}-${bitis}]` : ''}`;
+export const appendTask = (existing: string | undefined, baslik: string, tarih: string, saat?: string, bitis?: string): string => {
+  const line = taskLine(baslik, tarih, saat, bitis);
+  const base = existing && existing.trim() ? existing.replace(/\s*$/, '\n') : '';
   return base.includes(line) ? base : base + line + '\n';
 };
