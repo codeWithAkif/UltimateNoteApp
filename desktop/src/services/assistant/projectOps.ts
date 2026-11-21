@@ -68,7 +68,7 @@ const tokens = (s: string) => foldTr(s).split(/[^a-z0-9]+/).filter(t => t.length
 export const findTaskCandidates = (
   files: Record<string, string>,
   projects: Map<string, string>,              // proje adı → not yolu
-  q: { baslik: string; proje?: string; mevcut?: string }
+  q: { baslik: string; proje?: string; mevcut?: string; hepsi?: boolean }
 ): TaskCand[] => {
   const qt = tokens(q.baslik);
   if (!qt.length) return [];
@@ -79,12 +79,13 @@ export const findTaskCandidates = (
   for (const [path, content] of Object.entries(files)) {
     if (!/\.md$/i.test(path) || !content) continue;
     const own = byPath.get(path);
-    if (!own && !content.includes('[project:')) continue;
+    if (!own && !q.hepsi && !content.includes('[project:')) continue;
+    if (!own && q.hepsi && (path.startsWith('Sistem/') || path.startsWith('Hatırlatmalar/'))) continue;
     content.split('\n').forEach((raw, lineIdx) => {
       const line = raw.replace(/\r$/, '');
       if (!CHECK_RE.test(line)) return;
       const tag = /\[project:([^\]\s]+)\]/i.exec(line);
-      const proje = tag ? bySlug.get(tag[1].toLowerCase()) : own;
+      const proje = (tag ? bySlug.get(tag[1].toLowerCase()) : own) || (q.hepsi ? 'Proje yok' : undefined);
       if (!proje) return;
       if (q.proje && proje !== q.proje) return;
       const durum = lineStatus(line) || 'backlog';
@@ -113,4 +114,28 @@ export const newProjectFile = (clientName: string, clientPath: string | undefine
   const dir = clientPath && clientPath.includes('/') ? clientPath.slice(0, clientPath.lastIndexOf('/')) : '';
   const clientDir = dir && dir.toLowerCase() !== clientsFolder.toLowerCase() ? dir : `${clientsFolder}/${clientName}`;
   return { path: `${clientDir}/Projeler/${n}.md`, content: `# ${n}\n\n#proje #${slugOf(clientName)}\n` };
+};
+
+// ---- Günlük: DiaryView ile aynı dosya adı ve başlık biçimi ("# Cumartesi, 21 Kasım"), böylece Günlük ekranı dosyayı kendi yazmış gibi okur. ----
+const WEEKDAY_FULL = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+const MONTH_FULL = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+export const diaryPath = (ymd: string): string => `Günlükler/${ymd}.md`;
+export const diaryHeader = (ymd: string): string => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return `# ${WEEKDAY_FULL[(dt.getDay() + 6) % 7]}, ${d} ${MONTH_FULL[m - 1]}`;
+};
+// Metin dosyanın sonuna eklenir; var olan yazı ve görev satırları olduğu gibi kalır (üzerine yazma yok).
+export const appendDiary = (existing: string | undefined, ymd: string, metin: string): string => {
+  const t = metin.replace(/\r?\n+/g, ' ').replace(/^\s*[-*]\s+\[[ xX\/]\]\s*/, '').trim();
+  if (!existing || !existing.trim()) return `${diaryHeader(ymd)}\n\n${t}\n`;
+  return `${existing.replace(/\s*$/, '')}\n${t}\n`;
+};
+
+// Görevi başka güne taşır: [due:] varsa değiştirilir, yoksa eklenir; saat/proje/durum etiketleri aynen kalır.
+export const setDueOnLine = (line: string, ymd: string): string => {
+  const cr = line.endsWith('\r') ? '\r' : '';
+  const body = line.replace(/\r$/, '');
+  const next = /\[due:[^\]]*\]/i.test(body) ? body.replace(/\[due:[^\]]*\]/i, `[due:${ymd}]`) : `${body} [due:${ymd}]`;
+  return next + cr;
 };

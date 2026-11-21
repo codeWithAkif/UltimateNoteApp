@@ -12,7 +12,10 @@ import { type Rule, type Sched, type Eylem, RULES_PATH, parseRules, serializeRul
 import { syncNativeRules, scheduleReminderNative, cancelReminderNative, nativeScheduling } from '../services/assistant/ruleNotify';
 import { notifyNow, requestNotifyPermission } from '../services/shopNotify';
 import { KANBAN_CONFIG_PATH, parseKanbanConfig, columnsForProject } from '../kanbanColumns';
-import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, type TaskCand } from '../services/assistant/projectOps';
+import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, appendDiary, diaryPath, setDueOnLine, foldTr, type TaskCand } from '../services/assistant/projectOps';
+import { LIST_PATH, listAdd, guessCat } from '../services/shopList';
+import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, totals, fmtTL, monthLabel, reindex, type BudgetItem } from '../services/budget';
+import type { NewFinanceEntryInput } from '../services/financeSync';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
 const border = '1px solid var(--border-color)';
@@ -34,7 +37,7 @@ interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'du
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
 interface Fired { id: string; rule: Rule; at: Date }
 
-export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote, clientsFolder, changeTaskStatus }: {
+export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote, clientsFolder, changeTaskStatus, financeCategoryNames, addFinanceEntry }: {
   ready: boolean;
   tab: string;
   onNavigate: (id: string) => void;
@@ -43,6 +46,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   saveNote: (path: string, content: string) => Promise<void>;
   clientsFolder: string;
   changeTaskStatus: (id: string, status: string) => Promise<void>;
+  financeCategoryNames: string[];
+  addFinanceEntry: (input: NewFinanceEntryInput) => Promise<unknown>;
 }) {
   const [open, setOpen] = useState<boolean>(() => { try { return localStorage.getItem('assistant_open_v1') === '1'; } catch { return false; } });
   const [view, setView] = useState<'sohbet' | 'kurallar'>('sohbet');
@@ -264,6 +269,61 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
+  // Bu ayın bütçe özeti: model "kalan bütçem ne?" sorusunu uydurmadan bu satırdan cevaplar.
+  const butceOzet = (): string => {
+    const ay = monthOf(new Date());
+    const b = parseBudgetNote(filesRef.current[monthPath(ay)], ay);
+    if (!b) return '';
+    const t = totals(b);
+    return `${monthLabel(ay)}: gelir ${fmtTL(t.gelir)}, sabit gider ${fmtTL(t.sabit)}, kart ${fmtTL(t.kart)}, değişken ${fmtTL(t.degisken)}, beklenmeyenler payı ${fmtTL(t.reserve)}, toplam gider ${fmtTL(t.gider)}, kalan ${fmtTL(t.kalan)}`;
+  };
+
+  const doShop = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.basliklar?.length) return;
+    try {
+      let content = filesRef.current[LIST_PATH];
+      for (const b of a.basliklar) content = listAdd(content, a.kategori || guessCat(b) || '', b);
+      await saveNote(LIST_PATH, content);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${a.basliklar.length} ürün alışveriş listesine eklendi.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  const doFinans = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.tutar || !a.kategori || !a.tarih) return;
+    try {
+      await addFinanceEntry({ entryDate: a.tarih, category: a.kategori, type: a.finTur === 'gelir' ? 'gelir' : 'gider', amount: a.tutar, note: a.baslik || null });
+      patchCard(msgId, c.id, { state: 'yapildi', not: 'Finans kaydı eklendi. Finans ekranında görünür.' });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  const doButce = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.tutar || !a.baslik || !a.butceTur) return;
+    try {
+      const ay = monthOf(new Date());
+      const b = parseBudgetNote(filesRef.current[monthPath(ay)], ay) || emptyBudget(ay);
+      const it: BudgetItem = { id: 'yeni', kind: a.butceTur as BudgetItem['kind'], name: a.baslik, amount: a.tutar, ...(a.gun ? { day: a.gun } : {}) };
+      await saveNote(monthPath(ay), serializeBudget({ ...b, items: reindex([...b.items, it]) }));
+      patchCard(msgId, c.id, { state: 'yapildi', not: `Kalem ${monthLabel(ay)} bütçesine eklendi.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  const doDiary = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.metin || !a.tarih) return;
+    try {
+      await saveNote(diaryPath(a.tarih), appendDiary(filesRef.current[diaryPath(a.tarih)], a.tarih, a.metin));
+      patchCard(msgId, c.id, { state: 'yapildi', not: `Günlüğe eklendi (${ymdLabel(a.tarih)}).` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  // Görevi başka güne alma: satır hâlâ aynı görevse yalnızca [due:] değişir; dosya bu arada değiştiyse yazmadan hata verir.
+  const doMoveDay = async (msgId: string, c: CardT) => {
+    const a = c.a; const t = c.cands?.[c.pick ?? 0]; if (!t || !a.tarih) return;
+    try {
+      const lines = (filesRef.current[t.path] ?? '').split('\n');
+      const cur = lines[t.lineIdx];
+      if (cur === undefined || foldTr(cur.replace(/\[[^\]]*\]/g, ' ')) .indexOf(foldTr(t.title)) < 0) { patchCard(msgId, c.id, { state: 'hata', not: 'Görev satırı bu arada değişmiş. Asistana isteği yeniden yazın.' }); return; }
+      lines[t.lineIdx] = setDueOnLine(cur, a.tarih);
+      await saveNote(t.path, lines.join('\n'));
+      patchCard(msgId, c.id, { state: 'yapildi', not: `"${t.title}" → ${ymdLabel(a.tarih)} gününe alındı.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
   const doRule = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.sched || !a.eylem || !a.ad) return;
     const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: a.ad, sched: a.sched, eylem: a.eylem, acik: true });
@@ -329,11 +389,11 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor() }, history, message });
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet() }, history, message });
       const cards: CardT[] = res.eylemler.map(a => {
         const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' ? 'hazirlaniyor' : 'bekliyor' };
-        if (a.tur === 'gorev_tasi') {
-          base.cands = findTaskCandidates(filesRef.current, projectMapRef.current, { baslik: a.baslik || '', proje: a.proje, mevcut: a.mevcut });
+        if (a.tur === 'gorev_tasi' || a.tur === 'gorev_gun') {
+          base.cands = findTaskCandidates(filesRef.current, projectMapRef.current, { baslik: a.baslik || '', proje: a.proje, mevcut: a.tur === 'gorev_tasi' ? a.mevcut : undefined, hepsi: a.tur === 'gorev_gun' });
           base.pick = 0;
         }
         return base;
@@ -426,6 +486,51 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
           </div>}
           {!done && c.state !== 'hata' && cs.length > 0 && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doMove(m.id, c)}><Check size={13} /> Taşı</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
           {stateNote(c)}
+        </div>
+      );
+    }
+    const okBtns = (fn: () => void, label: string) => !done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={fn}><Check size={13} /> {label}</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>;
+    if (a.tur === 'alisveris') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, `Alışveriş listesine ${a.basliklar?.length} ürün`)}
+        <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{a.basliklar?.map((b, i) => <li key={i}>{b}</li>)}</ul>
+        {okBtns(() => void doShop(m.id, c), 'Ekle')}{stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'finans') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, `${a.finTur === 'gelir' ? 'Gelir' : 'Gider'}: ${fmtTL(a.tutar || 0)}`)}
+        <div style={lab}>{a.kategori}{a.baslik ? ` · ${a.baslik}` : ''} · {ymdLabel(a.tarih || '')}</div>
+        {!financeCategoryNames.includes(a.kategori || '') && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.kategori}" kategorisi listede yok; bu adla kaydedilecek.</div>}
+        {okBtns(() => void doFinans(m.id, c), 'Kaydet')}{stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'butce') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, `Bütçeye ekle: ${a.baslik}`)}
+        <div style={lab}>{a.butceTur === 'gelir' ? 'Gelir' : a.butceTur === 'sabit' ? 'Sabit gider' : 'Değişken harcama'} · {fmtTL(a.tutar || 0)}{a.gun ? ` · ayın ${a.gun}. günü` : ''} · bu ayın planı</div>
+        {okBtns(() => void doButce(m.id, c), 'Ekle')}{stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'gunluk') return (
+      <div key={c.id} style={card}>{head(<FileText size={14} />, `Günlüğe yaz · ${ymdLabel(a.tarih || '')}`)}
+        <div style={{ ...lab, whiteSpace: 'pre-wrap' }}>{a.metin}</div>
+        {okBtns(() => void doDiary(m.id, c), 'Yaz')}{stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'gorev_gun') {
+      const cs = c.cands || [];
+      return (
+        <div key={c.id} style={card}>{head(<Check size={14} />, `Görevi taşı → ${ymdLabel(a.tarih || '')}`)}
+          {a.projeIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.projeIstek}" adıyla proje eşleşmedi; tüm projelerde arandı.</div>}
+          {!cs.length && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.baslik}" ile eşleşen görev bulunamadı. Görev adını daha açık yazıp tekrar deneyin.</div>}
+          {cs.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' }}>
+            {cs.length > 1 && <div style={lab}>Birden fazla eşleşme var, birini seçin:</div>}
+            {cs.map((t, i) => (
+              <label key={`${t.path}:${t.lineIdx}`} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+                {cs.length > 1 && <input type="radio" disabled={done} checked={(c.pick ?? 0) === i} onChange={() => patchCard(m.id, c.id, { pick: i })} />}
+                <span>{t.title}<span style={lab}> · {t.proje}</span></span>
+              </label>
+            ))}
+          </div>}
+          {cs.length > 0 && okBtns(() => void doMoveDay(m.id, c), 'Taşı')}{stateNote(c)}
         </div>
       );
     }

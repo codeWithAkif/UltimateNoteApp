@@ -42,7 +42,7 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
@@ -51,6 +51,8 @@ export interface AAction {
   tarih?: string; saat?: string;   // hatirlat / gorev (saat = başlangıç)
   bitis?: string;                  // gorev: bitiş saati (saat varsa)
   proje?: string;                  // gorev: eşleşen proje notunun adı (varsa görev o notun sonuna yazılır)
+  tutar?: number; finTur?: string; kategori?: string; // finans / butce
+  butceTur?: string; gun?: number; metin?: string; // butce kalemi / gunluk yazısı
   musteri?: string; musteriIstek?: string; // proje_ac: eşleşen müşteri adı / eşleşmeyen istenen ad
   basliklar?: string[];            // gorevler: eklenecek görev başlıkları
   hedef?: string; mevcut?: string; // gorev_tasi: hedef durum anahtarı / (varsa) şu anki durum
@@ -58,7 +60,7 @@ export interface AAction {
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
-export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[] }
+export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string }
 export interface ChatTurn { role: 'user' | 'ai'; text: string }
 
 export const ROUTER_SCHEMA = {
@@ -71,7 +73,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -94,6 +96,8 @@ BUGÜN: ${ymd(o.ctx.now)} (${GUN[o.ctx.now.getDay()]}), saat ${String(o.ctx.now.
 
 PROJELER (görev eklerken proje adı): ${(o.ctx.projeler || []).slice(0, 60).join(', ') || '(yok)'}
 MUSTERILER: ${(o.ctx.musteriler || []).slice(0, 60).join(', ') || '(yok)'}
+FINANS KATEGORILERI: ${(o.ctx.finKategoriler || []).join(', ') || '(yok)'}
+BUTCE OZETI (bu ay): ${o.ctx.butceOzet || '(bütçe notu yok)'}
 DURUMLAR (anahtar=ad): ${(o.ctx.durumlar || DEFAULT_STATUS_COLS).map(d => `${d.key}=${d.title}`).join(', ')}
 
 EKRANLAR (kimlik = ad: ne işe yarar). Buradaki bilgi dışında ayrıntıyı UYDURMA; bilmiyorsan "bu ekranın ayrıntısını bilmiyorum, açayım mı?" de:
@@ -108,6 +112,11 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 7. tur="proje_ac", musteri (MUSTERILER listesindeki ad AYNEN; yoksa kullanıcının söylediği ad), ad (yeni projenin adı): bir müşterinin altına yeni proje açar ("Zorlu müşterisinin altına Datahub projesi aç").
 8. tur="gorevler", proje (PROJELER'deki ad AYNEN; proje söylenmediyse boş), basliklar (dizi: her görev AYRI ve kısa bir başlık), tarih (YYYY-MM-DD, yalnızca kullanıcı söylediyse): bir projeye (ya da proje yoksa Gelen Kutusu'na) BİRDEN ÇOK görev ya da tarih/saat gerekmeyen görevler ekler ("Datahub'a şunları ekle: baklava, sütlaç"). Tek ve tarihli/saatli iş için 6'yı kullan.
 9. tur="gorev_tasi", baslik (taşınacak görevin başlığı, kullanıcının dediği gibi), proje (söylendiyse PROJELER'deki ad), mevcut (kullanıcı "şu durumdaki" dediyse DURUMLAR anahtarı), hedef (DURUMLAR anahtarı): var olan bir görevin durumunu değiştirir ("Devam Ediyor'daki sütlaç görevini Bitti'ye al"). Görevi sen bulma, yalnızca bu alanları doldur.
+10. tur="alisveris", basliklar (dizi: ürünler, her biri AYRI ve kısa), kategori (isteğe bağlı: Market, Araç, Ev, Kişisel, Diğer): Alışveriş listesine ürün ekler ("listeye süt yumurta ekle").
+11. tur="finans", tutar (sayı, TL), finTur ("gider" ya da "gelir"), kategori (FINANS KATEGORILERI'nden biri AYNEN; uymuyorsa en yakınını), baslik (kısa açıklama, isteğe bağlı), tarih (YYYY-MM-DD; söylenmediyse bugün): Finans ekranına tek bir harcama/gelir kaydı ekler ("markete 450 TL harcadım"). Tutar belirsizse eylem ekleme, sor.
+12. tur="butce", baslik (kalem adı), tutar (sayı, TL), butceTur ("gelir", "sabit" ya da "degisken"), gun (ayın günü, isteğe bağlı): Bu ayın Bütçe Planı'na kalem ekler ("her ay 15'inde Netflix 230 TL sabit gider"). "Kalan bütçem ne?" gibi SORULARI eylemsiz, BUTCE OZETI'ne bakarak cevapta yanıtla; özet yoksa bütçe notu olmadığını söyle, sayı uydurma.
+13. tur="gunluk", metin (günlüğe yazılacak cümle(ler), kullanıcının dediği gibi), tarih (YYYY-MM-DD; söylenmediyse bugün): Günlük ekranına o güne not düşer.
+14. tur="gorev_gun", baslik (taşınacak görevin başlığı), proje (söylendiyse), tarih (YYYY-MM-DD, yeni gün): var olan bir görevi başka güne alır ("yarınki toplantıyı cumaya al"). Görevi sen bulma.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -191,6 +200,26 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
       const hedef = matchStatus(str(a.hedef, 30), cols), baslik = str(a.baslik, 120), istek = str(a.proje, 60);
       const proje = istek ? matchProject(istek, ctx.projeler || []) : '';
       if (hedef && baslik) out.push({ tur, baslik, hedef, mevcut: matchStatus(str(a.mevcut, 30), cols) || undefined, proje: proje || undefined, projeIstek: istek && !proje ? istek : undefined });
+    } else if (tur === 'alisveris') {
+      const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 20);
+      if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });
+    } else if (tur === 'finans') {
+      const tutar = Number(a.tutar), finTur = str(a.finTur, 10) === 'gelir' ? 'gelir' : 'gider', tarih = str(a.tarih, 12);
+      const kats = ctx.finKategoriler || [];
+      const istek = str(a.kategori, 40), kategori = istek ? matchProject(istek, kats) || istek : '';
+      if (Number.isFinite(tutar) && tutar > 0 && tutar < 1e9 && kategori) out.push({ tur, tutar: Math.round(tutar * 100) / 100, finTur, kategori, baslik: str(a.baslik, 80) || undefined, tarih: /^\d{4}-\d{2}-\d{2}$/.test(tarih) ? tarih : ymd(ctx.now) });
+    } else if (tur === 'butce') {
+      const tutar = Number(a.tutar), baslik = str(a.baslik, 60), g = Math.round(Number(a.gun));
+      const bt = str(a.butceTur, 12).replace(/ı/g, 'i');
+      const butceTur = bt === 'gelir' ? 'gelir' : bt === 'sabit' ? 'sabit' : bt === 'degisken' ? 'degisken' : '';
+      if (Number.isFinite(tutar) && tutar > 0 && tutar < 1e9 && baslik && butceTur) out.push({ tur, baslik, tutar: Math.round(tutar * 100) / 100, butceTur, gun: g >= 1 && g <= 31 ? g : undefined });
+    } else if (tur === 'gunluk') {
+      const metin = str(a.metin, 600), tarih = str(a.tarih, 12);
+      if (metin) out.push({ tur, metin, tarih: /^\d{4}-\d{2}-\d{2}$/.test(tarih) ? tarih : ymd(ctx.now) });
+    } else if (tur === 'gorev_gun') {
+      const baslik = str(a.baslik, 120), tarih = str(a.tarih, 12), istek = str(a.proje, 60);
+      const proje = istek ? matchProject(istek, ctx.projeler || []) : '';
+      if (baslik && /^\d{4}-\d{2}-\d{2}$/.test(tarih) && tarih >= ymd(ctx.now)) out.push({ tur, baslik, tarih, proje: proje || undefined, projeIstek: istek && !proje ? istek : undefined });
     } else if (tur === 'ui') {
       if (str(a.talimat, 600)) out.push({ tur, talimat: str(a.talimat, 600) });
     }
