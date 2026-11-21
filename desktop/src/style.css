@@ -6169,6 +6169,7 @@ input:focus, textarea:focus, select:focus {
 
 /* Excel Lite Table widget */
 .excel-lite-table-container {
+  flex-shrink: 0; /* md-table-wrapper ile aynı ezilme sorunu (flex sütununda küçülmesin) */
   background: rgba(20, 20, 25, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
@@ -8939,6 +8940,9 @@ input:focus, textarea:focus, select:focus {
    Standart Markdown (GFM) "| a | b |" tablo sözdizimi için stil. Geniş tablolarda
    yatay kaydırma sağlanır, tema değişkenleri kullanılarak açık/koyu modda uyumlu çalışır. */
 .md-table-wrapper {
+  /* BUG DÜZELTMESİ: .live-editor-lines sabit yükseklikli bir flex sütunu; overflow'lu (auto) öğenin en küçük yüksekliği 0 sayıldığından
+     not uzayınca tablo 2px'e eziliyor ve görünmüyordu. VirtBlock'taki flexShrink:0 ile aynı sebep. */
+  flex-shrink: 0;
   width: 100%;
   overflow-x: auto;
   margin: 8px 0;
