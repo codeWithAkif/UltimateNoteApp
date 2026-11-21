@@ -5,7 +5,7 @@ import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
 import '@fontsource/inter/latin-ext-500.css';
 import { isGeminiConfigured } from '../services/geminiMentor';
-import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, TASK_PATH, SCREENS, parseReminders, removeLine } from '../services/assistant/assistantAI';
+import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, projectSlug, TASK_PATH, SCREENS, parseReminders, removeLine } from '../services/assistant/assistantAI';
 import { designNote, lineDiff, type DesignResult, type DiffOp } from '../services/assistant/noteDesign';
 import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl } from '../services/assistant/pageAgent';
 import { type Rule, type Sched, type Eylem, RULES_PATH, parseRules, serializeRules, addRule, schedLabel, dueRules, validTime, GUNLER } from '../services/assistant/automation';
@@ -167,11 +167,29 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   };
 
   // Görev: inbox.md'ye etiketli satır eklenir; Takvim/Görev Havuzu tüm notları taradığı için ayrıca bir kayıt gerekmez.
+  // #proje etiketli notlar (App.tsx ve Proje Yönetimi ile aynı ölçüt): ad → not yolu.
+  const projectMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [path, content] of Object.entries(fileContents)) {
+      if (!/\.md$/i.test(path) || path.startsWith('Hatırlatmalar/') || path.startsWith('Sistem/')) continue;
+      if (/#proje(?![a-zçğıöşü0-9_])/i.test(content || '')) m.set((path.split('/').pop() || path).replace(/\.md$/i, ''), path);
+    }
+    return m;
+  }, [fileContents]);
+  const projectMapRef = useRef(projectMap); projectMapRef.current = projectMap;
+
   const doTask = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.tarih || !a.baslik) return;
     try {
-      await saveNote(TASK_PATH, appendTask(filesRef.current[TASK_PATH], a.baslik, a.tarih, a.saat, a.bitis));
-      patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${ymdLabel(a.tarih)}${a.saat ? ` ${a.saat}-${a.bitis}` : ''} (Gelen Kutusu / inbox.md). Takvim ve Görev Havuzu'nda görünür.` });
+      const projPath = a.proje ? projectMapRef.current.get(a.proje) : undefined;
+      const when = `${ymdLabel(a.tarih)}${a.saat ? ` ${a.saat}-${a.bitis}` : ''}`;
+      if (a.proje && projPath && filesRef.current[projPath] !== undefined) {
+        await saveNote(projPath, appendTask(filesRef.current[projPath], a.baslik, a.tarih, a.saat, a.bitis, projectSlug(a.proje)));
+        patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${when} · ${a.proje} projesine. Takvim, Görev Havuzu ve Proje Yönetimi'nde görünür.` });
+      } else {
+        await saveNote(TASK_PATH, appendTask(filesRef.current[TASK_PATH], a.baslik, a.tarih, a.saat, a.bitis));
+        patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${when} (Gelen Kutusu / inbox.md). Takvim ve Görev Havuzu'nda görünür.${a.proje ? ' Proje notu bulunamadığı için projeye bağlanmadı.' : ''}` });
+      }
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
@@ -240,7 +258,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date() }, history, message });
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()] }, history, message });
       const cards: CardT[] = res.eylemler.map(a => ({ id: newId(), a, state: a.tur === 'notu_tasarla' ? 'hazirlaniyor' : 'bekliyor' }));
       const am: Msg = { id: newId(), role: 'ai', text: res.cevap, cards: cards.length ? cards : undefined };
       setMsgs(ms => [...ms, am]);
@@ -288,7 +306,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     );
     if (a.tur === 'gorev') return (
       <div key={c.id} style={card}>{head(<Check size={14} />, `Görev: ${a.baslik}`)}
-        <div style={lab}>{ymdLabel(a.tarih || '')}{a.saat ? ` · ${a.saat}-${a.bitis}` : ' · saat yok'}</div>
+        <div style={lab}>{ymdLabel(a.tarih || '')}{a.saat ? ` · ${a.saat}-${a.bitis}` : ' · saat yok'}{a.proje ? ` · Proje: ${a.proje}` : ''}</div>
+        {a.projeIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.projeIstek}" adıyla tek bir proje eşleşmedi (yok ya da birden fazla benzer var); görev Gelen Kutusu'na (inbox.md) eklenecek.</div>}
         {!done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doTask(m.id, c)}><Check size={13} /> Ekle</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
         {stateNote(c)}
       </div>

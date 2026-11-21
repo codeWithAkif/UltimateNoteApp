@@ -49,10 +49,12 @@ export interface AAction {
   baslik?: string; mesaj?: string; // hatirlat / otomasyon(bildir)
   tarih?: string; saat?: string;   // hatirlat / gorev (saat = başlangıç)
   bitis?: string;                  // gorev: bitiş saati (saat varsa)
+  proje?: string;                  // gorev: eşleşen proje notunun adı (varsa görev o notun sonuna yazılır)
+  projeIstek?: string;             // gorev: kullanıcının söylediği ama hiçbir projeyle eşleşmeyen ad (uyarı için)
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
-export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date }
+export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[] }
 export interface ChatTurn { role: 'user' | 'ai'; text: string }
 
 export const ROUTER_SCHEMA = {
@@ -65,7 +67,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -86,6 +88,8 @@ export const buildRouterPrompt = (o: { ctx: AssistantCtx; history: ChatTurn[]; m
 BUGÜN: ${ymd(o.ctx.now)} (${GUN[o.ctx.now.getDay()]}), saat ${String(o.ctx.now.getHours()).padStart(2, '0')}:${String(o.ctx.now.getMinutes()).padStart(2, '0')}
 ŞU AN AÇIK EKRAN: ${cur ? `${cur.id} (${cur.ad})` : o.ctx.tab}${o.ctx.noteOpen ? `; bir not açık${o.ctx.notePath ? ` (${o.ctx.notePath.split('/').pop()})` : ''}` : ''}
 
+PROJELER (görev eklerken proje adı): ${(o.ctx.projeler || []).slice(0, 60).join(', ') || '(yok)'}
+
 EKRANLAR (kimlik = ad: ne işe yarar). Buradaki bilgi dışında ayrıntıyı UYDURMA; bilmiyorsan "bu ekranın ayrıntısını bilmiyorum, açayım mı?" de:
 ${screens}
 
@@ -94,7 +98,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 2. tur="notu_tasarla", talimat=<kullanıcının tasarım/biçim isteği, kendi cümleleriyle>: YALNIZCA bir not açıkken ve kullanıcı o notun görünümünü/düzenini/içeriğini değiştirmek istiyorsa ("başlığı mavi yap", "altını 3 sütuna böl", "şunu ekle", "tabloya çevir").
 3. tur="hatirlat", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat): tek seferlik hatırlatma/alarm. Tarih/saat belirsizse eylem ekleme, cevapta sor.
 4. tur="otomasyon", ad, zamanlama ("her-gun 08:30" | "haftalik pzt 09:00" | "aylik 5 09:00" | "bir 2026-12-01 09:00"; gün adları pzt sal car per cum cmt paz), eylemTuru ("bildir" ya da "ac"), baslik (bildir için), ekran (ac için ekran kimliği), mesaj (isteğe bağlı): tekrarlayan kural. Kural yalnızca bildirim gösterir ya da bir ekranı açar.
-6. tur="gorev", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat, isteğe bağlı), bitis (HH:MM, isteğe bağlı): Takvime/Görev Havuzu'na yeni GÖREV ekler. "Takvime ekle", "görev ekle", "yapılacak olarak yaz", "toplantı/iş planla" gibi isteklerde bunu kullan; saat verilmediyse saat/bitis'i boş bırak. Kullanıcı saat aralığı söylediyse ("13 14 arası", "13-14", "13:00'dan 14:00'a kadar") MUTLAKA saat="13:00", bitis="14:00" gibi ikisini de doldur; yalnızca başlangıç verildiyse bitis'i boş bırak (1 saat sayılır). Alarm/bildirim istenirse ("hatırlat") 3'ü kullan, görev için 6'yı. Tarih belirsizse eylem ekleme, cevapta sor.
+6. tur="gorev", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat, isteğe bağlı), bitis (HH:MM, isteğe bağlı), proje (isteğe bağlı): Takvime/Görev Havuzu'na yeni GÖREV ekler. "Takvime ekle", "görev ekle", "yapılacak olarak yaz", "toplantı/iş planla" gibi isteklerde bunu kullan; saat verilmediyse saat/bitis'i boş bırak. Kullanıcı saat aralığı söylediyse ("13 14 arası", "13-14", "13:00'dan 14:00'a kadar") MUTLAKA saat="13:00", bitis="14:00" gibi ikisini de doldur; yalnızca başlangıç verildiyse bitis'i boş bırak (1 saat sayılır). Alarm/bildirim istenirse ("hatırlat") 3'ü kullan, görev için 6'yı. Kullanıcı bir projeyi andıysa ("Datahub projesine ekle") proje alanına PROJELER listesindeki adı AYNEN yaz; listede yoksa kullanıcının söylediği adı yaz. Proje söylemediyse proje'yi boş bırak. Birden çok proje eşit derecede uyuyorsa eylem ekleme, cevapta hangisi olduğunu sor. Tarih belirsizse eylem ekleme, cevapta sor.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -118,6 +122,17 @@ const parseTimeRange = (saat: string, bitis: string): [string, string] => {
   const range = /^(.+?)\s*(?:-|–|—|\/| ile )\s*(.+)$/.exec(saat);
   if (range && !bitis) return [normTime(range[1]), normTime(range[2])];
   return [normTime(saat), normTime(bitis)];
+};
+
+const foldTr = (x: string) => x.replace(/[İI]/g, 'i').replace(/ı/g, 'i').toLowerCase().replace(/ç/g, 'c').replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/\s+/g, ' ').trim();
+// Kullanıcının söylediği proje adını listedeki bir projeyle eşler: önce birebir, sonra "içerir" (tek aday varsa). Belirsizse '' döner.
+export const matchProject = (istek: string, projeler: string[]): string => {
+  const q = foldTr(istek).replace(/\s*proje(si|ye|de|yi|nin)?$/, '').trim();
+  if (!q) return '';
+  const exact = projeler.filter(p => foldTr(p) === q);
+  if (exact.length === 1) return exact[0];
+  const part = projeler.filter(p => { const f = foldTr(p); return f.includes(q) || (f.length >= 4 && q.includes(f)); });
+  return part.length === 1 ? part[0] : '';
 };
 
 export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
@@ -151,7 +166,9 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
       if (saat && !validTime(bitis)) { const [h, mi] = saat.split(':').map(Number); bitis = `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(mi).padStart(2, '0')}`; }
       if (saat && bitis <= saat) bitis = '23:59';
       // Geçmiş güne görev eklenmez: model tarihi yanlış hesapladıysa kullanıcı kartı görüp düzeltsin diye eylem düşer, cevapta sorulur.
-      if (/^\d{4}-\d{2}-\d{2}$/.test(tarih) && baslik && tarih >= ymd(ctx.now)) out.push({ tur, baslik, tarih, saat: saat || undefined, bitis: bitis || undefined });
+      const istek = str(a.proje, 60);
+      const proje = istek ? matchProject(istek, ctx.projeler || []) : '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(tarih) && baslik && tarih >= ymd(ctx.now)) out.push({ tur, baslik, tarih, saat: saat || undefined, bitis: bitis || undefined, proje: proje || undefined, projeIstek: istek && !proje ? istek : undefined });
     } else if (tur === 'ui') {
       if (str(a.talimat, 600)) out.push({ tur, talimat: str(a.talimat, 600) });
     }
@@ -186,10 +203,12 @@ export const appendReminder = (existing: string | undefined, tarih: string, basl
 
 // Görev: Görev Havuzu'nun "yeni görev" ekleme deseniyle aynı — kök inbox.md'ye etiketli checklist satırı. Takvim ve Görev Havuzu tüm notları taradığı için görev anında görünür.
 export const TASK_PATH = 'inbox.md';
-export const taskLine = (baslik: string, tarih: string, saat?: string, bitis?: string): string =>
-  `- [ ] ${str(baslik, 120)} [due:${tarih}]${saat && bitis ? ` [plannedtime:${saat}-${bitis}]` : ''}`;
-export const appendTask = (existing: string | undefined, baslik: string, tarih: string, saat?: string, bitis?: string): string => {
-  const line = taskLine(baslik, tarih, saat, bitis);
+export const taskLine = (baslik: string, tarih: string, saat?: string, bitis?: string, projeSlug?: string): string =>
+  `- [ ] ${str(baslik, 120)} [due:${tarih}]${saat && bitis ? ` [plannedtime:${saat}-${bitis}]` : ''}${projeSlug ? ` [project:${projeSlug}]` : ''}`;
+// Proje notunda görev Proje Yönetimi ile aynı kuralla "[project:slug]" etiketi alır (ProjectsView.addTaskToProject).
+export const projectSlug = (name: string): string => name.replace(/\.md$/i, '').toLocaleLowerCase('tr').replace(/\s+/g, '-');
+export const appendTask = (existing: string | undefined, baslik: string, tarih: string, saat?: string, bitis?: string, projeSlug?: string): string => {
+  const line = taskLine(baslik, tarih, saat, bitis, projeSlug);
   const base = existing && existing.trim() ? existing.replace(/\s*$/, '\n') : '';
   return base.includes(line) ? base : base + line + '\n';
 };
