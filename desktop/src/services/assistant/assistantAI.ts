@@ -5,6 +5,7 @@ import { callGemini } from '../geminiMentor';
 import { redactSensitive } from '../budget';
 import { parseSched, validTime, type Sched, type Eylem } from './automation';
 import { cleanPairs } from './assistantTools';
+import { AMBIENT_SOUNDS, AMBIENT_PRESETS } from '../ambientAudio';
 import { foldTr, matchStatus, sanitizeName, DEFAULT_STATUS_COLS, type StatusCol } from './projectOps';
 
 export interface Screen { id: string; ad: string; ozet: string }
@@ -43,7 +44,7 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle' | 'alisveris_al';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle' | 'alisveris_al' | 'ortam';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
@@ -52,6 +53,7 @@ export interface AAction {
   tarih?: string; saat?: string;   // hatirlat / gorev (saat = başlangıç)
   bitis?: string;                  // gorev: bitiş saati (saat varsa)
   proje?: string;                  // gorev: eşleşen proje notunun adı (varsa görev o notun sonuna yazılır)
+  sesler?: { id: string; v: number }[]; ortamIslem?: string; hazir?: string; // ortam: ses karışımı
   tekrar?: 'daily' | 'weekly' | 'monthly'; // gorev: [repeat:] etiketi
   soru?: string; kartlar?: { s: string; c: string }[]; // not_sor / kart_ekle
   tutar?: number; finTur?: string; kategori?: string; // finans / butce
@@ -63,7 +65,7 @@ export interface AAction {
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
-export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string; verimOzet?: string; gunOzet?: string }
+export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string; verimOzet?: string; gunOzet?: string; ortamDurum?: string }
 export interface ChatTurn { role: 'user' | 'ai'; text: string }
 
 export const ROUTER_SCHEMA = {
@@ -76,7 +78,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tekrar: { type: 'string' }, soru: { type: 'string' }, kartlar: { type: 'array', items: { type: 'object', properties: { s: { type: 'string' }, c: { type: 'string' } } } }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tekrar: { type: 'string' }, sesler: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, v: { type: 'number' } } } }, ortamIslem: { type: 'string' }, hazir: { type: 'string' }, soru: { type: 'string' }, kartlar: { type: 'array', items: { type: 'object', properties: { s: { type: 'string' }, c: { type: 'string' } } } }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -101,6 +103,7 @@ PROJELER (görev eklerken proje adı): ${(o.ctx.projeler || []).slice(0, 60).joi
 MUSTERILER: ${(o.ctx.musteriler || []).slice(0, 60).join(', ') || '(yok)'}
 FINANS KATEGORILERI: ${(o.ctx.finKategoriler || []).join(', ') || '(yok)'}
 BUTCE OZETI (bu ay): ${o.ctx.butceOzet || '(bütçe notu yok)'}
+ORTAM SESLERI (id=ad): ${AMBIENT_SOUNDS.map(s => `${s.id}=${s.name}`).join(', ')}; HAZIR KARISIMLAR: ${AMBIENT_PRESETS.map(p => p.name).join(', ')}; ŞU AN: ${o.ctx.ortamDurum || 'sessiz'}
 GUN OZETI (bugün): ${o.ctx.gunOzet || '(yok)'}
 VERIMLILIK OZETI (son 14 gün): ${o.ctx.verimOzet || '(yok)'}
 DURUMLAR (anahtar=ad): ${(o.ctx.durumlar || DEFAULT_STATUS_COLS).map(d => `${d.key}=${d.title}`).join(', ')}
@@ -130,6 +133,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 "Bugün ne var?", "günümü özetle" gibi sorularda eylem ekleme; GUN OZETI'ne bakıp cevapta kısaca özetle, sayı/görev uydurma.
 Verimlilik/üretkenlik soruları ("geçen haftaya göre nasıldım?") için eylem ekleme; VERIMLILIK OZETI'ne bakıp cevapta kısaca yorumla, özet yoksa söyle, sayı uydurma.
 20. tur="alisveris_al", basliklar (dizi: alınan ürünler, kısa), kategori (söylendiyse nereden/hangi bölüm: "e-bebek", "market"; yoksa boş): Alışveriş listesinde ZATEN olan maddeyi alındı olarak işaretler ("e-bebekten bulaşık deterjanı aldım"). Yeni madde EKLEMEZ.
+21. tur="ortam", ortamIslem ("ayarla" | "degistir" | "hazir" | "durdur" | "sustur" | "sesac"), sesler (dizi: {id: ORTAM SESLERI id'si, v: 0-100 seviye}), hazir (HAZIR KARISIMLAR adı AYNEN): ortam seslerini yönetir. "ayarla": yalnızca verilen sesleri açar/kısar/açar (v=0 kapatır), diğerleri çalmaya devam eder ("gök gürültüsünü kıs", "rüzgâr ekle"). "degistir": verilen karışım dışındakileri kapatır ("sadece yağmur aç", "yağmur ve hafif rüzgâr aç"). "hazir": hazır karışım çalar. "durdur": hepsini kapatır. "sustur"/"sesac": sesi keser/geri açar. "hafif"≈20, "orta"≈50, "yüksek"≈80, belirtilmediyse 50.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -216,6 +220,24 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
     } else if (tur === 'alisveris') {
       const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 20);
       if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });
+    } else if (tur === 'ortam') {
+      const isl = str(a.ortamIslem, 12);
+      const islem = (['ayarla', 'degistir', 'hazir', 'durdur', 'sustur', 'sesac'] as const).find(x => x === isl);
+      if (!islem) continue;
+      if (islem === 'hazir') {
+        const q = foldTr(str(a.hazir, 40));
+        const p = q ? AMBIENT_PRESETS.find(x => foldTr(x.name) === q) || AMBIENT_PRESETS.find(x => foldTr(x.name).includes(q) || q.includes(foldTr(x.name))) : undefined;
+        if (p) out.push({ tur, ortamIslem: islem, hazir: p.name });
+      } else if (islem === 'ayarla' || islem === 'degistir') {
+        const sesler: { id: string; v: number }[] = [];
+        for (const x of Array.isArray(a.sesler) ? a.sesler : []) {
+          const key = foldTr(String(x?.id ?? ''));
+          const snd = AMBIENT_SOUNDS.find(s => s.id === key || foldTr(s.name) === key);
+          const v = Number(x?.v);
+          if (snd && Number.isFinite(v) && !sesler.some(y => y.id === snd.id)) sesler.push({ id: snd.id, v: Math.max(0, Math.min(100, Math.round(v))) });
+        }
+        if (sesler.length) out.push({ tur, ortamIslem: islem, sesler });
+      } else out.push({ tur, ortamIslem: islem });
     } else if (tur === 'alisveris_al') {
       const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 15);
       if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });

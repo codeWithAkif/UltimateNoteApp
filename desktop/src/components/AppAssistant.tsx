@@ -18,6 +18,7 @@ import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, tota
 import type { NewFinanceEntryInput } from '../services/financeSync';
 import { parseLabState, serializeLabState, todayKey, LANGUAGE_LAB_NOTE_PATH } from '../services/languageLab';
 import { findRelevantNotes, askNotesChat } from '../services/geminiMentor';
+import { ambientAudioService, AMBIENT_SOUNDS, AMBIENT_PRESETS } from '../services/ambientAudio';
 import { findShopCandidates, appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, daySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
@@ -342,6 +343,21 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       patchCard(msgId, c.id, { state: 'yapildi', not: `${n} madde alındı olarak işaretlendi.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
+  // Ortam sesi: ses çalmak tarayıcıda kullanıcı dokunuşu ister; bu yüzden kart düğmesine basınca uygulanır.
+  const doAmbient = (msgId: string, c: CardT) => {
+    const a = c.a;
+    try {
+      const vols: Record<string, number> = {};
+      for (const s of a.sesler || []) vols[s.id] = s.v / 100;
+      if (a.ortamIslem === 'hazir') { const p = AMBIENT_PRESETS.find(x => x.name === a.hazir); if (p) ambientAudioService.applyPreset(p.volumes); }
+      else if (a.ortamIslem === 'degistir') ambientAudioService.applyPreset(vols);
+      else if (a.ortamIslem === 'ayarla') ambientAudioService.adjust(vols);
+      else if (a.ortamIslem === 'durdur') ambientAudioService.stopAll();
+      else if (a.ortamIslem === 'sustur') ambientAudioService.setMuted(true);
+      else if (a.ortamIslem === 'sesac') ambientAudioService.setMuted(false);
+      patchCard(msgId, c.id, { state: 'yapildi', not: a.ortamIslem === 'durdur' ? 'Ortam sesleri kapatıldı.' : 'Ortam sesleri güncellendi.' });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Ses başlatılamadı: ${String(e?.message || e)}. Ortam Sesleri ekranından deneyin.` }); }
+  };
   const doFinans = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.tutar || !a.kategori || !a.tarih) return;
     try {
@@ -506,7 +522,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message });
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), ortamDurum: (() => { const st = ambientAudioService.getState(); const on = AMBIENT_SOUNDS.filter(s => st.playingMap[s.id] && st.isGlobalPlaying && !st.isMuted).map(s => `${s.name} %${Math.round((st.volumeMap[s.id] ?? 0) * 100)}`); return on.join(', '); })(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message });
       // Notlarımla Sohbet: not sorusu salt okunur olduğundan onay kartı olmadan, notlar aranıp cevap doğrudan yazılır.
       const ask = res.eylemler.find(a => a.tur === 'not_sor');
       let answerText = '';
@@ -649,6 +665,18 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
             </div>
           ))}
           {any && okBtns(() => void doBought(m.id, c), 'İşaretle')}{stateNote(c)}
+        </div>
+      );
+    }
+    if (a.tur === 'ortam') {
+      const nm = (id: string) => AMBIENT_SOUNDS.find(s => s.id === id)?.name || id;
+      const isl = a.ortamIslem;
+      const baslik = isl === 'hazir' ? `Karışım: ${a.hazir}` : isl === 'durdur' ? 'Tüm ortam seslerini kapat' : isl === 'sustur' ? 'Sesi sustur' : isl === 'sesac' ? 'Sesi geri aç' : isl === 'degistir' ? 'Ortam karışımını değiştir' : 'Ortam seslerini ayarla';
+      return (
+        <div key={c.id} style={card}>{head(<Check size={14} />, baslik)}
+          {(a.sesler || []).length > 0 && <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{a.sesler!.map(s => <li key={s.id}>{nm(s.id)} <span style={lab}>{s.v === 0 ? '· kapat' : `· %${s.v}`}</span></li>)}</ul>}
+          {isl === 'degistir' && <div style={{ ...lab, marginTop: '4px' }}>Listede olmayan sesler kapatılır.</div>}
+          {okBtns(() => doAmbient(m.id, c), 'Uygula')}{stateNote(c)}
         </div>
       );
     }

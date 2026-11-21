@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Headphones, Music } from 'lucide-react';
-import { ambientAudioService } from '../services/ambientAudio';
+import { ambientAudioService, AMBIENT_PRESETS } from '../services/ambientAudio';
 
 interface SoundItem {
   id: string;
@@ -96,39 +96,9 @@ const SOUNDS: SoundItem[] = [
   }
 ];
 
-interface Preset {
-  name: string;
-  emoji: string;
-  volumes: Record<string, number>;
-}
-
-const PRESETS: Preset[] = [
-  {
-    name: 'Fırtınalı Gece',
-    emoji: '⛈️',
-    volumes: { rain: 0.8, thunder: 0.5, wind: 0.3 }
-  },
-  {
-    name: 'Kamp Ateşi Başında',
-    emoji: '🏕️',
-    volumes: { campfire: 0.8, wind: 0.2, forest: 0.4 }
-  },
-  {
-    name: 'Gece Treni Yolculuğu',
-    emoji: '🚂',
-    volumes: { train: 0.75, rain: 0.3, night: 0.2 }
-  },
-  {
-    name: 'Okyanus Kafesi',
-    emoji: '🏖️',
-    volumes: { waves: 0.75, forest: 0.2, wind: 0.1 }
-  },
-  {
-    name: 'Kozmik Fırtına',
-    emoji: '🌌',
-    volumes: { space: 0.8, wind: 0.3, thunder: 0.3 }
-  }
-];
+type Preset = (typeof AMBIENT_PRESETS)[number];
+// Hazır karışımlar Asistan'la ortak olduğu için servis dosyasında tutulur.
+const PRESETS: Preset[] = AMBIENT_PRESETS;
 
 export default function AmbientMixerView() {
   const [syncState, setSyncState] = useState(() => ambientAudioService.getState());
