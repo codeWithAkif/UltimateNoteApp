@@ -561,6 +561,13 @@ export default function App() {
   const timelineItemsTopLevel = useMemo(() => timelineItems.filter(item => !item.isSubtask), [timelineItems]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [filesLoaded, setFilesLoaded] = useState(false);
+  // Açılışta notlar yüklenirken ekran boş görünüyordu; yükleme ekranı gösterilir. Yükleme hata verirse sonsuza dek takılmasın diye 25 sn sonra vazgeçilir.
+  const [loadGaveUp, setLoadGaveUp] = useState(false);
+  useEffect(() => {
+    if (filesLoaded) return;
+    const t = setTimeout(() => setLoadGaveUp(true), 25000);
+    return () => clearTimeout(t);
+  }, [filesLoaded]);
   // 60 saniyelik periyodik tarama (applyAutoStopUnfinishedToLine) her tetiklendiğinde GÜNCEL
   // fileContents'a erişebilmek için — effect'in bağımlılığı kasıtlı olarak dar tutulduğundan
   // (bkz. useEffect([notes.length > 0])), setInterval içindeki closure'ın state'i bayat
@@ -7054,6 +7061,20 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           {syncError && (
             <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '12px' }}>{syncError}</p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!filesLoaded && !loadGaveUp && !isBrowser && !isMinimalWindow) {
+    return (
+      <div className="sync-loading-overlay">
+        <div className="sync-loading-card">
+          <div className="sync-loading-spinner" />
+          <h2 style={{ margin: '16px 0 8px', color: 'var(--text-primary)', fontSize: '1.2rem' }}>Notlarınız yükleniyor...</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+            Açılışta birkaç saniye sürebilir.
+          </p>
         </div>
       </div>
     );
