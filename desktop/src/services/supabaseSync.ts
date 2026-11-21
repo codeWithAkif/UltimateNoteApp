@@ -770,6 +770,37 @@ const subscribeToRealtimeChanges = () => {
     });
 };
 
+// Telefon widget'ı (Android) not dosyasını uygulama KAPALIYKEN doğrudan diske yazar; bu değişiklik ne dirty işareti bırakır ne de yükleme tetikler.
+// "Son senkronlayan cihaz yine bu cihaz" kısayolu böyle bir değişikliği hiç görmüyor, widget'tan yapılan düzenleme PC'ye hiç gitmiyordu.
+// Bu yüzden son eşitlemeden sonra dosya saati (mtime) değişmiş notlar yalnızca YEREL olarak (ağ yok) okunup eşitlenen hash'le karşılaştırılır.
+const getSyncMarkKey = (): string => {
+  const url = supabase ? ((supabase as any).supabaseUrl || '') : '';
+  return `sync_mark_${getHash(url)}_${currentVault}`;
+};
+const setSyncMark = () => {
+  try { localStorage.setItem(getSyncMarkKey(), String(Date.now())); } catch { /* depolama doluysa kısayol bir sonraki açılışta güvenli tarafta kalır */ }
+};
+const SYNC_MARK_SLACK_MS = 2 * 60 * 1000; // saat/dosya sistemi gecikmelerine karşı pay
+const hasOutOfBandLocalChanges = async (): Promise<boolean> => {
+  if (!localPlatform) return false;
+  let mark = 0;
+  try { mark = Number(localStorage.getItem(getSyncMarkKey()) || 0); } catch { mark = 0; }
+  if (!mark) return true; // işaret yok (ilk çalıştırma/yeni sürüm): güvenli taraf, tam uzlaştırma
+  try {
+    const hashes = getSyncHashes();
+    const files = await localPlatform.listFiles();
+    for (const f of files as any[]) {
+      if (!(f.type === 'note' || f.type === 'excalidraw' || f.type === 'drawio') || f.path === 'metadata.json') continue;
+      if (!f.updatedAt || f.updatedAt < mark - SYNC_MARK_SLACK_MS) continue;
+      const content = (await localPlatform.readNote(f.path)).replace(/\r\n/g, '\n');
+      if (hashes[f.path] === undefined || getHash(content) !== hashes[f.path]) return true;
+    }
+  } catch (e) {
+    return true; // okunamadıysa kısayola güvenme
+  }
+  return false;
+};
+
 const startSync = async () => {
   if (!supabase || !localPlatform || !onStatusChangeCallback) return;
 
@@ -797,7 +828,7 @@ const startSync = async () => {
       .select('device_id')
       .eq('vault', currentVault)
       .maybeSingle();
-    if (!hasPendingDirtyPaths && deviceRow && deviceRow.device_id === getDeviceId()) {
+    if (!hasPendingDirtyPaths && deviceRow && deviceRow.device_id === getDeviceId() && !(await hasOutOfBandLocalChanges())) {
       console.log('[Supabase Sync] Last full sync was from this same device — skipping reconciliation.');
       // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
       // Not/klasör uzlaştırması atlansa da dev_paths ayrı bir kanaldan (mergeDevPath ile
@@ -819,6 +850,7 @@ const startSync = async () => {
       // fire-and-forget değil — mobilde uygulama arkaplana alınırsa yarım kalmasın
       // diye) çağırıyoruz.
       await syncMediaFiles();
+      setSyncMark();
       onStatusChangeCallback('synced', null);
       subscribeToRealtimeChanges();
       return;
@@ -1101,6 +1133,7 @@ const startSync = async () => {
     }
 
     console.log('[Supabase Sync] Reconciliation completed. Subscribing to realtime updates...');
+    setSyncMark();
     onStatusChangeCallback('synced', null);
 
     if (onRemoteChangeCallback) {
