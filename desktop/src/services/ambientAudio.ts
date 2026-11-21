@@ -20,6 +20,8 @@ export const AMBIENT_PRESETS: { name: string; emoji: string; volumes: Record<str
 
 class AmbientAudioService {
   private audios: Record<string, HTMLAudioElement> = {};
+  private urls: Record<string, string> = {};
+  private sourceState: Record<string, 'idle' | 'loading' | 'ready'> = {};
   private playingMap: Record<string, boolean> = {};
   private volumeMap: Record<string, number> = {};
   private isGlobalPlaying = false;
@@ -48,7 +50,11 @@ class AmbientAudioService {
     ];
 
     sounds.forEach(sound => {
-      const audio = new Audio(sound.url);
+      // Kaynak ilk çalmada yüklenir (loadSource): hem açılışta 31 MB'lık indirme olmaz hem de indirilen ses önbelleğe alınır.
+      const audio = new Audio();
+      audio.preload = 'none';
+      this.urls[sound.id] = sound.url;
+      this.sourceState[sound.id] = 'idle';
       audio.loop = true;
       audio.volume = 0.25;
       this.audios[sound.id] = audio;
@@ -157,6 +163,30 @@ class AmbientAudioService {
   }
 
   // Arka plandaki HTML5 Audio nesnelerinin ses ve çalma durumunu senkronize eden motor
+  // Ses dosyasını önce Cache Storage'dan alır; yoksa bir kez indirip saklar. Sonraki çalmalar internetsiz çalışır.
+  // Dosyalar depoya/koda gömülmez (lisansı belirsiz üçüncü taraf sesler); önbellek yoksa ya da indirme başarısızsa doğrudan akışa düşülür.
+  private async loadSource(id: string) {
+    this.sourceState[id] = 'loading';
+    const url = this.urls[id];
+    try {
+      if (typeof caches === 'undefined') throw new Error('Cache Storage yok');
+      const cache = await caches.open('ambient-sounds-v1');
+      let res = await cache.match(url);
+      if (!res) {
+        const net = await fetch(url, { mode: 'cors' });
+        if (!net.ok) throw new Error(`İndirilemedi (${net.status})`);
+        await cache.put(url, net.clone());
+        res = net;
+      }
+      this.audios[id].src = URL.createObjectURL(await res.blob());
+    } catch (e) {
+      console.log('Ses önbelleğe alınamadı, doğrudan akış kullanılıyor:', e);
+      this.audios[id].src = url;
+    }
+    this.sourceState[id] = 'ready';
+    this.updateAudioPlayback();
+  }
+
   private updateAudioPlayback() {
     Object.keys(this.audios).forEach(id => {
       const audio = this.audios[id];
@@ -167,7 +197,8 @@ class AmbientAudioService {
       audio.volume = targetVol * this.masterVolume * (this.isMuted ? 0 : 1);
 
       if (this.isGlobalPlaying && isSoundPlaying && !this.isMuted) {
-        audio.play().catch(e => console.log('Arka plan ses çalma hatası:', e));
+        if (this.sourceState[id] === 'idle') void this.loadSource(id);
+        else if (this.sourceState[id] === 'ready') audio.play().catch(e => console.log('Arka plan ses çalma hatası:', e));
       } else {
         audio.pause();
       }
