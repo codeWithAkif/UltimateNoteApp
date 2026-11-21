@@ -671,7 +671,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     if (a.tur === 'ortam') {
       const nm = (id: string) => AMBIENT_SOUNDS.find(s => s.id === id)?.name || id;
       const isl = a.ortamIslem;
-      const baslik = isl === 'hazir' ? `Karışım: ${a.hazir}` : isl === 'durdur' ? 'Tüm ortam seslerini kapat' : isl === 'sustur' ? 'Sesi sustur' : isl === 'sesac' ? 'Sesi geri aç' : isl === 'degistir' ? 'Ortam karışımını değiştir' : 'Ortam seslerini ayarla';
+      const baslik = isl === 'hazir' ? `Karışım: ${a.hazir}` : isl === 'durdur' ? 'Tüm ortam seslerini kapat' : isl === 'sustur' ? 'Sesi sustur' : isl === 'sesac' ? 'Sesi geri aç' : isl === 'degistir' ? (a.ad ? `Karışım: ${a.ad}` : 'Ortam karışımını değiştir') : 'Ortam seslerini ayarla';
       return (
         <div key={c.id} style={card}>{head(<Check size={14} />, baslik)}
           {(a.sesler || []).length > 0 && <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{a.sesler!.map(s => <li key={s.id}>{nm(s.id)} <span style={lab}>{s.v === 0 ? '· kapat' : `· %${s.v}`}</span></li>)}</ul>}

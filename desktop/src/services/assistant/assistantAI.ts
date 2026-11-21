@@ -134,6 +134,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 Verimlilik/üretkenlik soruları ("geçen haftaya göre nasıldım?") için eylem ekleme; VERIMLILIK OZETI'ne bakıp cevapta kısaca yorumla, özet yoksa söyle, sayı uydurma.
 20. tur="alisveris_al", basliklar (dizi: alınan ürünler, kısa), kategori (söylendiyse nereden/hangi bölüm: "e-bebek", "market"; yoksa boş): Alışveriş listesinde ZATEN olan maddeyi alındı olarak işaretler ("e-bebekten bulaşık deterjanı aldım"). Yeni madde EKLEMEZ.
 21. tur="ortam", ortamIslem ("ayarla" | "degistir" | "hazir" | "durdur" | "sustur" | "sesac"), sesler (dizi: {id: ORTAM SESLERI id'si, v: 0-100 seviye}), hazir (HAZIR KARISIMLAR adı AYNEN): ortam seslerini yönetir. "ayarla": yalnızca verilen sesleri açar/kısar/açar (v=0 kapatır), diğerleri çalmaya devam eder ("gök gürültüsünü kıs", "rüzgâr ekle"). "degistir": verilen karışım dışındakileri kapatır ("sadece yağmur aç", "yağmur ve hafif rüzgâr aç"). "hazir": hazır karışım çalar. "durdur": hepsini kapatır. "sustur"/"sesac": sesi keser/geri açar. "hafif"≈20, "orta"≈50, "yüksek"≈80, belirtilmediyse 50.
+ÖNERİ istenirse ("çalışırken ne dinleyeyim", "uyumak için bir şey öner", "odaklanma karışımı"): HER öneriyi ayrı bir ortam eylemi olarak ver (2-3 tane, birbirinden farklı): ortamIslem="degistir", sesler=kendi tasarladığın karışım (2-4 ses, seviyeler dengeli), ad=kısa ve çağrıştırıcı karışım adı (örn. "Yağmurlu Kütüphane"). HAZIR KARISIMLAR uygunsa onları da "hazir" ile önerebilirsin. Cevapta her birinin neden uygun olduğunu tek cümleyle söyle; saate (şimdiki zaman) ve amaca göre seç.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -236,7 +237,7 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
           const v = Number(x?.v);
           if (snd && Number.isFinite(v) && !sesler.some(y => y.id === snd.id)) sesler.push({ id: snd.id, v: Math.max(0, Math.min(100, Math.round(v))) });
         }
-        if (sesler.length) out.push({ tur, ortamIslem: islem, sesler });
+        if (sesler.length) out.push({ tur, ortamIslem: islem, sesler, ad: str(a.ad, 40) || undefined });
       } else out.push({ tur, ortamIslem: islem });
     } else if (tur === 'alisveris_al') {
       const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 15);
