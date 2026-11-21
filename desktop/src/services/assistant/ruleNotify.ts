@@ -50,3 +50,9 @@ export async function scheduleReminderNative(title: string, body: string, at: Da
     return true;
   } catch { return false; }
 }
+
+// Silinen alarmın telefondaki zamanlanmış bildirimini iptal eder (kimlik, zamanlarken kullanılan formülle aynı).
+export async function cancelReminderNative(at: Date): Promise<void> {
+  if (!nativeScheduling()) return;
+  try { await LocalNotifications.cancel({ notifications: [{ id: REMINDER_BASE + (Math.floor(at.getTime() / 60000) % 700) }] }); } catch { /* yoksay */ }
+}

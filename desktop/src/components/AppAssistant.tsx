@@ -5,11 +5,11 @@ import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
 import '@fontsource/inter/latin-ext-500.css';
 import { isGeminiConfigured } from '../services/geminiMentor';
-import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, TASK_PATH, SCREENS } from '../services/assistant/assistantAI';
+import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, TASK_PATH, SCREENS, parseReminders, removeLine } from '../services/assistant/assistantAI';
 import { designNote, lineDiff, type DesignResult, type DiffOp } from '../services/assistant/noteDesign';
 import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl } from '../services/assistant/pageAgent';
-import { type Rule, RULES_PATH, parseRules, serializeRules, addRule, schedLabel, dueRules } from '../services/assistant/automation';
-import { syncNativeRules, scheduleReminderNative, nativeScheduling } from '../services/assistant/ruleNotify';
+import { type Rule, type Sched, type Eylem, RULES_PATH, parseRules, serializeRules, addRule, schedLabel, dueRules, validTime, GUNLER } from '../services/assistant/automation';
+import { syncNativeRules, scheduleReminderNative, cancelReminderNative, nativeScheduling } from '../services/assistant/ruleNotify';
 import { notifyNow, requestNotifyPermission } from '../services/shopNotify';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
@@ -17,9 +17,12 @@ const border = '1px solid var(--border-color)';
 const btn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', background: 'var(--bg-hover)', border, color: 'var(--text-secondary)', borderRadius: '8px', padding: '5px 10px', fontSize: '12.5px', fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' };
 const btnP: React.CSSProperties = { ...btn, background: 'var(--accent-color)', border: '1px solid var(--accent-color)', color: '#fff' };
 const card: React.CSSProperties = { background: 'var(--bg-tertiary)', border, borderRadius: '10px', padding: '9px 11px', fontSize: '12.5px', lineHeight: 1.5 };
+const inp: React.CSSProperties = { background: 'var(--bg-secondary)', border, color: 'var(--text-primary)', borderRadius: '8px', padding: '6px 8px', fontSize: '12.5px', fontFamily: 'inherit', boxSizing: 'border-box', minWidth: 0 };
 const lab: React.CSSProperties = { fontSize: '11.5px', color: 'var(--text-muted)' };
 const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const newId = () => `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+const todayYmd = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const GUN_ADLARI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
 const ymdLabel = (t: string) => { const [y, m, d] = t.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' }); };
 
 type CardState = 'hazirlaniyor' | 'bekliyor' | 'hazir' | 'yapildi' | 'iptal' | 'hata';
@@ -105,14 +108,62 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   };
   const undoDesign = async (msgId: string, c: CardT) => { const d = c.design; if (!d) return; await saveNote(d.path, d.eski); patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı.' }); };
 
+  // Hatırlatma kurma (sohbet kartı ve "Otomasyon ve alarm" sekmesindeki form ortak kullanır).
+  const createReminder = async (baslik: string, tarih: string, saat: string, mesaj?: string): Promise<{ path: string; native: boolean }> => {
+    const path = reminderPath(tarih);
+    await saveNote(path, appendReminder(filesRef.current[path], tarih, baslik, saat, mesaj));
+    await requestNotifyPermission();
+    const [y, m, d] = tarih.split('-').map(Number), [h, mi] = saat.split(':').map(Number);
+    const native = await scheduleReminderNative(baslik, mesaj || 'Hatırlatma', new Date(y, m - 1, d, h, mi));
+    return { path, native };
+  };
   const doRemind = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.tarih || !a.saat || !a.baslik) return;
-    const path = reminderPath(a.tarih);
-    await saveNote(path, appendReminder(filesRef.current[path], a.tarih, a.baslik, a.saat, a.mesaj));
-    await requestNotifyPermission();
-    const [y, m, d] = a.tarih.split('-').map(Number), [h, mi] = a.saat.split(':').map(Number);
-    const native = await scheduleReminderNative(a.baslik, a.mesaj || 'Hatırlatma', new Date(y, m - 1, d, h, mi));
+    const { path, native } = await createReminder(a.baslik, a.tarih, a.saat, a.mesaj);
     patchCard(msgId, c.id, { state: 'yapildi', not: `Kuruldu: ${path} (alarm ${a.saat})${native ? ' · telefona bildirim de zamanlandı' : ''}` });
+  };
+
+  // ---------------- "Otomasyon ve alarm" sekmesi: elle ekleme/silme ----------------
+  const alarms = useMemo(() => {
+    const now = Date.now() - 60_000;
+    return parseReminders(fileContents).filter(r => { const [y, m, d] = r.tarih.split('-').map(Number), [h, mi] = r.saat.split(':').map(Number); return new Date(y, m - 1, d, h, mi).getTime() >= now; });
+  }, [fileContents]);
+  const [aForm, setAForm] = useState({ baslik: '', tarih: todayYmd(), saat: '09:00' });
+  const [rForm, setRForm] = useState({ ad: '', tur: 'gunluk' as Sched['tur'], gun: 1, ayGun: 1, tarih: todayYmd(), saat: '09:00', eylem: 'bildir' as Eylem['tur'], baslik: '', ekran: 'notes' });
+  const [formErr, setFormErr] = useState('');
+
+  const addAlarm = async () => {
+    const baslik = aForm.baslik.replace(/\s+/g, ' ').trim();
+    if (!baslik) { setFormErr('Alarm için bir başlık yazın.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(aForm.tarih) || !validTime(aForm.saat)) { setFormErr('Tarih ve saati seçin.'); return; }
+    const [y, m, d] = aForm.tarih.split('-').map(Number), [h, mi] = aForm.saat.split(':').map(Number);
+    if (new Date(y, m - 1, d, h, mi).getTime() < Date.now() - 60_000) { setFormErr('Bu zaman geçmişte kaldı; ileri bir tarih/saat seçin.'); return; }
+    setFormErr('');
+    try { const p = createReminder(baslik, aForm.tarih, aForm.saat); setAForm(f => ({ ...f, baslik: '' })); await p; }
+    catch (e: any) { setFormErr(`Alarm kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.`); }
+  };
+  const removeAlarm = async (r: { path: string; lineIdx: number; tarih: string; saat: string }) => {
+    const cur = filesRef.current[r.path]; if (cur === undefined) return;
+    await saveNote(r.path, removeLine(cur, r.lineIdx));
+    const [y, m, d] = r.tarih.split('-').map(Number), [h, mi] = r.saat.split(':').map(Number);
+    void cancelReminderNative(new Date(y, m - 1, d, h, mi));
+  };
+  const addRuleManual = async () => {
+    const ad = rForm.ad.replace(/\s+/g, ' ').trim();
+    if (!ad) { setFormErr('Otomasyona bir ad verin.'); return; }
+    if (!validTime(rForm.saat)) { setFormErr('Saati seçin.'); return; }
+    let sched: Sched;
+    if (rForm.tur === 'gunluk') sched = { tur: 'gunluk', saat: rForm.saat };
+    else if (rForm.tur === 'haftalik') sched = { tur: 'haftalik', gun: rForm.gun, saat: rForm.saat };
+    else if (rForm.tur === 'aylik') sched = { tur: 'aylik', gun: Math.min(28, Math.max(1, rForm.ayGun)), saat: rForm.saat };
+    else { if (!/^\d{4}-\d{2}-\d{2}$/.test(rForm.tarih)) { setFormErr('Tarihi seçin.'); return; } sched = { tur: 'bir', tarih: rForm.tarih, saat: rForm.saat }; }
+    const eylem: Eylem = rForm.eylem === 'ac' ? { tur: 'ac', ekran: rForm.ekran } : { tur: 'bildir', baslik: (rForm.baslik.trim() || ad).slice(0, 80) };
+    const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: ad.slice(0, 60), sched, eylem, acik: true });
+    if (next.length === parseRules(filesRef.current[RULES_PATH]).length) { setFormErr('Aynı otomasyon zaten var ya da kural sınırına (40) ulaşıldı.'); return; }
+    setFormErr('');
+    await saveRules(next);
+    setRForm(f => ({ ...f, ad: '', baslik: '' }));
+    void requestNotifyPermission(); // izin penceresi kaydı/formu bekletmesin
   };
 
   // Görev: inbox.md'ye etiketli satır eklenir; Takvim/Görev Havuzu tüm notları taradığı için ayrıca bir kayıt gerekmez.
@@ -301,15 +352,59 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
-            {([['sohbet', 'Sohbet'], ['kurallar', `Otomasyonlar${rules.length ? ` (${rules.length})` : ''}`]] as ['sohbet' | 'kurallar', string][]).map(([id, t]) => (
+            {([['sohbet', 'Sohbet'], ['kurallar', `Otomasyon ve alarm${rules.length + alarms.length ? ` (${rules.length + alarms.length})` : ''}`]] as ['sohbet' | 'kurallar', string][]).map(([id, t]) => (
               <button key={id} type="button" onClick={() => setView(id)} style={{ background: 'none', border: 'none', borderBottom: `2px solid ${view === id ? 'var(--accent-color)' : 'transparent'}`, color: view === id ? 'var(--text-primary)' : 'var(--text-muted)', padding: '8px 10px', fontSize: '13px', fontWeight: view === id ? 500 : 400, cursor: 'pointer', fontFamily: 'inherit' }}>{t}</button>
             ))}
           </div>
 
           {view === 'kurallar' ? (
             <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
-              <div style={{ ...lab, marginBottom: '10px', lineHeight: 1.55 }}>Asistanın kurduğu kurallar. Kural yalnızca bildirim gösterir ya da bir ekranı açar; hiçbir şeyi silmez veya göndermez. Not: <code>{RULES_PATH}</code></div>
-              {rules.length === 0 && <div style={lab}>Henüz kural yok. Sohbette "her pazartesi 09:00'da alışveriş ekranını aç" gibi bir şey yazın.</div>}
+              {formErr && <div style={{ fontSize: '12px', color: '#ef4444', marginBottom: '8px', overflowWrap: 'anywhere' }}>{formErr}</div>}
+              <div style={{ fontWeight: 600, marginBottom: '4px' }}>Alarmlar</div>
+              <div style={{ ...lab, marginBottom: '8px', lineHeight: 1.55 }}>Tek seferlik hatırlatmalar. Not: <code>Hatırlatmalar/&lt;tarih&gt;.md</code></div>
+              <div style={{ ...card, marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <input value={aForm.baslik} onChange={(e) => setAForm(f => ({ ...f, baslik: e.target.value }))} placeholder="Örn. Annemi ara" aria-label="Alarm başlığı" style={inp} />
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <input type="date" value={aForm.tarih} onChange={(e) => setAForm(f => ({ ...f, tarih: e.target.value }))} aria-label="Alarm tarihi" style={{ ...inp, flex: 1 }} />
+                  <input type="time" value={aForm.saat} onChange={(e) => setAForm(f => ({ ...f, saat: e.target.value }))} aria-label="Alarm saati" style={{ ...inp, width: '110px' }} />
+                </div>
+                <div><button type="button" style={btnP} onClick={() => void addAlarm()}><Bell size={13} /> Alarm ekle</button></div>
+              </div>
+              {alarms.length === 0 && <div style={{ ...lab, marginBottom: '8px' }}>Yaklaşan alarm yok.</div>}
+              {alarms.map(r => (
+                <div key={r.path + r.lineIdx} style={{ ...card, marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, overflowWrap: 'anywhere' }}>{r.baslik}</div>
+                    <div style={lab}>{ymdLabel(r.tarih)} · {r.saat}</div>
+                  </div>
+                  <button type="button" style={btn} onClick={() => void removeAlarm(r)} aria-label={`${r.baslik} alarmını sil`}><Trash2 size={13} /> Sil</button>
+                </div>
+              ))}
+
+              <div style={{ fontWeight: 600, margin: '16px 0 4px' }}>Otomasyonlar</div>
+              <div style={{ ...lab, marginBottom: '8px', lineHeight: 1.55 }}>Tekrarlayan kurallar. Kural yalnızca bildirim gösterir ya da bir ekranı açar; hiçbir şeyi silmez veya göndermez. Not: <code>{RULES_PATH}</code></div>
+              <div style={{ ...card, marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <input value={rForm.ad} onChange={(e) => setRForm(f => ({ ...f, ad: e.target.value }))} placeholder="Ad (örn. Sabah planı)" aria-label="Otomasyon adı" style={inp} />
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <select value={rForm.tur} onChange={(e) => setRForm(f => ({ ...f, tur: e.target.value as Sched['tur'] }))} aria-label="Sıklık" style={{ ...inp, flex: 1 }}>
+                    <option value="gunluk">Her gün</option><option value="haftalik">Haftalık</option><option value="aylik">Ayın günü</option><option value="bir">Tek sefer</option>
+                  </select>
+                  {rForm.tur === 'haftalik' && <select value={rForm.gun} onChange={(e) => setRForm(f => ({ ...f, gun: Number(e.target.value) }))} aria-label="Gün" style={inp}>{GUNLER.map((_, i) => <option key={i} value={i + 1}>{GUN_ADLARI[i]}</option>)}</select>}
+                  {rForm.tur === 'aylik' && <input type="number" min={1} max={28} value={rForm.ayGun} onChange={(e) => setRForm(f => ({ ...f, ayGun: Number(e.target.value) || 1 }))} aria-label="Ayın günü" style={{ ...inp, width: '70px' }} />}
+                  {rForm.tur === 'bir' && <input type="date" value={rForm.tarih} onChange={(e) => setRForm(f => ({ ...f, tarih: e.target.value }))} aria-label="Tarih" style={inp} />}
+                  <input type="time" value={rForm.saat} onChange={(e) => setRForm(f => ({ ...f, saat: e.target.value }))} aria-label="Saat" style={{ ...inp, width: '110px' }} />
+                </div>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <select value={rForm.eylem} onChange={(e) => setRForm(f => ({ ...f, eylem: e.target.value as Eylem['tur'] }))} aria-label="Eylem" style={inp}>
+                    <option value="bildir">Bildirim göster</option><option value="ac">Ekranı aç</option>
+                  </select>
+                  {rForm.eylem === 'bildir'
+                    ? <input value={rForm.baslik} onChange={(e) => setRForm(f => ({ ...f, baslik: e.target.value }))} placeholder="Bildirim başlığı (boşsa ad)" aria-label="Bildirim başlığı" style={{ ...inp, flex: 1 }} />
+                    : <select value={rForm.ekran} onChange={(e) => setRForm(f => ({ ...f, ekran: e.target.value }))} aria-label="Ekran" style={{ ...inp, flex: 1 }}>{SCREENS.map(sc => <option key={sc.id} value={sc.id}>{sc.ad}</option>)}</select>}
+                </div>
+                <div><button type="button" style={btnP} onClick={() => void addRuleManual()}><Repeat size={13} /> Otomasyon ekle</button></div>
+              </div>
+              {rules.length === 0 && <div style={lab}>Henüz kural yok. Yukarıdan ekleyin ya da sohbette "her pazartesi 09:00'da alışveriş ekranını aç" gibi bir şey yazın.</div>}
               {rules.map(r => (
                 <div key={r.id} style={{ ...card, marginBottom: '8px', opacity: r.acik ? 1 : 0.55 }}>
                   <div style={{ fontWeight: 500 }}>{r.ad}</div>

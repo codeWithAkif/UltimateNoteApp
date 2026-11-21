@@ -166,3 +166,19 @@ export const appendTask = (existing: string | undefined, baslik: string, tarih: 
   const base = existing && existing.trim() ? existing.replace(/\s*$/, '\n') : '';
   return base.includes(line) ? base : base + line + '\n';
 };
+
+// Alarm listesi: Hatırlatmalar/<tarih>.md içindeki "- [ ] başlık alarm HH:MM" satırları (reminderLine biçimi). Yalnızca tamamlanmamış olanlar.
+export interface ReminderItem { path: string; lineIdx: number; tarih: string; saat: string; baslik: string }
+export const parseReminders = (files: Record<string, string>): ReminderItem[] => {
+  const out: ReminderItem[] = [];
+  for (const path of Object.keys(files)) {
+    const pm = /^Hatırlatmalar\/(\d{4}-\d{2}-\d{2})\.md$/.exec(path);
+    if (!pm) continue;
+    String(files[path] || '').split(/\r?\n/).forEach((line, lineIdx) => {
+      const m = /^-\s*\[ \]\s+(.+?)\s+alarm\s+(\d{2}:\d{2})\s*$/.exec(line.trim());
+      if (m) out.push({ path, lineIdx, tarih: pm[1], saat: m[2], baslik: m[1] });
+    });
+  }
+  return out.sort((a, b) => (a.tarih + a.saat).localeCompare(b.tarih + b.saat));
+};
+export const removeLine = (content: string, lineIdx: number): string => content.split(/\r?\n/).filter((_, i) => i !== lineIdx).join('\n');
