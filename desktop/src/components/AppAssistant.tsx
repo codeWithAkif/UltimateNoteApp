@@ -13,12 +13,12 @@ import { syncNativeRules, scheduleReminderNative, cancelReminderNative, nativeSc
 import { notifyNow, requestNotifyPermission } from '../services/shopNotify';
 import { KANBAN_CONFIG_PATH, parseKanbanConfig, columnsForProject } from '../kanbanColumns';
 import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, appendDiary, diaryPath, setDueOnLine, foldTr, type TaskCand } from '../services/assistant/projectOps';
-import { LIST_PATH, listAdd, guessCat } from '../services/shopList';
+import { LIST_PATH, listAdd, listToggle, guessCat, type LItem } from '../services/shopList';
 import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, totals, fmtTL, monthLabel, reindex, type BudgetItem } from '../services/budget';
 import type { NewFinanceEntryInput } from '../services/financeSync';
 import { parseLabState, serializeLabState, todayKey, LANGUAGE_LAB_NOTE_PATH } from '../services/languageLab';
 import { findRelevantNotes, askNotesChat } from '../services/geminiMentor';
-import { appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, daySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
+import { findShopCandidates, appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, daySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
 const border = '1px solid var(--border-color)';
@@ -34,7 +34,7 @@ const GUN_ADLARI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cu
 const ymdLabel = (t: string) => { const [y, m, d] = t.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' }); };
 
 type CardState = 'hazirlaniyor' | 'bekliyor' | 'hazir' | 'yapildi' | 'iptal' | 'hata';
-interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; pairs?: CardPair[]; moves?: InboxMove[]; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
+interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; pairs?: CardPair[]; moves?: InboxMove[]; buy?: { istek: string; cands: LItem[]; pick: number }[]; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
 interface Msg { id: string; role: 'user' | 'ai'; text: string; cards?: CardT[] }
 interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'durdu' | 'hata'; log: string[] }
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
@@ -330,6 +330,18 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       patchCard(msgId, c.id, { state: 'yapildi', not: `${a.basliklar.length} ürün alışveriş listesine eklendi.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
+  // "X aldım": listede var olan açık madde işaretlenir; yeni madde eklenmez. Madde satırı hâlâ aynıysa (listToggle satır+metinle bulur) işaretlenir.
+  const doBought = async (msgId: string, c: CardT) => {
+    const groups = (c.buy || []).filter(g => g.pick >= 0 && g.cands[g.pick]); if (!groups.length) return;
+    try {
+      let content = filesRef.current[LIST_PATH] ?? '';
+      let n = 0;
+      for (const g of groups) { const it = g.cands[g.pick]; const next = listToggle(content, it.line, it.text); if (next !== content) { content = next; n++; } }
+      if (!n) { patchCard(msgId, c.id, { state: 'hata', not: 'Liste bu arada değişmiş; madde bulunamadı. Tekrar deneyin.' }); return; }
+      await saveT(c.id, LIST_PATH, content);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${n} madde alındı olarak işaretlendi.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
   const doFinans = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.tutar || !a.kategori || !a.tarih) return;
     try {
@@ -509,6 +521,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       }
       const cards: CardT[] = res.eylemler.filter(a => a.tur !== 'not_sor').map(a => {
         const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' || a.tur === 'kart_uret' || a.tur === 'inbox_ayir' ? 'hazirlaniyor' : 'bekliyor' };
+        if (a.tur === 'alisveris_al') {
+          base.buy = (a.basliklar || []).map(istek => { const cands = findShopCandidates(filesRef.current[LIST_PATH], istek, a.kategori); return { istek, cands, pick: cands.length ? 0 : -1 }; });
+        }
         if (a.tur === 'gorev_tasi' || a.tur === 'gorev_gun') {
           base.cands = findTaskCandidates(filesRef.current, projectMapRef.current, { baslik: a.baslik || '', proje: a.proje, mevcut: a.tur === 'gorev_tasi' ? a.mevcut : undefined, hepsi: a.tur === 'gorev_gun' });
           base.pick = 0;
@@ -617,6 +632,26 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         {okBtns(() => void doShop(m.id, c), 'Ekle')}{stateNote(c)}
       </div>
     );
+    if (a.tur === 'alisveris_al') {
+      const bg = c.buy || [];
+      const any = bg.some(g => g.cands.length > 0);
+      return (
+        <div key={c.id} style={card}>{head(<Check size={14} />, 'Alındı olarak işaretle')}
+          {bg.map((g, gi) => (
+            <div key={gi} style={{ marginTop: '4px' }}>
+              {g.cands.length === 0 && <div style={{ fontSize: '11.5px', color: '#f59e0b' }}>"{g.istek}" listede açık madde olarak yok; bir şey eklenmedi.</div>}
+              {g.cands.map((it, i) => (
+                <label key={`${it.line}`} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+                  {(g.cands.length > 1) && <input type="radio" disabled={done} checked={g.pick === i} onChange={() => patchCard(m.id, c.id, { buy: bg.map((x, xi) => (xi === gi ? { ...x, pick: i } : x)) })} />}
+                  <span>{it.text}<span style={lab}> · {it.kat}</span></span>
+                </label>
+              ))}
+            </div>
+          ))}
+          {any && okBtns(() => void doBought(m.id, c), 'İşaretle')}{stateNote(c)}
+        </div>
+      );
+    }
     if (a.tur === 'finans') return (
       <div key={c.id} style={card}>{head(<Check size={14} />, `${a.finTur === 'gelir' ? 'Gelir' : 'Gider'}: ${fmtTL(a.tutar || 0)}`)}
         <div style={lab}>{a.kategori}{a.baslik ? ` · ${a.baslik}` : ''} · {ymdLabel(a.tarih || '')}</div>

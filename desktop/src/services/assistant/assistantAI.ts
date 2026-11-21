@@ -43,7 +43,7 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle' | 'alisveris_al';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
@@ -117,7 +117,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 7. tur="proje_ac", musteri (MUSTERILER listesindeki ad AYNEN; yoksa kullanıcının söylediği ad), ad (yeni projenin adı): bir müşterinin altına yeni proje açar ("Zorlu müşterisinin altına Datahub projesi aç").
 8. tur="gorevler", proje (PROJELER'deki ad AYNEN; proje söylenmediyse boş), basliklar (dizi: her görev AYRI ve kısa bir başlık), tarih (YYYY-MM-DD, yalnızca kullanıcı söylediyse): bir projeye (ya da proje yoksa Gelen Kutusu'na) BİRDEN ÇOK görev ya da tarih/saat gerekmeyen görevler ekler ("Datahub'a şunları ekle: baklava, sütlaç"). Tek ve tarihli/saatli iş için 6'yı kullan.
 9. tur="gorev_tasi", baslik (taşınacak görevin başlığı, kullanıcının dediği gibi), proje (söylendiyse PROJELER'deki ad), mevcut (kullanıcı "şu durumdaki" dediyse DURUMLAR anahtarı), hedef (DURUMLAR anahtarı): var olan bir görevin durumunu değiştirir ("Devam Ediyor'daki sütlaç görevini Bitti'ye al"). Görevi sen bulma, yalnızca bu alanları doldur.
-10. tur="alisveris", basliklar (dizi: ürünler, her biri AYRI ve kısa), kategori (isteğe bağlı: Market, Araç, Ev, Kişisel, Diğer): Alışveriş listesine ürün ekler ("listeye süt yumurta ekle").
+10. tur="alisveris", basliklar (dizi: ürünler, her biri AYRI ve kısa), kategori (isteğe bağlı: Market, Araç, Ev, Kişisel, Diğer): Alışveriş listesine YENİ ürün ekler ("listeye süt yumurta ekle"). Kullanıcı bir şeyi ALDIĞINI söylüyorsa ("aldım", "aldık", "bitti") bunu KULLANMA, 20'yi kullan.
 11. tur="finans", tutar (sayı, TL), finTur ("gider" ya da "gelir"), kategori (FINANS KATEGORILERI'nden biri AYNEN; uymuyorsa en yakınını), baslik (kısa açıklama, isteğe bağlı), tarih (YYYY-MM-DD; söylenmediyse bugün): Finans ekranına tek bir harcama/gelir kaydı ekler ("markete 450 TL harcadım"). Tutar belirsizse eylem ekleme, sor.
 12. tur="butce", baslik (kalem adı), tutar (sayı, TL), butceTur ("gelir", "sabit" ya da "degisken"), gun (ayın günü, isteğe bağlı): Bu ayın Bütçe Planı'na kalem ekler ("her ay 15'inde Netflix 230 TL sabit gider"). "Kalan bütçem ne?" gibi SORULARI eylemsiz, BUTCE OZETI'ne bakarak cevapta yanıtla; özet yoksa bütçe notu olmadığını söyle, sayı uydurma.
 13. tur="gunluk", metin (günlüğe yazılacak cümle(ler), kullanıcının dediği gibi), tarih (YYYY-MM-DD; söylenmediyse bugün): Günlük ekranına o güne not düşer.
@@ -129,6 +129,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 19. tur="kelime_ekle", kartlar (dizi: {s: kelime, c: anlamı}): Dil Atölyesi kelime listesine kelime ekler ("'ephemeral' kelimesini dil atölyesine ekle").
 "Bugün ne var?", "günümü özetle" gibi sorularda eylem ekleme; GUN OZETI'ne bakıp cevapta kısaca özetle, sayı/görev uydurma.
 Verimlilik/üretkenlik soruları ("geçen haftaya göre nasıldım?") için eylem ekleme; VERIMLILIK OZETI'ne bakıp cevapta kısaca yorumla, özet yoksa söyle, sayı uydurma.
+20. tur="alisveris_al", basliklar (dizi: alınan ürünler, kısa), kategori (söylendiyse nereden/hangi bölüm: "e-bebek", "market"; yoksa boş): Alışveriş listesinde ZATEN olan maddeyi alındı olarak işaretler ("e-bebekten bulaşık deterjanı aldım"). Yeni madde EKLEMEZ.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -214,6 +215,9 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
       if (hedef && baslik) out.push({ tur, baslik, hedef, mevcut: matchStatus(str(a.mevcut, 30), cols) || undefined, proje: proje || undefined, projeIstek: istek && !proje ? istek : undefined });
     } else if (tur === 'alisveris') {
       const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 20);
+      if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });
+    } else if (tur === 'alisveris_al') {
+      const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 15);
       if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });
     } else if (tur === 'finans') {
       const tutar = Number(a.tutar), finTur = str(a.finTur, 10) === 'gelir' ? 'gelir' : 'gider', tarih = str(a.tarih, 12);

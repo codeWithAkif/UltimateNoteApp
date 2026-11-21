@@ -119,3 +119,19 @@ export const daySummary = (files: Record<string, string>, now: Date, alarmsToday
   items.sort();
   return `bugünkü görevler (${items.length}): ${items.slice(0, 10).join('; ') || 'yok'}; bugünkü alarmlar: ${alarmsToday.map(a => `${a.saat} ${a.baslik}`).join('; ') || 'yok'}; vadesi geçmiş açık görev: ${overdue}`;
 };
+
+// ---------------- Alışveriş: "X aldım" → listede var olan açık maddeyi işaretle (yenisini ekleme) ----------------
+import { parseList, type LItem } from '../shopList';
+const alnum = (s: string) => foldTr(s).replace(/[^a-z0-9]+/g, '');
+const SHOP_STOP = new Set(['aldim', 'aldik', 'alindi', 'bitti', 'tamam', 'listeden', 'listede', 'icin']);
+// Adayları en iyi eşleşme başta olacak şekilde döndürür. Bölüm ipucu ("e-bebek") varsa önce o bölümdekiler denenir.
+export const findShopCandidates = (content: string | undefined, istek: string, kat?: string): LItem[] => {
+  const toks = foldTr(istek).split(/[^a-z0-9]+/).filter(t => t.length >= 2 && !SHOP_STOP.has(t));
+  if (!toks.length) return [];
+  const open = parseList(content).items.filter(i => !i.done && toks.every(t => foldTr(i.text).includes(t)));
+  const hint = kat ? alnum(kat) : '';
+  const inKat = hint ? open.filter(i => alnum(i.kat).includes(hint) || hint.includes(alnum(i.kat))) : [];
+  const pool = inKat.length ? inKat : open;
+  const exact = foldTr(istek);
+  return [...pool].sort((a, b) => Number(foldTr(b.text) === exact) - Number(foldTr(a.text) === exact) || a.text.length - b.text.length).slice(0, 6);
+};
