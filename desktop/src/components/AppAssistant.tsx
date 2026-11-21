@@ -11,6 +11,8 @@ import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl 
 import { type Rule, type Sched, type Eylem, RULES_PATH, parseRules, serializeRules, addRule, schedLabel, dueRules, validTime, GUNLER } from '../services/assistant/automation';
 import { syncNativeRules, scheduleReminderNative, cancelReminderNative, nativeScheduling } from '../services/assistant/ruleNotify';
 import { notifyNow, requestNotifyPermission } from '../services/shopNotify';
+import { KANBAN_CONFIG_PATH, parseKanbanConfig, columnsForProject } from '../kanbanColumns';
+import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, type TaskCand } from '../services/assistant/projectOps';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
 const border = '1px solid var(--border-color)';
@@ -26,19 +28,21 @@ const GUN_ADLARI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cu
 const ymdLabel = (t: string) => { const [y, m, d] = t.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' }); };
 
 type CardState = 'hazirlaniyor' | 'bekliyor' | 'hazir' | 'yapildi' | 'iptal' | 'hata';
-interface CardT { id: string; a: AAction; state: CardState; not?: string; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
+interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
 interface Msg { id: string; role: 'user' | 'ai'; text: string; cards?: CardT[] }
 interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'durdu' | 'hata'; log: string[] }
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
 interface Fired { id: string; rule: Rule; at: Date }
 
-export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote }: {
+export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote, clientsFolder, changeTaskStatus }: {
   ready: boolean;
   tab: string;
   onNavigate: (id: string) => void;
   activeNotePath: string | null;
   fileContents: Record<string, string>;
   saveNote: (path: string, content: string) => Promise<void>;
+  clientsFolder: string;
+  changeTaskStatus: (id: string, status: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState<boolean>(() => { try { return localStorage.getItem('assistant_open_v1') === '1'; } catch { return false; } });
   const [view, setView] = useState<'sohbet' | 'kurallar'>('sohbet');
@@ -193,6 +197,73 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
+  // Müşteriler: #müşteri etiketli notlar (Proje Yönetimi ile aynı ölçüt): ad → not yolu.
+  const clientMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [path, content] of Object.entries(fileContents)) {
+      if (!/\.md$/i.test(path) || path.startsWith('Hatırlatmalar/') || path.startsWith('Sistem/')) continue;
+      if (/#müşteri(?![a-zçğıöşü0-9_])/i.test(content || '')) m.set((path.split('/').pop() || path).replace(/\.md$/i, ''), path);
+    }
+    return m;
+  }, [fileContents]);
+  const clientMapRef = useRef(clientMap); clientMapRef.current = clientMap;
+  // Durum sütunları Sistem/Kanban.md'den okunur; proje verilmişse o projenin sütunları geçerlidir.
+  const columnsFor = (proje?: string) => columnsForProject(parseKanbanConfig(filesRef.current[KANBAN_CONFIG_PATH]), proje || null).filter(c => !c.hidden).map(c => ({ key: c.key, title: c.title }));
+
+  const doProjeAc = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.ad || !a.musteri) return;
+    try {
+      const cp = clientMapRef.current.get(a.musteri);
+      const f = newProjectFile(a.musteri, cp, clientsFolder, a.ad);
+      if (filesRef.current[f.path] !== undefined || projectMapRef.current.has(a.ad)) { patchCard(msgId, c.id, { state: 'hata', not: `"${a.ad}" adında bir proje zaten var; üzerine yazılmadı. Farklı bir ad deneyin.` }); return; }
+      await saveNote(f.path, f.content);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `"${a.ad}" projesi ${a.musteri} müşterisinin altına açıldı. Proje Yönetimi'nde görünür.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Proje açılamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  const doMusteriVeProje = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.ad || !a.musteriIstek) return;
+    try {
+      const cf = newClientFile(clientsFolder, a.musteriIstek);
+      if (filesRef.current[cf.path] !== undefined) { patchCard(msgId, c.id, { state: 'hata', not: 'Bu müşteri dosyası zaten var; üzerine yazılmadı.' }); return; }
+      const name = cf.path.split('/').pop()!.replace(/\.md$/i, '');
+      const pf = newProjectFile(name, cf.path, clientsFolder, a.ad);
+      await saveNote(cf.path, cf.content);
+      await saveNote(pf.path, pf.content);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `"${name}" müşterisi ve altında "${a.ad}" projesi açıldı.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Açılamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
+  // Çoklu görev: tek kartla hepsi aynı proje notuna (ya da inbox.md'ye) tek yazımda eklenir.
+  const doTasks = async (msgId: string, c: CardT) => {
+    const a = c.a; if (!a.basliklar?.length) return;
+    try {
+      const projPath = a.proje ? projectMapRef.current.get(a.proje) : undefined;
+      const toProject = !!(a.proje && projPath && filesRef.current[projPath] !== undefined);
+      const path = toProject ? projPath! : TASK_PATH;
+      let content = filesRef.current[path];
+      for (const b of a.basliklar) content = appendTask(content, b, a.tarih, undefined, undefined, toProject ? projectSlug(a.proje!) : undefined);
+      await saveNote(path, content);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${a.basliklar.length} görev eklendi (${toProject ? `${a.proje} projesi` : 'Gelen Kutusu / inbox.md'}).` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
+  // Durum taşıma: görev satırı vault'tan bulunur, App'in kendi durum değiştiricisi çağrılır, sonra satırın gerçekten değiştiği doğrulanır.
+  const doMove = async (msgId: string, c: CardT) => {
+    const a = c.a; const t = c.cands?.[c.pick ?? 0]; if (!t || !a.hedef) return;
+    try {
+      await changeTaskStatus(`task::${t.path}::${t.lineIdx}`, a.hedef);
+      let ok = false;
+      for (let i = 0; i < 6 && !ok; i++) {
+        await wait(250);
+        const line = (filesRef.current[t.path] || '').split('\n')[t.lineIdx];
+        ok = !!line && lineStatus(line) === a.hedef;
+      }
+      const hedefAd = columnsFor(t.proje).find(x => x.key === a.hedef)?.title || a.hedef;
+      if (ok) patchCard(msgId, c.id, { state: 'yapildi', not: `"${t.title}" → ${hedefAd} olarak taşındı.` });
+      else patchCard(msgId, c.id, { state: 'hata', not: 'Görevin durumu değişmedi (görev bulunamadı ya da liste henüz yenilenmedi). Proje Yönetimi\'ni açıp kontrol edin, gerekirse tekrar deneyin.' });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
   const doRule = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.sched || !a.eylem || !a.ad) return;
     const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: a.ad, sched: a.sched, eylem: a.eylem, acik: true });
@@ -258,8 +329,15 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()] }, history, message });
-      const cards: CardT[] = res.eylemler.map(a => ({ id: newId(), a, state: a.tur === 'notu_tasarla' ? 'hazirlaniyor' : 'bekliyor' }));
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor() }, history, message });
+      const cards: CardT[] = res.eylemler.map(a => {
+        const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' ? 'hazirlaniyor' : 'bekliyor' };
+        if (a.tur === 'gorev_tasi') {
+          base.cands = findTaskCandidates(filesRef.current, projectMapRef.current, { baslik: a.baslik || '', proje: a.proje, mevcut: a.mevcut });
+          base.pick = 0;
+        }
+        return base;
+      });
       const am: Msg = { id: newId(), role: 'ai', text: res.cevap, cards: cards.length ? cards : undefined };
       setMsgs(ms => [...ms, am]);
       for (const c of cards) if (c.a.tur === 'notu_tasarla' && activeNotePath) void prepareDesign(am.id, c, activeNotePath);
@@ -312,6 +390,45 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         {stateNote(c)}
       </div>
     );
+    if (a.tur === 'proje_ac') return (
+      <div key={c.id} style={card}>{head(<FileText size={14} />, `Proje aç: ${a.ad}`)}
+        <div style={lab}>Müşteri: {a.musteri || a.musteriIstek}</div>
+        {a.musteriIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.musteriIstek}" adında müşteri yok. Aşağıdan yeni müşteri olarak açabilirsiniz; ya da başka bir müşteri adı söyleyin.</div>}
+        {!done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}><button type="button" style={btnP} onClick={() => void (a.musteri ? doProjeAc(m.id, c) : doMusteriVeProje(m.id, c))}><Check size={13} /> {a.musteri ? 'Projeyi aç' : 'Müşteriyi de aç'}</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
+        {stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'gorevler') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, `${a.basliklar?.length} görev ekle`)}
+        <div style={lab}>{a.proje ? `Proje: ${a.proje}` : 'Gelen Kutusu (inbox.md)'}{a.tarih ? ` · ${ymdLabel(a.tarih)}` : ''}</div>
+        <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{a.basliklar?.map((b, i) => <li key={i}>{b}</li>)}</ul>
+        {a.projeIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.projeIstek}" adıyla tek bir proje eşleşmedi; görevler Gelen Kutusu'na eklenecek.</div>}
+        {!done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doTasks(m.id, c)}><Check size={13} /> Ekle</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
+        {stateNote(c)}
+      </div>
+    );
+    if (a.tur === 'gorev_tasi') {
+      const cs = c.cands || [];
+      const hedefAd = columnsFor(cs[c.pick ?? 0]?.proje || a.proje).find(x => x.key === a.hedef)?.title || a.hedef;
+      const durAd = (k: string) => columnsFor(cs[0]?.proje || a.proje).find(x => x.key === k)?.title || k;
+      return (
+        <div key={c.id} style={card}>{head(<Check size={14} />, `Görevi taşı → ${hedefAd}`)}
+          {a.projeIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.projeIstek}" adıyla proje eşleşmedi; tüm projelerde arandı.</div>}
+          {!cs.length && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.baslik}" ile eşleşen görev bulunamadı. Görev adını daha açık yazıp tekrar deneyin.</div>}
+          {cs.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' }}>
+            {cs.length > 1 && <div style={lab}>Birden fazla eşleşme var, birini seçin:</div>}
+            {cs.map((t, i) => (
+              <label key={`${t.path}:${t.lineIdx}`} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', cursor: done ? 'default' : 'pointer' }}>
+                {cs.length > 1 && <input type="radio" disabled={done} checked={(c.pick ?? 0) === i} onChange={() => patchCard(m.id, c.id, { pick: i })} />}
+                <span>{t.title}<span style={lab}> · {t.proje} · {durAd(t.durum)}</span></span>
+              </label>
+            ))}
+          </div>}
+          {!done && c.state !== 'hata' && cs.length > 0 && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doMove(m.id, c)}><Check size={13} /> Taşı</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
+          {stateNote(c)}
+        </div>
+      );
+    }
     if (a.tur === 'otomasyon') return (
       <div key={c.id} style={card}>{head(<Repeat size={14} />, `Otomasyon: ${a.ad}`)}
         <div style={lab}>{a.sched ? schedLabel(a.sched) : ''} → {a.eylem?.tur === 'ac' ? `${screenById(a.eylem.ekran)?.ad || a.eylem.ekran} ekranını aç` : `bildirim: ${a.eylem?.baslik}`}</div>
