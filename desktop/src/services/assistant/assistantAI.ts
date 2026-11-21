@@ -94,7 +94,7 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 2. tur="notu_tasarla", talimat=<kullanıcının tasarım/biçim isteği, kendi cümleleriyle>: YALNIZCA bir not açıkken ve kullanıcı o notun görünümünü/düzenini/içeriğini değiştirmek istiyorsa ("başlığı mavi yap", "altını 3 sütuna böl", "şunu ekle", "tabloya çevir").
 3. tur="hatirlat", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat): tek seferlik hatırlatma/alarm. Tarih/saat belirsizse eylem ekleme, cevapta sor.
 4. tur="otomasyon", ad, zamanlama ("her-gun 08:30" | "haftalik pzt 09:00" | "aylik 5 09:00" | "bir 2026-12-01 09:00"; gün adları pzt sal car per cum cmt paz), eylemTuru ("bildir" ya da "ac"), baslik (bildir için), ekran (ac için ekran kimliği), mesaj (isteğe bağlı): tekrarlayan kural. Kural yalnızca bildirim gösterir ya da bir ekranı açar.
-6. tur="gorev", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM, isteğe bağlı), bitis (HH:MM, isteğe bağlı): Takvime/Görev Havuzu'na yeni GÖREV ekler. "Takvime ekle", "görev ekle", "yapılacak olarak yaz", "toplantı/iş planla" gibi isteklerde bunu kullan; saat verilmediyse saat/bitis'i boş bırak, yalnızca başlangıç verildiyse bitis'i boş bırak (1 saat sayılır). Alarm/bildirim istenirse ("hatırlat") 3'ü kullan, görev için 6'yı. Tarih belirsizse eylem ekleme, cevapta sor.
+6. tur="gorev", baslik, tarih (YYYY-MM-DD, bugüne göre hesapla), saat (HH:MM 24 saat, isteğe bağlı), bitis (HH:MM, isteğe bağlı): Takvime/Görev Havuzu'na yeni GÖREV ekler. "Takvime ekle", "görev ekle", "yapılacak olarak yaz", "toplantı/iş planla" gibi isteklerde bunu kullan; saat verilmediyse saat/bitis'i boş bırak. Kullanıcı saat aralığı söylediyse ("13 14 arası", "13-14", "13:00'dan 14:00'a kadar") MUTLAKA saat="13:00", bitis="14:00" gibi ikisini de doldur; yalnızca başlangıç verildiyse bitis'i boş bırak (1 saat sayılır). Alarm/bildirim istenirse ("hatırlat") 3'ü kullan, görev için 6'yı. Tarih belirsizse eylem ekleme, cevapta sor.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -105,6 +105,20 @@ Sadece JSON döndür.`;
 };
 
 const str = (v: unknown, n: number) => String(v ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+
+// "13", "13.30", "13:00:00" → "13:00"; geçersizse ''.
+const normTime = (v: string): string => {
+  const m = /^(\d{1,2})(?:[:.](\d{2}))?(?:[:.]\d{2})?$/.exec(v.trim());
+  if (!m) return '';
+  const t = `${m[1].padStart(2, '0')}:${m[2] ?? '00'}`;
+  return validTime(t) ? t : '';
+};
+// saat alanında aralık ("13:00-14:00") gelmişse bölünür; bitis ayrıca verilmişse o kullanılır.
+const parseTimeRange = (saat: string, bitis: string): [string, string] => {
+  const range = /^(.+?)\s*(?:-|–|—|\/| ile )\s*(.+)$/.exec(saat);
+  if (range && !bitis) return [normTime(range[1]), normTime(range[2])];
+  return [normTime(saat), normTime(bitis)];
+};
 
 export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
   const out: AAction[] = [];
@@ -131,8 +145,9 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
       }
     } else if (tur === 'gorev') {
       const tarih = str(a.tarih, 12), baslik = str(a.baslik, 120);
-      let saat = str(a.saat, 6), bitis = str(a.bitis, 6);
-      if (!validTime(saat)) { saat = ''; bitis = ''; }
+      // Model saati "13", "13.00", "13:00:00" ya da "13:00-14:00" gibi değişik biçimlerde döndürebiliyor; geçerli HH:MM'e çevrilir.
+      // Aksi halde görev saatsiz ("tüm gün") eklenip takvimde doğru saate düşmüyordu.
+      let [saat, bitis] = parseTimeRange(str(a.saat, 20), str(a.bitis, 20));
       if (saat && !validTime(bitis)) { const [h, mi] = saat.split(':').map(Number); bitis = `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(mi).padStart(2, '0')}`; }
       if (saat && bitis <= saat) bitis = '23:59';
       // Geçmiş güne görev eklenmez: model tarihi yanlış hesapladıysa kullanıcı kartı görüp düzeltsin diye eylem düşer, cevapta sorulur.
@@ -145,8 +160,20 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
   return { cevap: str(raw?.cevap, 900) || 'Anladım.', eylemler: out };
 };
 
-export const askRouter = async (o: { ctx: AssistantCtx; history: ChatTurn[]; message: string }, call: <T>(p: string, s: any) => Promise<T> = callGemini): Promise<RouterResult> =>
-  normalizeRouter(await call<any>(buildRouterPrompt(o), ROUTER_SCHEMA), o.ctx);
+// Güvenlik ağı: model "13 14 arası" gibi bir aralığı görev alanlarına yazmayı unutursa, saat kullanıcının cümlesinden çıkarılır.
+export const timeRangeFromText = (msg: string): [string, string] | null => {
+  const m = /(\d{1,2})(?:[:.](\d{2}))?\s*(?:-|–|ile|ve|'?(?:dan|den|tan|ten))?\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:arası|arasi|arasında|arasinda|kadar)/i.exec(msg);
+  if (!m) return null;
+  const a = normTime(`${m[1]}${m[2] ? ':' + m[2] : ''}`), b = normTime(`${m[3]}${m[4] ? ':' + m[4] : ''}`);
+  return a && b && b > a ? [a, b] : null;
+};
+
+export const askRouter = async (o: { ctx: AssistantCtx; history: ChatTurn[]; message: string }, call: <T>(p: string, s: any) => Promise<T> = callGemini): Promise<RouterResult> => {
+  const res = normalizeRouter(await call<any>(buildRouterPrompt(o), ROUTER_SCHEMA), o.ctx);
+  const fromText = timeRangeFromText(o.message);
+  if (fromText) res.eylemler = res.eylemler.map(a => (a.tur === 'gorev' && !a.saat ? { ...a, saat: fromText[0], bitis: fromText[1] } : a));
+  return res;
+};
 
 // Hatırlatma: mevcut alarm sistemi (notta "alarm HH:MM" geçen satır) kullanılır; gün, dosya adındaki tarihten gelir.
 export const reminderPath = (tarih: string): string => `Hatırlatmalar/${tarih}.md`;
