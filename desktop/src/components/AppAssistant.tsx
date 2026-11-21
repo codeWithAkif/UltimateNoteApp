@@ -16,6 +16,8 @@ import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, 
 import { LIST_PATH, listAdd, guessCat } from '../services/shopList';
 import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, totals, fmtTL, monthLabel, reindex, type BudgetItem } from '../services/budget';
 import type { NewFinanceEntryInput } from '../services/financeSync';
+import { findRelevantNotes, askNotesChat } from '../services/geminiMentor';
+import { appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
 const border = '1px solid var(--border-color)';
@@ -31,7 +33,7 @@ const GUN_ADLARI = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cu
 const ymdLabel = (t: string) => { const [y, m, d] = t.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' }); };
 
 type CardState = 'hazirlaniyor' | 'bekliyor' | 'hazir' | 'yapildi' | 'iptal' | 'hata';
-interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
+interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; pairs?: CardPair[]; moves?: InboxMove[]; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
 interface Msg { id: string; role: 'user' | 'ai'; text: string; cards?: CardT[] }
 interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'durdu' | 'hata'; log: string[] }
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
@@ -324,6 +326,53 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
+  // Ezber kartı: üretim öneridir; Ekle'ye basılınca açık notun sonuna [card: s || c] satırları eklenir (FlashcardView bunları tüm notlardan tarar).
+  const prepareCards = async (msgId: string, c: CardT, path: string) => {
+    try {
+      const pairs = await proposeCards(filesRef.current[path] ?? '', c.a.talimat || '');
+      if (!pairs.length) { patchCard(msgId, c.id, { state: 'hata', not: 'Bu nottan kart çıkaramadım. Notta daha çok bilgi olunca tekrar deneyin.' }); return; }
+      patchCard(msgId, c.id, { state: 'bekliyor', pairs });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: String(e?.message || e) }); }
+  };
+  const doCards = async (msgId: string, c: CardT, path: string) => {
+    const pairs = c.pairs ?? c.a.kartlar ?? []; if (!pairs.length) return;
+    try {
+      const before = filesRef.current[path];
+      const next = appendCards(before, pairs, todayYmd());
+      if (next === (before ?? '')) { patchCard(msgId, c.id, { state: 'yapildi', not: 'Bu kartlar zaten ekliymiş; yeni kart eklenmedi.' }); return; }
+      await saveNote(path, next);
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${pairs.length} kart eklendi. Ezber Kartları ekranında görünür.` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+  // Gelen Kutusu: görev silinmez/taşınmaz; satıra yalnızca [project:slug] etiketi eklenir, böylece Proje Yönetimi'nde görünür.
+  const prepareInbox = async (msgId: string, c: CardT) => {
+    try {
+      const tasks = inboxOpenTasks(filesRef.current);
+      if (!tasks.length) { patchCard(msgId, c.id, { state: 'yapildi', not: 'Gelen Kutusu\'nda projesiz açık görev yok.' }); return; }
+      const moves = await proposeInbox(tasks, [...projectMapRef.current.keys()]);
+      if (!moves.length) { patchCard(msgId, c.id, { state: 'yapildi', not: 'Açıkça bir projeye uyan görev bulamadım; hiçbir şey değişmedi.' }); return; }
+      patchCard(msgId, c.id, { state: 'bekliyor', moves });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: String(e?.message || e) }); }
+  };
+  const doInbox = async (msgId: string, c: CardT) => {
+    const sel = (c.moves || []).filter(m => m.on); if (!sel.length) return;
+    try {
+      let ok = 0, skip = 0;
+      const byPath = new Map<string, InboxMove[]>();
+      for (const m of sel) byPath.set(m.path, [...(byPath.get(m.path) || []), m]);
+      for (const [path, ms] of byPath) {
+        const lines = (filesRef.current[path] ?? '').split('\n');
+        for (const m of ms) {
+          const cur = lines[m.lineIdx];
+          if (cur === undefined || !foldTr(cur).includes(foldTr(m.title).slice(0, 40)) || /\[project:/i.test(cur) || !/\[ \]/.test(cur)) { skip++; continue; }
+          lines[m.lineIdx] = tagLineProject(cur, m.proje); ok++;
+        }
+        await saveNote(path, lines.join('\n'));
+      }
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${ok} görev projeye bağlandı.${skip ? ` ${skip} görev bu arada değiştiği için atlandı.` : ''}` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
   const doRule = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.sched || !a.eylem || !a.ad) return;
     const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: a.ad, sched: a.sched, eylem: a.eylem, acik: true });
@@ -389,18 +438,34 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet() }, history, message });
-      const cards: CardT[] = res.eylemler.map(a => {
-        const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' ? 'hazirlaniyor' : 'bekliyor' };
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), verimOzet: productivitySummary(filesRef.current, new Date()) }, history, message });
+      // Notlarımla Sohbet: not sorusu salt okunur olduğundan onay kartı olmadan, notlar aranıp cevap doğrudan yazılır.
+      const ask = res.eylemler.find(a => a.tur === 'not_sor');
+      let answerText = '';
+      if (ask?.soru) {
+        try {
+          const noteList = Object.keys(filesRef.current).filter(p => /\.md$/i.test(p) && !p.startsWith('Sistem/')).map(p => ({ type: 'note', path: p, name: (p.split('/').pop() || p).replace(/\.md$/i, '') }));
+          const relevant = findRelevantNotes(ask.soru, noteList, filesRef.current, 6);
+          const r = await askNotesChat(ask.soru, relevant, history.map(h => ({ role: h.role === 'user' ? 'user' as const : 'assistant' as const, text: h.text })));
+          const used = relevant.filter(x => r.usedNoteNames.some(n => n.toLowerCase() === x.name.toLowerCase())).map(x => x.name);
+          answerText = `${r.answer}${used.length ? `\n\nKaynak notlar: ${used.join(', ')}` : ''}`;
+        } catch (e: any) { answerText = `Notlara bakarken hata oluştu: ${String(e?.message || e)}. Tekrar deneyin.`; }
+      }
+      const cards: CardT[] = res.eylemler.filter(a => a.tur !== 'not_sor').map(a => {
+        const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' || a.tur === 'kart_uret' || a.tur === 'inbox_ayir' ? 'hazirlaniyor' : 'bekliyor' };
         if (a.tur === 'gorev_tasi' || a.tur === 'gorev_gun') {
           base.cands = findTaskCandidates(filesRef.current, projectMapRef.current, { baslik: a.baslik || '', proje: a.proje, mevcut: a.tur === 'gorev_tasi' ? a.mevcut : undefined, hepsi: a.tur === 'gorev_gun' });
           base.pick = 0;
         }
         return base;
       });
-      const am: Msg = { id: newId(), role: 'ai', text: res.cevap, cards: cards.length ? cards : undefined };
+      const am: Msg = { id: newId(), role: 'ai', text: answerText || res.cevap, cards: cards.length ? cards : undefined };
       setMsgs(ms => [...ms, am]);
-      for (const c of cards) if (c.a.tur === 'notu_tasarla' && activeNotePath) void prepareDesign(am.id, c, activeNotePath);
+      for (const c of cards) {
+        if (c.a.tur === 'notu_tasarla' && activeNotePath) void prepareDesign(am.id, c, activeNotePath);
+        if (c.a.tur === 'kart_uret' && activeNotePath) void prepareCards(am.id, c, activeNotePath);
+        if (c.a.tur === 'inbox_ayir') void prepareInbox(am.id, c);
+      }
     } catch (e: any) { setErr(String(e?.message || e)); }
     finally { setBusy(false); }
   };
@@ -534,6 +599,31 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         </div>
       );
     }
+    if (a.tur === 'kart_uret' || a.tur === 'kart_ekle') {
+      const pairs = c.pairs ?? a.kartlar ?? [];
+      const path = (a.tur === 'kart_uret' ? activeNotePath : (noteOpen ? activeNotePath : null)) || 'Ezber Kartları.md';
+      return (
+        <div key={c.id} style={card}>{head(<FileText size={14} />, a.tur === 'kart_uret' ? 'Nottan ezber kartı üret' : 'Ezber kartı ekle')}
+          {c.state === 'hazirlaniyor' && <div style={{ ...lab, marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={12} className="animate-spin" /> Kartlar hazırlanıyor…</div>}
+          {pairs.length > 0 && <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{pairs.map((p, i) => <li key={i}>{p.s} <span style={lab}>→ {p.c}</span></li>)}</ul>}
+          {pairs.length > 0 && <div style={{ ...lab, marginTop: '4px' }}>Eklenecek not: {path.split('/').pop()}</div>}
+          {pairs.length > 0 && okBtns(() => void doCards(m.id, c, path), 'Ekle')}{stateNote(c)}
+        </div>
+      );
+    }
+    if (a.tur === 'inbox_ayir') return (
+      <div key={c.id} style={card}>{head(<Check size={14} />, 'Gelen Kutusu\'nu projelere ayır')}
+        {c.state === 'hazirlaniyor' && <div style={{ ...lab, marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={12} className="animate-spin" /> Görevler inceleniyor…</div>}
+        {(c.moves || []).map((mv, i) => (
+          <label key={`${mv.path}:${mv.lineIdx}`} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', marginTop: '3px' }}>
+            <input type="checkbox" disabled={done} checked={mv.on} onChange={() => patchCard(m.id, c.id, { moves: (c.moves || []).map((x, j) => (j === i ? { ...x, on: !x.on } : x)) })} />
+            <span>{mv.title}<span style={lab}> → {mv.proje}</span></span>
+          </label>
+        ))}
+        {(c.moves || []).length > 0 && <div style={{ ...lab, marginTop: '4px' }}>Görev silinmez; yalnızca projeye bağlanır.</div>}
+        {(c.moves || []).length > 0 && okBtns(() => void doInbox(m.id, c), 'Uygula')}{stateNote(c)}
+      </div>
+    );
     if (a.tur === 'otomasyon') return (
       <div key={c.id} style={card}>{head(<Repeat size={14} />, `Otomasyon: ${a.ad}`)}
         <div style={lab}>{a.sched ? schedLabel(a.sched) : ''} → {a.eylem?.tur === 'ac' ? `${screenById(a.eylem.ekran)?.ad || a.eylem.ekran} ekranını aç` : `bildirim: ${a.eylem?.baslik}`}</div>

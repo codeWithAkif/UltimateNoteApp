@@ -4,6 +4,7 @@
 import { callGemini } from '../geminiMentor';
 import { redactSensitive } from '../budget';
 import { parseSched, validTime, type Sched, type Eylem } from './automation';
+import { cleanPairs } from './assistantTools';
 import { foldTr, matchStatus, sanitizeName, DEFAULT_STATUS_COLS, type StatusCol } from './projectOps';
 
 export interface Screen { id: string; ad: string; ozet: string }
@@ -42,7 +43,7 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
@@ -51,6 +52,7 @@ export interface AAction {
   tarih?: string; saat?: string;   // hatirlat / gorev (saat = başlangıç)
   bitis?: string;                  // gorev: bitiş saati (saat varsa)
   proje?: string;                  // gorev: eşleşen proje notunun adı (varsa görev o notun sonuna yazılır)
+  soru?: string; kartlar?: { s: string; c: string }[]; // not_sor / kart_ekle
   tutar?: number; finTur?: string; kategori?: string; // finans / butce
   butceTur?: string; gun?: number; metin?: string; // butce kalemi / gunluk yazısı
   musteri?: string; musteriIstek?: string; // proje_ac: eşleşen müşteri adı / eşleşmeyen istenen ad
@@ -60,7 +62,7 @@ export interface AAction {
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
-export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string }
+export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string; verimOzet?: string }
 export interface ChatTurn { role: 'user' | 'ai'; text: string }
 
 export const ROUTER_SCHEMA = {
@@ -73,7 +75,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, soru: { type: 'string' }, kartlar: { type: 'array', items: { type: 'object', properties: { s: { type: 'string' }, c: { type: 'string' } } } }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -98,6 +100,7 @@ PROJELER (görev eklerken proje adı): ${(o.ctx.projeler || []).slice(0, 60).joi
 MUSTERILER: ${(o.ctx.musteriler || []).slice(0, 60).join(', ') || '(yok)'}
 FINANS KATEGORILERI: ${(o.ctx.finKategoriler || []).join(', ') || '(yok)'}
 BUTCE OZETI (bu ay): ${o.ctx.butceOzet || '(bütçe notu yok)'}
+VERIMLILIK OZETI (son 14 gün): ${o.ctx.verimOzet || '(yok)'}
 DURUMLAR (anahtar=ad): ${(o.ctx.durumlar || DEFAULT_STATUS_COLS).map(d => `${d.key}=${d.title}`).join(', ')}
 
 EKRANLAR (kimlik = ad: ne işe yarar). Buradaki bilgi dışında ayrıntıyı UYDURMA; bilmiyorsan "bu ekranın ayrıntısını bilmiyorum, açayım mı?" de:
@@ -117,6 +120,11 @@ YAPABİLECEĞİN EYLEMLER ("eylemler" dizisi; gerekmiyorsa boş bırak; en çok 
 12. tur="butce", baslik (kalem adı), tutar (sayı, TL), butceTur ("gelir", "sabit" ya da "degisken"), gun (ayın günü, isteğe bağlı): Bu ayın Bütçe Planı'na kalem ekler ("her ay 15'inde Netflix 230 TL sabit gider"). "Kalan bütçem ne?" gibi SORULARI eylemsiz, BUTCE OZETI'ne bakarak cevapta yanıtla; özet yoksa bütçe notu olmadığını söyle, sayı uydurma.
 13. tur="gunluk", metin (günlüğe yazılacak cümle(ler), kullanıcının dediği gibi), tarih (YYYY-MM-DD; söylenmediyse bugün): Günlük ekranına o güne not düşer.
 14. tur="gorev_gun", baslik (taşınacak görevin başlığı), proje (söylendiyse), tarih (YYYY-MM-DD, yeni gün): var olan bir görevi başka güne alır ("yarınki toplantıyı cumaya al"). Görevi sen bulma.
+15. tur="not_sor", soru (kullanıcının sorusu, kendi cümleleriyle): kullanıcı KENDİ NOTLARINDAKİ bilgiyi soruyorsa ("Zorlu toplantısında ne konuşmuştuk?", "şu konuda notlarımda ne yazıyor?"). Uygulama notları arayıp cevabı kendisi yazar; sen cevap uydurma, cevapta sadece "Notlarına bakıyorum" de.
+16. tur="kart_uret", talimat (isteğe bağlı): AÇIK NOTUN içeriğinden ezber kartı üretir ("bu nottaki kelimelerden kart üret"). Not açık değilse eylem ekleme, cevapta notu açmasını söyle.
+17. tur="kart_ekle", kartlar (dizi: {s: soru, c: cevap}): kullanıcının kendi verdiği kartları ekler ("'ephemeral = geçici' kelimesini karta ekle").
+18. tur="inbox_ayir": Gelen Kutusu'ndaki projesiz görevleri projelere dağıtmayı önerir ("gelen kutumu düzenle/projelere ayır"). Alan gerekmez.
+Verimlilik/üretkenlik soruları ("geçen haftaya göre nasıldım?") için eylem ekleme; VERIMLILIK OZETI'ne bakıp cevapta kısaca yorumla, özet yoksa söyle, sayı uydurma.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -220,6 +228,16 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
       const baslik = str(a.baslik, 120), tarih = str(a.tarih, 12), istek = str(a.proje, 60);
       const proje = istek ? matchProject(istek, ctx.projeler || []) : '';
       if (baslik && /^\d{4}-\d{2}-\d{2}$/.test(tarih) && tarih >= ymd(ctx.now)) out.push({ tur, baslik, tarih, proje: proje || undefined, projeIstek: istek && !proje ? istek : undefined });
+    } else if (tur === 'not_sor') {
+      const soru = str(a.soru, 300);
+      if (soru) out.push({ tur, soru });
+    } else if (tur === 'kart_uret') {
+      if (ctx.noteOpen) out.push({ tur, talimat: str(a.talimat, 200) || undefined });
+    } else if (tur === 'kart_ekle') {
+      const kartlar = cleanPairs(a.kartlar);
+      if (kartlar.length) out.push({ tur, kartlar });
+    } else if (tur === 'inbox_ayir') {
+      out.push({ tur });
     } else if (tur === 'ui') {
       if (str(a.talimat, 600)) out.push({ tur, talimat: str(a.talimat, 600) });
     }
