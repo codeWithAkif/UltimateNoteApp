@@ -2393,6 +2393,52 @@ const VirtBlock = ({ forced, initialVisible, estHeight, cacheKey, heightCache, g
   );
 };
 
+// Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
+// GFM "| a | b |" tablosunun hücresi: normalde biçimli (kalın, bağlantı vb.) gösterilir; tıklanınca/odaklanınca
+// ham metinle düzenlenir, Enter/odak kaybında kaydedilir, Esc iptal eder. Biçimi korumak için hücreyi
+// sürekli <input> yapmak yerine yalnızca düzenlerken input'a geçilir.
+const MdTableCell = ({ tag, raw, display, align, onCommit }: {
+  tag: 'th' | 'td'; raw: string; display: React.ReactNode; align?: 'left' | 'center' | 'right'; onCommit: (v: string) => void;
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(raw);
+  const cancelRef = useRef(false);
+  const Tag = tag;
+  if (editing) {
+    return (
+      <Tag style={{ padding: 0, textAlign: align || 'left' }}>
+        <input
+          autoFocus
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onBlur={() => {
+            setEditing(false);
+            if (cancelRef.current) { cancelRef.current = false; return; }
+            if (val !== raw) onCommit(val);
+          }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            else if (e.key === 'Escape') { cancelRef.current = true; (e.target as HTMLInputElement).blur(); }
+          }}
+          style={{ width: '100%', boxSizing: 'border-box', background: 'transparent', border: 'none', outline: '2px solid var(--accent-color)', outlineOffset: '-2px', color: 'inherit', font: 'inherit', padding: '8px 12px', textAlign: align || 'left' }}
+        />
+      </Tag>
+    );
+  }
+  return (
+    <Tag
+      tabIndex={0}
+      style={{ textAlign: align || 'left', cursor: 'text' }}
+      onClick={() => { setVal(raw); setEditing(true); }}
+      onFocus={() => { setVal(raw); setEditing(true); }}
+    >
+      {display}{raw === '' ? '\u00A0' : null}
+    </Tag>
+  );
+};
+
 export default function NotesView({
   selectedFolder,
   selectedTag,
@@ -10261,8 +10307,10 @@ export default function NotesView({
                       let t = line.trim();
                       if (t.startsWith('|')) t = t.slice(1);
                       if (t.endsWith('|')) t = t.slice(0, -1);
-                      return t.split('|').map(c => c.trim());
+                      // Kaçışlı "\|" hücre ayracı sayılmaz (hücreyi düzenlerken yazdığımız | bu biçimde saklanır).
+                      return t.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, '|').trim());
                     };
+                    const mdTableRowText = (cells: string[]): string => `| ${cells.map(c => c.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ')).join(' | ')} |`;
                     const getMdTableColAlign = (sepCell: string): 'left' | 'center' | 'right' | undefined => {
                       const c = sepCell.trim();
                       const left = c.startsWith(':');
@@ -10433,28 +10481,53 @@ export default function NotesView({
           const tableStart = i;
           const tableEnd = j - 1;
           pushBlock(`mdtable-${tableStart}`, tableStart, tableEnd, () => (
-            <div key={`mdtable-${tableStart}`} className="md-table-wrapper" onClick={(e) => e.stopPropagation()}>
-              <table className="md-table">
-                <thead>
-                  <tr>
-                    {headerCells.map((cell, ci) => (
-                      <th key={ci} style={{ textAlign: alignCells[ci] || 'left' }}>{parseInlineStylesAndTags(cell)}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {bodyRowIndices.map(rowIdx => {
-                    const rowCells = parseMdTableRow(lines[rowIdx]);
-                    return (
-                      <tr key={rowIdx}>
-                        {headerCells.map((_, ci) => (
-                          <td key={ci} style={{ textAlign: alignCells[ci] || 'left' }}>{parseInlineStylesAndTags(rowCells[ci] || '')}</td>
-                        ))}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div key={`mdtable-${tableStart}`} style={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+              <div className="md-table-wrapper">
+                <table className="md-table">
+                  <thead>
+                    <tr>
+                      {headerCells.map((cell, ci) => (
+                        <MdTableCell key={ci} tag="th" raw={cell} align={alignCells[ci]} display={parseInlineStylesAndTags(cell)}
+                          onCommit={(v) => {
+                            const arr = [...lines];
+                            const cells = [...headerCells]; cells[ci] = v;
+                            arr[tableStart] = mdTableRowText(cells);
+                            setEditorContent(arr.join('\n'));
+                          }} />
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bodyRowIndices.map(rowIdx => {
+                      const rowCells = parseMdTableRow(lines[rowIdx]);
+                      return (
+                        <tr key={rowIdx}>
+                          {headerCells.map((_, ci) => (
+                            <MdTableCell key={ci} tag="td" raw={rowCells[ci] || ''} align={alignCells[ci]} display={parseInlineStylesAndTags(rowCells[ci] || '')}
+                              onCommit={(v) => {
+                                const arr = [...lines];
+                                const cells = headerCells.map((_h, k) => rowCells[k] || ''); cells[ci] = v;
+                                arr[rowIdx] = mdTableRowText(cells);
+                                setEditorContent(arr.join('\n'));
+                              }} />
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                type="button"
+                style={{ background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '4px', color: '#10b981', padding: '2px 8px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}
+                onClick={() => {
+                  const arr = [...lines];
+                  arr.splice(tableEnd + 1, 0, mdTableRowText(headerCells.map(() => '')));
+                  setEditorContent(arr.join('\n'));
+                }}
+              >
+                <Plus size={10} /> Satır Ekle
+              </button>
             </div>
           ));
         }
