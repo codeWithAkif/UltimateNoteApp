@@ -83,6 +83,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const tabRef = useRef(tab); tabRef.current = tab;
   const stepModeRef = useRef(stepMode); stepModeRef.current = stepMode;
   const filesRef = useRef(fileContents); filesRef.current = fileContents;
+  // Otomatik modda arka arkaya yazılan eylemler aynı dosyaya dokunabilir; kayıt yeniden çizime yansımadan sonraki eylem eski içeriği okurdu (kayıp güncelleme).
+  // Bu yüzden yazılan içerik hemen yerel referansa da işlenir; bir sonraki çizimde gerçek durum zaten bunu içerir.
+  const writeNote = async (path: string, content: string) => { filesRef.current = { ...filesRef.current, [path]: content }; await saveNote(path, content); };
   const noteOpen = tab === 'notes' && !!activeNotePath;
 
   const setOpenP = useCallback((o: boolean) => { setOpen(o); try { localStorage.setItem('assistant_open_v1', o ? '1' : '0'); } catch { /* yoksay */ } }, []);
@@ -118,7 +121,36 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   useEffect(() => { if (ready && nativeScheduling()) void syncNativeRules(rulesRef.current); }, [ready, rulesSig]);
 
   // ---------------- kart işlemleri ----------------
-  const patchCard = (msgId: string, cardId: string, p: Partial<CardT>) => setMsgs(ms => ms.map(m => (m.id === msgId ? { ...m, cards: (m.cards || []).map(c => (c.id === cardId ? { ...c, ...p } : c)) } : m)));
+  // Otomatik mod (varsayılan açık): net eylemler onay beklemeden uygulanır. Belirsiz olanlar (birden çok eşleşme, eşleşmeyen proje, önizleme gerektirenler) yine kartla sorar.
+  const [auto, setAuto] = useState<boolean>(() => { try { return localStorage.getItem('assistant_auto_v1') !== '0'; } catch { return true; } });
+  const autoRef = useRef(auto); autoRef.current = auto;
+  const toggleAuto = () => { const n = !auto; setAuto(n); try { localStorage.setItem('assistant_auto_v1', n ? '1' : '0'); } catch { /* yoksay */ } };
+  const cardMeta = useRef(new Map<string, AAction>());
+  // İşlem bir sayfayı ilgilendiriyorsa başarıdan sonra o sayfa açılır; telefonda panel de kapanır ki sonuç görünsün.
+  const screenFor = (a: AAction): string | null => {
+    switch (a.tur) {
+      case 'git': return a.ekran || null;
+      case 'gorev': case 'gorev_gun': return 'calendar';
+      case 'gorevler': return a.proje ? 'projects' : 'calendar';
+      case 'proje_ac': case 'gorev_tasi': return 'projects';
+      case 'alisveris': case 'alisveris_al': return 'shopping';
+      case 'finans': return 'finance';
+      case 'butce': return 'budget';
+      case 'gunluk': return 'diary';
+      case 'kelime_ekle': return 'language';
+      case 'kart_ekle': return 'srs';
+      case 'ortam': return 'ambient';
+      default: return null;
+    }
+  };
+  const afterDone = (cardId: string) => {
+    const a = cardMeta.current.get(cardId); const target = a && screenFor(a);
+    if (!target) return;
+    onNavigate(target);
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) setTimeout(() => setOpenP(false), 700);
+  };
+  const patchCard = (msgId: string, cardId: string, p: Partial<CardT>) => { if (p.state === 'yapildi') afterDone(cardId); patchCard0(msgId, cardId, p); };
+  const patchCard0 = (msgId: string, cardId: string, p: Partial<CardT>) => setMsgs(ms => ms.map(m => (m.id === msgId ? { ...m, cards: (m.cards || []).map(c => (c.id === cardId ? { ...c, ...p } : c)) } : m)));
 
   const prepareDesign = async (msgId: string, c: CardT, path: string) => {
     const eski = filesRef.current[path] ?? '';
@@ -131,15 +163,15 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const applyDesign = async (msgId: string, c: CardT) => {
     const d = c.design; if (!d) return;
     if ((filesRef.current[d.path] ?? '') !== d.eski) { patchCard(msgId, c.id, { state: 'hata', not: 'Not siz bakarken değişti. Güvenlik için uygulanmadı; isteği yeniden yazın.' }); return; }
-    await saveNote(d.path, d.sonuc.icerik);
+    await writeNote(d.path, d.sonuc.icerik);
     patchCard(msgId, c.id, { state: 'yapildi', not: 'Uygulandı.' });
   };
-  const undoDesign = async (msgId: string, c: CardT) => { const d = c.design; if (!d) return; await saveNote(d.path, d.eski); patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı.' }); };
+  const undoDesign = async (msgId: string, c: CardT) => { const d = c.design; if (!d) return; await writeNote(d.path, d.eski); patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı.' }); };
 
   // Hatırlatma kurma (sohbet kartı ve "Otomasyon ve alarm" sekmesindeki form ortak kullanır).
   const createReminder = async (baslik: string, tarih: string, saat: string, mesaj?: string): Promise<{ path: string; native: boolean }> => {
     const path = reminderPath(tarih);
-    await saveNote(path, appendReminder(filesRef.current[path], tarih, baslik, saat, mesaj));
+    await writeNote(path, appendReminder(filesRef.current[path], tarih, baslik, saat, mesaj));
     await requestNotifyPermission();
     const [y, m, d] = tarih.split('-').map(Number), [h, mi] = saat.split(':').map(Number);
     const native = await scheduleReminderNative(baslik, mesaj || 'Hatırlatma', new Date(y, m - 1, d, h, mi));
@@ -172,7 +204,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   };
   const removeAlarm = async (r: { path: string; lineIdx: number; tarih: string; saat: string }) => {
     const cur = filesRef.current[r.path]; if (cur === undefined) return;
-    await saveNote(r.path, removeLine(cur, r.lineIdx));
+    await writeNote(r.path, removeLine(cur, r.lineIdx));
     const [y, m, d] = r.tarih.split('-').map(Number), [h, mi] = r.saat.split(':').map(Number);
     void cancelReminderNative(new Date(y, m - 1, d, h, mi));
   };
@@ -211,7 +243,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const statusUndoRef = useRef(new Map<string, { id: string; old: string }>());
   const saveT = async (cardId: string, path: string, content: string) => {
     undoRef.current.set(cardId, [...(undoRef.current.get(cardId) || []), { path, before: filesRef.current[path], after: content }]);
-    await saveNote(path, content);
+    await writeNote(path, content);
   };
   const canUndo = (c: CardT) => c.state === 'yapildi' && (statusUndoRef.current.has(c.id) || (() => { const e = undoRef.current.get(c.id); return !!e && e.length > 0 && e.every(x => x.before !== undefined); })());
   const doUndo = async (msgId: string, c: CardT) => {
@@ -223,7 +255,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         let cur = filesRef.current[e.path];
         for (let i = 0; i < 4 && cur !== e.after; i++) { await wait(250); cur = filesRef.current[e.path]; }
         if (cur !== e.after) { patchCard(msgId, c.id, { state: 'hata', not: 'Dosya sonradan değişmiş; başkasının düzenlemesini ezmemek için geri alınmadı. Elle düzeltin.' }); return; }
-        await saveNote(e.path, e.before as string);
+        await writeNote(e.path, e.before as string);
       }
       undoRef.current.delete(c.id);
       patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı.' });
@@ -460,13 +492,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const doRule = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.sched || !a.eylem || !a.ad) return;
     const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: a.ad, sched: a.sched, eylem: a.eylem, acik: true });
-    await saveNote(RULES_PATH, serializeRules(next));
+    await writeNote(RULES_PATH, serializeRules(next));
     await requestNotifyPermission();
     if (nativeScheduling()) void syncNativeRules(next);
     patchCard(msgId, c.id, { state: 'yapildi', not: 'Kural kuruldu. Otomasyonlar sekmesinden kapatabilir ya da silebilirsiniz.' });
   };
 
-  const saveRules = async (next: Rule[]) => { await saveNote(RULES_PATH, serializeRules(next)); if (nativeScheduling()) void syncNativeRules(next); };
+  const saveRules = async (next: Rule[]) => { await writeNote(RULES_PATH, serializeRules(next)); if (nativeScheduling()) void syncNativeRules(next); };
 
   // ---------------- sayfa ajanı ----------------
   const runAgent = async (msgId: string, c: CardT) => {
@@ -513,6 +545,43 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   };
 
   // ---------------- sohbet ----------------
+  // Otomatik uygulanabilir mi: yalnızca belirsizlik/uyarı içermeyen net eylemler.
+  const autoOk = (c: CardT): boolean => {
+    const a = c.a;
+    switch (a.tur) {
+      case 'hatirlat': case 'otomasyon': case 'alisveris': case 'butce': case 'gunluk': case 'kelime_ekle': case 'ortam': case 'git': return true;
+      case 'kart_ekle': return !!a.kartlar?.length;
+      case 'gorev': case 'gorevler': return !a.projeIstek;
+      case 'proje_ac': return !!a.musteri;
+      case 'gorev_tasi': case 'gorev_gun': return (c.cands?.length ?? 0) === 1;
+      case 'alisveris_al': return !!c.buy?.length && c.buy.every(g => g.cands.length <= 1) && c.buy.some(g => g.cands.length === 1);
+      case 'finans': return financeCategoryNames.includes(a.kategori || '');
+      default: return false;
+    }
+  };
+  const runCard = async (msgId: string, c: CardT) => {
+    const a = c.a;
+    switch (a.tur) {
+      case 'hatirlat': return doRemind(msgId, c);
+      case 'otomasyon': return doRule(msgId, c);
+      case 'gorev': return doTask(msgId, c);
+      case 'gorevler': return doTasks(msgId, c);
+      case 'proje_ac': return doProjeAc(msgId, c);
+      case 'gorev_tasi': return doMove(msgId, c);
+      case 'gorev_gun': return doMoveDay(msgId, c);
+      case 'alisveris': return doShop(msgId, c);
+      case 'alisveris_al': return doBought(msgId, c);
+      case 'finans': return doFinans(msgId, c);
+      case 'butce': return doButce(msgId, c);
+      case 'gunluk': return doDiary(msgId, c);
+      case 'kelime_ekle': return doWords(msgId, c);
+      case 'kart_ekle': return doCards(msgId, c, (noteOpen ? activeNotePath : null) || 'Ezber Kartları.md');
+      case 'ortam': return doAmbient(msgId, c);
+      case 'git': onNavigate(a.ekran!); patchCard(msgId, c.id, { state: 'yapildi' }); return;
+      default: return;
+    }
+  };
+
   const send = async (text?: string) => {
     const message = (text ?? input).trim();
     if (!message || busy) return;
@@ -548,6 +617,12 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       });
       const am: Msg = { id: newId(), role: 'ai', text: answerText || res.cevap, cards: cards.length ? cards : undefined };
       setMsgs(ms => [...ms, am]);
+      for (const c of cards) cardMeta.current.set(c.id, c.a);
+      // Otomatik mod: net eylemler sırayla (aynı dosyaya yazanlar birbirini ezmesin diye) onay beklemeden uygulanır.
+      if (autoRef.current) {
+        const todo = cards.filter(autoOk);
+        void (async () => { for (const c of todo) { patchCard0(am.id, c.id, { state: 'hazirlaniyor' }); try { await runCard(am.id, c); } catch (e: any) { patchCard0(am.id, c.id, { state: 'hata', not: String(e?.message || e) }); } } })();
+      }
       for (const c of cards) {
         if (c.a.tur === 'notu_tasarla' && activeNotePath) void prepareDesign(am.id, c, activeNotePath);
         if (c.a.tur === 'kart_uret' && activeNotePath) void prepareCards(am.id, c, activeNotePath);
@@ -805,6 +880,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderBottom: border }}>
             <Sparkles size={16} color="var(--accent-color)" />
             <div style={{ fontWeight: 500, flex: 1 }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>
+            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px', background: auto ? 'var(--accent-color)' : undefined, color: auto ? '#fff' : undefined }} onClick={toggleAuto} title={auto ? 'Otomatik: net işlemler sormadan yapılır. Kapatmak için dokunun.' : 'Sor: her işlem için onay istenir. Otomatik için dokunun.'}>{auto ? '⚡ Otomatik' : 'Sor'}</button>
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
