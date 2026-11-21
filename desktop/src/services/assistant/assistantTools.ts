@@ -97,3 +97,25 @@ export const productivitySummary = (files: Record<string, string>, now: Date): s
   }
   return `son 7 günde tamamlanan görev: ${done7}, önceki 7 günde: ${donePrev}, açık görev: ${open}, vadesi geçmiş: ${overdue} (yalnızca tamamlanma tarihi kayıtlı görevler sayılır)`;
 };
+
+// ---------------- Günün özeti: "bugün ne var?" sorusu bu satırdan cevaplanır ----------------
+export const daySummary = (files: Record<string, string>, now: Date, alarmsToday: { saat: string; baslik: string }[]): string => {
+  const today = ymdOf(now);
+  const items: string[] = [];
+  let overdue = 0;
+  for (const [path, content] of Object.entries(files)) {
+    if (!/\.md$/i.test(path) || !content || path.startsWith('Sistem/') || !content.includes('[due:')) continue;
+    for (const l of content.split('\n')) {
+      if (!/^\s*[*\-]\s+\[[ \/]\]/.test(l)) continue;
+      const d = /\[due:(\d{4}-\d{2}-\d{2})\]/.exec(l)?.[1];
+      if (!d) continue;
+      if (d < today) { overdue++; continue; }
+      if (d !== today) continue;
+      const t = /\[plannedtime:(\d{2}:\d{2})/.exec(l)?.[1];
+      const title = l.replace(/^\s*[*\-]\s+\[[ \/]\]\s*/, '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (title) items.push(`${t ? t + ' ' : ''}${title}`);
+    }
+  }
+  items.sort();
+  return `bugünkü görevler (${items.length}): ${items.slice(0, 10).join('; ') || 'yok'}; bugünkü alarmlar: ${alarmsToday.map(a => `${a.saat} ${a.baslik}`).join('; ') || 'yok'}; vadesi geçmiş açık görev: ${overdue}`;
+};

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Sparkles, X, Send, Check, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
+import { Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
@@ -16,8 +16,9 @@ import { slugOf, findTaskCandidates, newClientFile, newProjectFile, lineStatus, 
 import { LIST_PATH, listAdd, guessCat } from '../services/shopList';
 import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, totals, fmtTL, monthLabel, reindex, type BudgetItem } from '../services/budget';
 import type { NewFinanceEntryInput } from '../services/financeSync';
+import { parseLabState, serializeLabState, todayKey, LANGUAGE_LAB_NOTE_PATH } from '../services/languageLab';
 import { findRelevantNotes, askNotesChat } from '../services/geminiMentor';
-import { appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
+import { appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, daySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
 
 const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif";
 const border = '1px solid var(--border-color)';
@@ -55,6 +56,21 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const [view, setView] = useState<'sohbet' | 'kurallar'>('sohbet');
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
+  const [listening, setListening] = useState(false);
+  const recRef = useRef<any>(null);
+  // Sesle yazma: tarayıcının SpeechRecognition'ı varsa (telefon WebView'ında olmayabilir; yoksa düğme gizlenir). Konuşma kutuya yazılır, otomatik gönderilmez.
+  const SpeechCls: any = typeof window !== 'undefined' && !(window as any).electron ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const toggleMic = () => {
+    if (listening) { try { recRef.current?.stop(); } catch { /* yoksay */ } return; }
+    try {
+      const r = new SpeechCls();
+      r.lang = 'tr-TR'; r.interimResults = true; r.continuous = false;
+      r.onresult = (ev: any) => { let t = ''; for (let i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript; setInput(t.trim()); };
+      r.onerror = (ev: any) => { setListening(false); setErr(ev?.error === 'not-allowed' ? 'Mikrofon izni verilmedi. Tarayıcı/uygulama ayarlarından izin verin.' : 'Ses tanınamadı. Tekrar deneyin ya da yazın.'); };
+      r.onend = () => setListening(false);
+      recRef.current = r; setErr(''); setListening(true); r.start();
+    } catch { setListening(false); setErr('Mikrofon başlatılamadı. Yazarak devam edebilirsiniz.'); }
+  };
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [run, setRun] = useState<Run | null>(null);
@@ -189,16 +205,40 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   }, [fileContents]);
   const projectMapRef = useRef(projectMap); projectMapRef.current = projectMap;
 
+  // Geri al: yazılmadan önceki içerik saklanır; yalnızca dosya hâlâ bizim yazdığımız hâldeyse geri yüklenir (sonradan yapılan düzenleme ezilmez).
+  const undoRef = useRef(new Map<string, { path: string; before: string | undefined; after: string }[]>());
+  const statusUndoRef = useRef(new Map<string, { id: string; old: string }>());
+  const saveT = async (cardId: string, path: string, content: string) => {
+    undoRef.current.set(cardId, [...(undoRef.current.get(cardId) || []), { path, before: filesRef.current[path], after: content }]);
+    await saveNote(path, content);
+  };
+  const canUndo = (c: CardT) => c.state === 'yapildi' && (statusUndoRef.current.has(c.id) || (() => { const e = undoRef.current.get(c.id); return !!e && e.length > 0 && e.every(x => x.before !== undefined); })());
+  const doUndo = async (msgId: string, c: CardT) => {
+    try {
+      const su = statusUndoRef.current.get(c.id);
+      if (su) { await changeTaskStatus(su.id, su.old); statusUndoRef.current.delete(c.id); patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı: görev eski durumuna döndü.' }); return; }
+      const ents = [...(undoRef.current.get(c.id) || [])].reverse();
+      for (const e of ents) {
+        let cur = filesRef.current[e.path];
+        for (let i = 0; i < 4 && cur !== e.after; i++) { await wait(250); cur = filesRef.current[e.path]; }
+        if (cur !== e.after) { patchCard(msgId, c.id, { state: 'hata', not: 'Dosya sonradan değişmiş; başkasının düzenlemesini ezmemek için geri alınmadı. Elle düzeltin.' }); return; }
+        await saveNote(e.path, e.before as string);
+      }
+      undoRef.current.delete(c.id);
+      patchCard(msgId, c.id, { state: 'iptal', not: 'Geri alındı.' });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Geri alınamadı: ${String(e?.message || e)}.` }); }
+  };
+
   const doTask = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.tarih || !a.baslik) return;
     try {
       const projPath = a.proje ? projectMapRef.current.get(a.proje) : undefined;
       const when = `${ymdLabel(a.tarih)}${a.saat ? ` ${a.saat}-${a.bitis}` : ''}`;
       if (a.proje && projPath && filesRef.current[projPath] !== undefined) {
-        await saveNote(projPath, appendTask(filesRef.current[projPath], a.baslik, a.tarih, a.saat, a.bitis, projectSlug(a.proje)));
+        await saveT(c.id, projPath, appendTask(filesRef.current[projPath], a.baslik, a.tarih, a.saat, a.bitis, projectSlug(a.proje), a.tekrar));
         patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${when} · ${a.proje} projesine. Takvim, Görev Havuzu ve Proje Yönetimi'nde görünür.` });
       } else {
-        await saveNote(TASK_PATH, appendTask(filesRef.current[TASK_PATH], a.baslik, a.tarih, a.saat, a.bitis));
+        await saveT(c.id, TASK_PATH, appendTask(filesRef.current[TASK_PATH], a.baslik, a.tarih, a.saat, a.bitis, undefined, a.tekrar));
         patchCard(msgId, c.id, { state: 'yapildi', not: `Eklendi: ${when} (Gelen Kutusu / inbox.md). Takvim ve Görev Havuzu'nda görünür.${a.proje ? ' Proje notu bulunamadığı için projeye bağlanmadı.' : ''}` });
       }
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
@@ -223,7 +263,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const cp = clientMapRef.current.get(a.musteri);
       const f = newProjectFile(a.musteri, cp, clientsFolder, a.ad);
       if (filesRef.current[f.path] !== undefined || projectMapRef.current.has(a.ad)) { patchCard(msgId, c.id, { state: 'hata', not: `"${a.ad}" adında bir proje zaten var; üzerine yazılmadı. Farklı bir ad deneyin.` }); return; }
-      await saveNote(f.path, f.content);
+      await saveT(c.id, f.path, f.content);
       patchCard(msgId, c.id, { state: 'yapildi', not: `"${a.ad}" projesi ${a.musteri} müşterisinin altına açıldı. Proje Yönetimi'nde görünür.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Proje açılamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -234,8 +274,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       if (filesRef.current[cf.path] !== undefined) { patchCard(msgId, c.id, { state: 'hata', not: 'Bu müşteri dosyası zaten var; üzerine yazılmadı.' }); return; }
       const name = cf.path.split('/').pop()!.replace(/\.md$/i, '');
       const pf = newProjectFile(name, cf.path, clientsFolder, a.ad);
-      await saveNote(cf.path, cf.content);
-      await saveNote(pf.path, pf.content);
+      await saveT(c.id, cf.path, cf.content);
+      await saveT(c.id, pf.path, pf.content);
       patchCard(msgId, c.id, { state: 'yapildi', not: `"${name}" müşterisi ve altında "${a.ad}" projesi açıldı.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Açılamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -249,7 +289,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const path = toProject ? projPath! : TASK_PATH;
       let content = filesRef.current[path];
       for (const b of a.basliklar) content = appendTask(content, b, a.tarih, undefined, undefined, toProject ? projectSlug(a.proje!) : undefined);
-      await saveNote(path, content);
+      await saveT(c.id, path, content);
       patchCard(msgId, c.id, { state: 'yapildi', not: `${a.basliklar.length} görev eklendi (${toProject ? `${a.proje} projesi` : 'Gelen Kutusu / inbox.md'}).` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -258,6 +298,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const doMove = async (msgId: string, c: CardT) => {
     const a = c.a; const t = c.cands?.[c.pick ?? 0]; if (!t || !a.hedef) return;
     try {
+      statusUndoRef.current.set(c.id, { id: `task::${t.path}::${t.lineIdx}`, old: t.durum });
       await changeTaskStatus(`task::${t.path}::${t.lineIdx}`, a.hedef);
       let ok = false;
       for (let i = 0; i < 6 && !ok; i++) {
@@ -267,7 +308,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       }
       const hedefAd = columnsFor(t.proje).find(x => x.key === a.hedef)?.title || a.hedef;
       if (ok) patchCard(msgId, c.id, { state: 'yapildi', not: `"${t.title}" → ${hedefAd} olarak taşındı.` });
-      else patchCard(msgId, c.id, { state: 'hata', not: 'Görevin durumu değişmedi (görev bulunamadı ya da liste henüz yenilenmedi). Proje Yönetimi\'ni açıp kontrol edin, gerekirse tekrar deneyin.' });
+      else { statusUndoRef.current.delete(c.id); patchCard(msgId, c.id, { state: 'hata', not: 'Görevin durumu değişmedi (görev bulunamadı ya da liste henüz yenilenmedi). Proje Yönetimi\'ni açıp kontrol edin, gerekirse tekrar deneyin.' }); }
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
@@ -285,7 +326,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     try {
       let content = filesRef.current[LIST_PATH];
       for (const b of a.basliklar) content = listAdd(content, a.kategori || guessCat(b) || '', b);
-      await saveNote(LIST_PATH, content);
+      await saveT(c.id, LIST_PATH, content);
       patchCard(msgId, c.id, { state: 'yapildi', not: `${a.basliklar.length} ürün alışveriş listesine eklendi.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -302,14 +343,14 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const ay = monthOf(new Date());
       const b = parseBudgetNote(filesRef.current[monthPath(ay)], ay) || emptyBudget(ay);
       const it: BudgetItem = { id: 'yeni', kind: a.butceTur as BudgetItem['kind'], name: a.baslik, amount: a.tutar, ...(a.gun ? { day: a.gun } : {}) };
-      await saveNote(monthPath(ay), serializeBudget({ ...b, items: reindex([...b.items, it]) }));
+      await saveT(c.id, monthPath(ay), serializeBudget({ ...b, items: reindex([...b.items, it]) }));
       patchCard(msgId, c.id, { state: 'yapildi', not: `Kalem ${monthLabel(ay)} bütçesine eklendi.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
   const doDiary = async (msgId: string, c: CardT) => {
     const a = c.a; if (!a.metin || !a.tarih) return;
     try {
-      await saveNote(diaryPath(a.tarih), appendDiary(filesRef.current[diaryPath(a.tarih)], a.tarih, a.metin));
+      await saveT(c.id, diaryPath(a.tarih), appendDiary(filesRef.current[diaryPath(a.tarih)], a.tarih, a.metin));
       patchCard(msgId, c.id, { state: 'yapildi', not: `Günlüğe eklendi (${ymdLabel(a.tarih)}).` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -321,7 +362,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const cur = lines[t.lineIdx];
       if (cur === undefined || foldTr(cur.replace(/\[[^\]]*\]/g, ' ')) .indexOf(foldTr(t.title)) < 0) { patchCard(msgId, c.id, { state: 'hata', not: 'Görev satırı bu arada değişmiş. Asistana isteği yeniden yazın.' }); return; }
       lines[t.lineIdx] = setDueOnLine(cur, a.tarih);
-      await saveNote(t.path, lines.join('\n'));
+      await saveT(c.id, t.path, lines.join('\n'));
       patchCard(msgId, c.id, { state: 'yapildi', not: `"${t.title}" → ${ymdLabel(a.tarih)} gününe alındı.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Taşınamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -340,7 +381,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const before = filesRef.current[path];
       const next = appendCards(before, pairs, todayYmd());
       if (next === (before ?? '')) { patchCard(msgId, c.id, { state: 'yapildi', not: 'Bu kartlar zaten ekliymiş; yeni kart eklenmedi.' }); return; }
-      await saveNote(path, next);
+      await saveT(c.id, path, next);
       patchCard(msgId, c.id, { state: 'yapildi', not: `${pairs.length} kart eklendi. Ezber Kartları ekranında görünür.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -367,9 +408,24 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
           if (cur === undefined || !foldTr(cur).includes(foldTr(m.title).slice(0, 40)) || /\[project:/i.test(cur) || !/\[ \]/.test(cur)) { skip++; continue; }
           lines[m.lineIdx] = tagLineProject(cur, m.proje); ok++;
         }
-        await saveNote(path, lines.join('\n'));
+        await saveT(c.id, path, lines.join('\n'));
       }
       patchCard(msgId, c.id, { state: 'yapildi', not: `${ok} görev projeye bağlandı.${skip ? ` ${skip} görev bu arada değiştiği için atlandı.` : ''}` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
+
+  const doWords = async (msgId: string, c: CardT) => {
+    const pairs = c.a.kartlar ?? []; if (!pairs.length) return;
+    try {
+      const raw = filesRef.current[LANGUAGE_LAB_NOTE_PATH];
+      const st = parseLabState(raw);
+      if (!raw || !st.language) { patchCard(msgId, c.id, { state: 'hata', not: 'Önce Dil Atölyesi\'ni açıp bir hedef dil seçin; sonra tekrar deneyin.' }); return; }
+      const have = new Set(st.words.map(w => foldTr(w.word)));
+      const add = pairs.filter(p => !have.has(foldTr(p.s)));
+      if (!add.length) { patchCard(msgId, c.id, { state: 'yapildi', not: 'Bu kelimeler zaten kayıtlıymış.' }); return; }
+      st.words = [...st.words, ...add.map(p => ({ word: p.s, meaning: p.c, context: '', seen: 1, added: todayKey() }))];
+      await saveT(c.id, LANGUAGE_LAB_NOTE_PATH, serializeLabState(st));
+      patchCard(msgId, c.id, { state: 'yapildi', not: `${add.length} kelime ${st.language} listesine eklendi.` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
 
@@ -438,7 +494,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), verimOzet: productivitySummary(filesRef.current, new Date()) }, history, message });
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message });
       // Notlarımla Sohbet: not sorusu salt okunur olduğundan onay kartı olmadan, notlar aranıp cevap doğrudan yazılır.
       const ask = res.eylemler.find(a => a.tur === 'not_sor');
       let answerText = '';
@@ -509,7 +565,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     );
     if (a.tur === 'gorev') return (
       <div key={c.id} style={card}>{head(<Check size={14} />, `Görev: ${a.baslik}`)}
-        <div style={lab}>{ymdLabel(a.tarih || '')}{a.saat ? ` · ${a.saat}-${a.bitis}` : ' · saat yok'}{a.proje ? ` · Proje: ${a.proje}` : ''}</div>
+        <div style={lab}>{ymdLabel(a.tarih || '')}{a.saat ? ` · ${a.saat}-${a.bitis}` : ' · saat yok'}{a.proje ? ` · Proje: ${a.proje}` : ''}{a.tekrar ? ` · Tekrar: ${a.tekrar === 'daily' ? 'her gün' : a.tekrar === 'weekly' ? 'her hafta' : 'her ay'}` : ''}</div>
         {a.projeIstek && <div style={{ fontSize: '11.5px', color: '#f59e0b', marginTop: '3px' }}>"{a.projeIstek}" adıyla tek bir proje eşleşmedi (yok ya da birden fazla benzer var); görev Gelen Kutusu'na (inbox.md) eklenecek.</div>}
         {!done && c.state !== 'hata' && <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}><button type="button" style={btnP} onClick={() => void doTask(m.id, c)}><Check size={13} /> Ekle</button><button type="button" style={btn} onClick={() => patchCard(m.id, c.id, { state: 'iptal', not: 'Vazgeçildi.' })}>Vazgeç</button></div>}
         {stateNote(c)}
@@ -611,6 +667,12 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         </div>
       );
     }
+    if (a.tur === 'kelime_ekle') return (
+      <div key={c.id} style={card}>{head(<FileText size={14} />, 'Dil Atölyesi\'ne kelime ekle')}
+        <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>{a.kartlar?.map((p, i) => <li key={i}>{p.s} <span style={lab}>→ {p.c}</span></li>)}</ul>
+        {okBtns(() => void doWords(m.id, c), 'Ekle')}{stateNote(c)}
+      </div>
+    );
     if (a.tur === 'inbox_ayir') return (
       <div key={c.id} style={card}>{head(<Check size={14} />, 'Gelen Kutusu\'nu projelere ayır')}
         {c.state === 'hazirlaniyor' && <div style={{ ...lab, marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={12} className="animate-spin" /> Görevler inceleniyor…</div>}
@@ -764,7 +826,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                 {msgs.map(m => (
                   <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'stretch', maxWidth: m.role === 'user' ? '90%' : '100%' }}>
                     <div style={{ background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)', color: m.role === 'user' ? '#fff' : 'var(--text-primary)', borderRadius: '10px', padding: '8px 11px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.55 }}>{m.text}</div>
-                    {m.cards && <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>{m.cards.map(c => renderCard(m, c))}</div>}
+                    {m.cards && <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>{m.cards.map(c => (<React.Fragment key={c.id}>{renderCard(m, c)}{canUndo(c) && <div style={{ marginTop: '-2px' }}><button type="button" style={btn} onClick={() => void doUndo(m.id, c)}><Undo2 size={13} /> Geri al</button></div>}</React.Fragment>))}</div>}
                   </div>
                 ))}
                 {run && run.durum === 'calisiyor' && (
@@ -793,6 +855,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                   <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={2} aria-label="Asistana mesaj" placeholder={noteOpen ? 'Örn. başlığı mavi yap, altını 3 parçaya böl…' : 'Ne yapmak istersiniz?'}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
                     style={{ flex: 1, resize: 'none', background: 'var(--bg-tertiary)', border, color: 'var(--text-primary)', borderRadius: '8px', padding: '7px 9px', fontSize: '13px', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                  {SpeechCls && <button type="button" style={{ ...btn, padding: '8px', background: listening ? '#ef4444' : undefined, color: listening ? '#fff' : undefined }} onClick={toggleMic} aria-label={listening ? 'Dinlemeyi durdur' : 'Sesle yaz'}><Mic size={14} /></button>}
                   <button type="button" style={{ ...btnP, padding: '8px', opacity: input.trim() && !busy ? 1 : 0.6 }} disabled={!input.trim() || busy} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
                 </div>
                 <div style={{ ...lab, marginTop: '5px' }}>{SCREENS.length} ekran biliyorum · sayfa içeriğiniz yapay zekâya gönderilmez, yalnızca ekrandaki düğme adları gider.</div>
