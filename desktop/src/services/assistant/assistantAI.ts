@@ -293,7 +293,7 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
     if (out.length >= 6) break;
   }
   // Otomasyon geçersiz olduğu için atıldıysa modelin "kurdum" cevabı yanlış olur; kullanıcıya gerçeği ve nasıl yazacağı söylenir.
-  if (kuralDustu && !out.some(x => x.tur === 'otomasyon')) return { cevap: 'Kuralı kuramadım, zamanlamayı anlayamadım. Şöyle yazın: "her ayın 10\'unda 09:00\'da Aidat ödemesi diye bildirim göster". (Aylık kurallarda gün 1-28 arası olmalı.)', eylemler: out };
+  if (kuralDustu && !out.some(x => x.tur === 'otomasyon')) return { cevap: 'Kuralı kuramadım, zamanlamayı anlayamadım. Şöyle yazın: "her ayın 10\'unda 09:00\'da Aidat ödemesi diye bildirim göster". (Aylık kurallarda gün 1-31 arası olmalı.)', eylemler: out };
   return { cevap: str(raw?.cevap, 900) || 'Anladım.', eylemler: out };
 };
 

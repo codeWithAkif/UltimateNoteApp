@@ -219,7 +219,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     let sched: Sched;
     if (rForm.tur === 'gunluk') sched = { tur: 'gunluk', saat: rForm.saat };
     else if (rForm.tur === 'haftalik') sched = { tur: 'haftalik', gun: rForm.gun, saat: rForm.saat };
-    else if (rForm.tur === 'aylik') sched = { tur: 'aylik', gun: Math.min(28, Math.max(1, rForm.ayGun)), saat: rForm.saat };
+    else if (rForm.tur === 'aylik') sched = { tur: 'aylik', gun: Math.min(31, Math.max(1, rForm.ayGun)), saat: rForm.saat };
     else { if (!/^\d{4}-\d{2}-\d{2}$/.test(rForm.tarih)) { setFormErr('Tarihi seçin.'); return; } sched = { tur: 'bir', tarih: rForm.tarih, saat: rForm.saat }; }
     const eylem: Eylem = rForm.eylem === 'ac' ? { tur: 'ac', ekran: rForm.ekran } : { tur: 'bildir', baslik: (rForm.baslik.trim() || ad).slice(0, 80) };
     const next = addRule(parseRules(filesRef.current[RULES_PATH]), { ad: ad.slice(0, 60), sched, eylem, acik: true });
@@ -973,7 +973,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                     <option value="gunluk">Her gün</option><option value="haftalik">Haftalık</option><option value="aylik">Ayın günü</option><option value="bir">Tek sefer</option>
                   </select>
                   {rForm.tur === 'haftalik' && <select value={rForm.gun} onChange={(e) => setRForm(f => ({ ...f, gun: Number(e.target.value) }))} aria-label="Gün" style={inp}>{GUNLER.map((_, i) => <option key={i} value={i + 1}>{GUN_ADLARI[i]}</option>)}</select>}
-                  {rForm.tur === 'aylik' && <input type="number" min={1} max={28} value={rForm.ayGun} onChange={(e) => setRForm(f => ({ ...f, ayGun: Number(e.target.value) || 1 }))} aria-label="Ayın günü" style={{ ...inp, width: '70px' }} />}
+                  {rForm.tur === 'aylik' && <input type="number" min={1} max={31} value={rForm.ayGun} onChange={(e) => setRForm(f => ({ ...f, ayGun: Number(e.target.value) || 1 }))} aria-label="Ayın günü" style={{ ...inp, width: '70px' }} />}
                   {rForm.tur === 'bir' && <input type="date" value={rForm.tarih} onChange={(e) => setRForm(f => ({ ...f, tarih: e.target.value }))} aria-label="Tarih" style={inp} />}
                   <input type="time" value={rForm.saat} onChange={(e) => setRForm(f => ({ ...f, saat: e.target.value }))} aria-label="Saat" style={{ ...inp, width: '110px' }} />
                 </div>

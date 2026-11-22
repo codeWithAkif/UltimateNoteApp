@@ -6,7 +6,7 @@ export const RULES_PATH = 'Sistem/Otomasyonlar.md';
 export type Sched =
   | { tur: 'gunluk'; saat: string }
   | { tur: 'haftalik'; gun: number; saat: string }   // gun: 1=Pzt ... 7=Paz
-  | { tur: 'aylik'; gun: number; saat: string }      // gun: 1-28
+  | { tur: 'aylik'; gun: number; saat: string }      // gun: 1-31 (ayda o gün yoksa ayın son günü)
   | { tur: 'bir'; tarih: string; saat: string };     // YYYY-MM-DD
 export type Eylem = { tur: 'bildir'; baslik: string; mesaj?: string } | { tur: 'ac'; ekran: string; mesaj?: string };
 export interface Rule { id: string; ad: string; sched: Sched; eylem: Eylem; acik: boolean }
@@ -30,7 +30,7 @@ export const parseSched = (txt: string): Sched | null => {
   const t = norm.trim().split(/\s+/);
   if ((t[0] === 'her-gun' || t[0] === 'gunluk') && validTime(t[1] || '')) return { tur: 'gunluk', saat: t[1] };
   if (t[0] === 'haftalik') { const g = gunIndex(t[1] || ''); if (g && validTime(t[2] || '')) return { tur: 'haftalik', gun: g, saat: t[2] }; }
-  if (t[0] === 'aylik') { const g = Number(t[1]); if (Number.isInteger(g) && g >= 1 && g <= 28 && validTime(t[2] || '')) return { tur: 'aylik', gun: g, saat: t[2] }; }
+  if (t[0] === 'aylik') { const g = Number(t[1]); if (Number.isInteger(g) && g >= 1 && g <= 31 && validTime(t[2] || '')) return { tur: 'aylik', gun: g, saat: t[2] }; }
   if (t[0] === 'bir' && /^\d{4}-\d{2}-\d{2}$/.test(t[1] || '') && validTime(t[2] || '')) return { tur: 'bir', tarih: t[1], saat: t[2] };
   return null;
 };
@@ -79,11 +79,12 @@ export const addRule = (rules: Rule[], r: Omit<Rule, 'id'>): Rule[] => {
 const at = (y: number, mo: number, d: number, saat: string) => { const [h, mi] = saat.split(':').map(Number); return new Date(y, mo, d, h, mi, 0, 0); };
 
 // "after" anından SONRAKİ ilk zaman (yoksa null: tek seferlik geçmişte kaldıysa)
+// Aylık kuralda gün (29-31) o ayda yoksa kural ayın SON gününde çalışır; aksi halde kısa aylarda hiç tetiklenmezdi.
 export const nextOccurrence = (s: Sched, after: Date): Date | null => {
   if (s.tur === 'bir') { const [y, m, d] = s.tarih.split('-').map(Number); const t = at(y, m - 1, d, s.saat); return t.getTime() > after.getTime() ? t : null; }
   for (let i = 0; i < 400; i++) {
     const d = new Date(after.getFullYear(), after.getMonth(), after.getDate() + i);
-    const ok = s.tur === 'gunluk' || (s.tur === 'haftalik' && ((d.getDay() + 6) % 7) + 1 === s.gun) || (s.tur === 'aylik' && d.getDate() === s.gun);
+    const ok = s.tur === 'gunluk' || (s.tur === 'haftalik' && ((d.getDay() + 6) % 7) + 1 === s.gun) || (s.tur === 'aylik' && d.getDate() === Math.min(s.gun, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
     if (!ok) continue;
     const t = at(d.getFullYear(), d.getMonth(), d.getDate(), s.saat);
     if (t.getTime() > after.getTime()) return t;
