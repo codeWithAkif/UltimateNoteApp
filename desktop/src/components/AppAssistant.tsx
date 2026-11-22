@@ -640,7 +640,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
           const src = kaynaklar.slice(0, 6).map(k => `- ${k.title}: ${k.uri}`).join('\n');
           answerText = `${txt.trim()}${src ? `\n\nKaynaklar:\n${src}` : ''}\n\nNot: Fiyatlar ve stok anlık değişir; satın almadan önce mağaza sayfasından doğrulayın.`;
           if (web.baslik) webSave = { tur: 'not_olustur', baslik: web.baslik, icerik: answerText };
-        } catch (e: any) { answerText = `İnternette ararken hata oluştu: ${String(e?.message || e)}. Tekrar deneyin.`; }
+        } catch (e: any) {
+          // Ham API hatası (JSON) kullanıcıya eylem göstermez; kota hatasında ne yapacağı açıkça söylenir.
+          const msg = String(e?.message || e);
+          answerText = e?.status === 429 || /429|RESOURCE_EXHAUSTED|quota/i.test(msg)
+            ? 'Gemini\'nin internet arama kotası doldu. Birkaç saat sonra tekrar deneyin ya da Ayarlar > AI Mentor bölümünden modeli değiştirin. Diğer Asistan işlemleri çalışmaya devam eder.'
+            : `İnternette ararken hata oluştu: ${msg.slice(0, 200)}. Tekrar deneyin.`;
+        }
       }
       const cards: CardT[] = [...res.eylemler.filter(a => a.tur !== 'not_sor' && a.tur !== 'web_ara'), ...(webSave ? [webSave] : [])].map(a => {
         const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' || a.tur === 'kart_uret' || a.tur === 'inbox_ayir' ? 'hazirlaniyor' : 'bekliyor' };
