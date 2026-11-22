@@ -139,7 +139,8 @@ export const callAIJson = callGemini;
 // SADECE AI Öğretmen'in gerçek YouTube video arama akışı için kullanılır (bkz.
 // findYouTubeVideoForTopic) — normal ders anlatımı/quiz/kart üretimi hâlâ callGemini'yi
 // (yapılandırılmış JSON, arama YOK) kullanır.
-async function callGeminiGroundedOnly(prompt: string): Promise<string> {
+// kaynaklar: verilirse aramanın dayandığı sayfalar (başlık+adres) buraya eklenir; Asistan'ın web cevabında kaynak göstermek için.
+async function callGeminiGroundedOnly(prompt: string, kaynaklar?: { title: string; uri: string }[]): Promise<string> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
@@ -166,17 +167,21 @@ async function callGeminiGroundedOnly(prompt: string): Promise<string> {
   const data = await res.json();
   const parts = data?.candidates?.[0]?.content?.parts;
   const text = Array.isArray(parts) ? parts.map((p: any) => p.text).filter(Boolean).join('\n') : '';
+  if (kaynaklar) {
+    const chunks = data?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    if (Array.isArray(chunks)) for (const c of chunks) if (c?.web?.uri && !kaynaklar.some(k => k.uri === c.web.uri)) kaynaklar.push({ title: String(c.web.title || c.web.uri), uri: String(c.web.uri) });
+  }
   return text;
 }
 
 // Aramalı metin: önce Gemini (google_search); kota/sunucu/ağ hatasında ya da Gemini anahtarı yoksa Claude Code'un (yerel, abonelik) web arama aracı.
-export async function callGeminiGroundedText(prompt: string): Promise<string> {
+export async function callGeminiGroundedText(prompt: string, kaynaklar?: { title: string; uri: string }[]): Promise<string> {
   if (!getGeminiApiKey()) {
     if (isClaudeCliEnabled()) return claudeCliGroundedText(prompt);
     throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini anahtarı ekleyin ya da (masaüstünde) Claude Code (yerel) seçeneğini açın.');
   }
   try {
-    return await callGeminiGroundedOnly(prompt);
+    return await callGeminiGroundedOnly(prompt, kaynaklar);
   } catch (e: any) {
     if (!(isClaudeCliEnabled() && isFallbackWorthy(e))) throw e;
     console.warn("[AI] Gemini araması kullanılamadı, Claude Code'a geçiliyor:", e?.message || e);

@@ -17,7 +17,8 @@ import { LIST_PATH, listAdd, listToggle, guessCat, type LItem } from '../service
 import { parseBudgetNote, serializeBudget, emptyBudget, monthPath, monthOf, totals, fmtTL, monthLabel, reindex, type BudgetItem } from '../services/budget';
 import type { NewFinanceEntryInput } from '../services/financeSync';
 import { parseLabState, serializeLabState, todayKey, LANGUAGE_LAB_NOTE_PATH } from '../services/languageLab';
-import { findRelevantNotes, askNotesChat } from '../services/geminiMentor';
+import { findRelevantNotes, askNotesChat, callGeminiGroundedText } from '../services/geminiMentor';
+import { sanitizeName } from '../services/assistant/projectOps';
 import { ambientAudioService, AMBIENT_SOUNDS, AMBIENT_PRESETS } from '../services/ambientAudio';
 import { findShopCandidates, appendCards, proposeCards, inboxOpenTasks, proposeInbox, tagLineProject, productivitySummary, daySummary, type CardPair, type InboxMove } from '../services/assistant/assistantTools';
 
@@ -41,7 +42,7 @@ interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'du
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
 interface Fired { id: string; rule: Rule; at: Date }
 
-export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote, clientsFolder, changeTaskStatus, financeCategoryNames, addFinanceEntry }: {
+export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, fileContents, saveNote, clientsFolder, changeTaskStatus, financeCategoryNames, addFinanceEntry, openNote }: {
   ready: boolean;
   tab: string;
   onNavigate: (id: string) => void;
@@ -52,6 +53,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   changeTaskStatus: (id: string, status: string) => Promise<void>;
   financeCategoryNames: string[];
   addFinanceEntry: (input: NewFinanceEntryInput) => Promise<unknown>;
+  openNote: (path: string) => void;
 }) {
   const [open, setOpen] = useState<boolean>(() => { try { return localStorage.getItem('assistant_open_v1') === '1'; } catch { return false; } });
   const [view, setView] = useState<'sohbet' | 'kurallar'>('sohbet');
@@ -140,14 +142,16 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       case 'kelime_ekle': return 'language';
       case 'kart_ekle': return 'srs';
       case 'ortam': return 'ambient';
+      case 'not_olustur': return null;
       default: return null;
     }
   };
+  const closeOnMobile = () => { if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) setTimeout(() => setOpenP(false), 700); };
   const afterDone = (cardId: string) => {
     const a = cardMeta.current.get(cardId); const target = a && screenFor(a);
     if (!target) return;
     onNavigate(target);
-    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) setTimeout(() => setOpenP(false), 700);
+    closeOnMobile();
   };
   const patchCard = (msgId: string, cardId: string, p: Partial<CardT>) => { if (p.state === 'yapildi') afterDone(cardId); patchCard0(msgId, cardId, p); };
   const patchCard0 = (msgId: string, cardId: string, p: Partial<CardT>) => setMsgs(ms => ms.map(m => (m.id === msgId ? { ...m, cards: (m.cards || []).map(c => (c.id === cardId ? { ...c, ...p } : c)) } : m)));
@@ -376,6 +380,25 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Kaydedilemedi: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
   // Ortam sesi: ses çalmak tarayıcıda kullanıcı dokunuşu ister; bu yüzden kart düğmesine basınca uygulanır.
+  // Yeni not: var olan notun üzerine ASLA yazılmaz; ad doluysa " (2)" gibi sayı eklenir. Açılışı App yapar (sekme + not ekranı).
+  const notePathFor = (a: AAction): string => {
+    const dir = (a.klasor || '').split('/').map(sanitizeName).filter(Boolean).join('/');
+    const base = `${dir ? dir + '/' : ''}${sanitizeName(a.baslik || 'Yeni not') || 'Yeni not'}`;
+    let p = `${base}.md`, n = 2;
+    while (filesRef.current[p] !== undefined && n < 100) p = `${base} (${n++}).md`;
+    return p;
+  };
+  const doNote = async (msgId: string, c: CardT) => {
+    const a = c.a;
+    try {
+      const path = notePathFor(a);
+      await writeNote(path, a.icerik || '');
+      await wait(300);
+      openNote(path);
+      closeOnMobile();
+      patchCard(msgId, c.id, { state: 'yapildi', not: `Not oluşturuldu: ${path.replace(/\.md$/i, '')}` });
+    } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Not oluşturulamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
+  };
   const doAmbient = (msgId: string, c: CardT) => {
     const a = c.a;
     try {
@@ -551,6 +574,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     switch (a.tur) {
       case 'hatirlat': case 'otomasyon': case 'alisveris': case 'butce': case 'gunluk': case 'kelime_ekle': case 'ortam': case 'git': return true;
       case 'kart_ekle': return !!a.kartlar?.length;
+      case 'not_olustur': return filesRef.current[`${(a.klasor || '').split('/').map(sanitizeName).filter(Boolean).join('/')}${a.klasor ? '/' : ''}${sanitizeName(a.baslik || '')}.md`] === undefined;
       case 'gorev': case 'gorevler': return !a.projeIstek;
       case 'proje_ac': return !!a.musteri;
       case 'gorev_tasi': case 'gorev_gun': return (c.cands?.length ?? 0) === 1;
@@ -577,6 +601,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       case 'kelime_ekle': return doWords(msgId, c);
       case 'kart_ekle': return doCards(msgId, c, (noteOpen ? activeNotePath : null) || 'Ezber Kartları.md');
       case 'ortam': return doAmbient(msgId, c);
+      case 'not_olustur': return doNote(msgId, c);
       case 'git': onNavigate(a.ekran!); patchCard(msgId, c.id, { state: 'yapildi' }); return;
       default: return;
     }
@@ -604,7 +629,20 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
           answerText = `${r.answer}${used.length ? `\n\nKaynak notlar: ${used.join(', ')}` : ''}`;
         } catch (e: any) { answerText = `Notlara bakarken hata oluştu: ${String(e?.message || e)}. Tekrar deneyin.`; }
       }
-      const cards: CardT[] = res.eylemler.filter(a => a.tur !== 'not_sor').map(a => {
+      // Web araması: cevap uydurulmasın diye gerçek arama (grounding) kullanılır; kaynaklar ve uyarı cevaba eklenir.
+      const web = res.eylemler.find(a => a.tur === 'web_ara');
+      let webSave: AAction | null = null;
+      if (web?.soru && !answerText) {
+        try {
+          const kaynaklar: { title: string; uri: string }[] = [];
+          const txt = await callGeminiGroundedText(`Bugünün tarihi: ${new Date().toLocaleDateString('tr-TR')}. Aşağıdaki isteği internette arayarak Türkçe, kısa ve net yanıtla. KURALLAR: Fiyat, link ve özellikleri YALNIZCA arama sonuçlarında gördüğün sayfalardan yaz; görmediğin fiyatı ya da linki UYDURMA, "bulunamadı" yaz. Her fiyatın yanına mağaza/site adını yaz. Link vereceksen tam ve gerçek adres ver. Karşılaştırma isteniyorsa markdown tablo kullan.\n\nİSTEK: ${web.soru}`, kaynaklar);
+          if (!txt.trim()) throw new Error('Arama sonuç döndürmedi');
+          const src = kaynaklar.slice(0, 6).map(k => `- ${k.title}: ${k.uri}`).join('\n');
+          answerText = `${txt.trim()}${src ? `\n\nKaynaklar:\n${src}` : ''}\n\nNot: Fiyatlar ve stok anlık değişir; satın almadan önce mağaza sayfasından doğrulayın.`;
+          if (web.baslik) webSave = { tur: 'not_olustur', baslik: web.baslik, icerik: answerText };
+        } catch (e: any) { answerText = `İnternette ararken hata oluştu: ${String(e?.message || e)}. Tekrar deneyin.`; }
+      }
+      const cards: CardT[] = [...res.eylemler.filter(a => a.tur !== 'not_sor' && a.tur !== 'web_ara'), ...(webSave ? [webSave] : [])].map(a => {
         const base: CardT = { id: newId(), a, state: a.tur === 'notu_tasarla' || a.tur === 'kart_uret' || a.tur === 'inbox_ayir' ? 'hazirlaniyor' : 'bekliyor' };
         if (a.tur === 'alisveris_al') {
           base.buy = (a.basliklar || []).map(istek => { const cands = findShopCandidates(filesRef.current[LIST_PATH], istek, a.kategori); return { istek, cands, pick: cands.length ? 0 : -1 }; });
@@ -743,6 +781,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         </div>
       );
     }
+    if (a.tur === 'not_olustur') return (
+      <div key={c.id} style={card}>{head(<FileText size={14} />, `Yeni not: ${a.baslik}`)}
+        {a.klasor && <div style={lab}>Klasör: {a.klasor}</div>}
+        {a.icerik ? <div style={{ ...lab, marginTop: '4px', whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}>{a.icerik.slice(0, 400)}{a.icerik.length > 400 ? '…' : ''}</div> : <div style={lab}>Boş not açılır.</div>}
+        {okBtns(() => doNote(m.id, c), 'Oluştur ve aç')}{stateNote(c)}
+      </div>
+    );
     if (a.tur === 'ortam') {
       const nm = (id: string) => AMBIENT_SOUNDS.find(s => s.id === id)?.name || id;
       const isl = a.ortamIslem;

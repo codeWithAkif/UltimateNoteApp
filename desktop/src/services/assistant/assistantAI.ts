@@ -44,7 +44,7 @@ export const SCREENS: Screen[] = [
 ];
 export const screenById = (id: string): Screen | undefined => SCREENS.find(s => s.id === id);
 
-export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle' | 'alisveris_al' | 'ortam';
+export type ActionKind = 'git' | 'notu_tasarla' | 'hatirlat' | 'otomasyon' | 'ui' | 'gorev' | 'proje_ac' | 'gorevler' | 'gorev_tasi' | 'gorev_gun' | 'alisveris' | 'finans' | 'butce' | 'gunluk' | 'not_sor' | 'kart_uret' | 'kart_ekle' | 'inbox_ayir' | 'kelime_ekle' | 'alisveris_al' | 'ortam' | 'not_olustur' | 'web_ara';
 export interface AAction {
   tur: ActionKind;
   ekran?: string;                 // git / otomasyon(ac)
@@ -63,6 +63,7 @@ export interface AAction {
   hedef?: string; mevcut?: string; // gorev_tasi: hedef durum anahtarı / (varsa) şu anki durum
   projeIstek?: string;             // gorev: kullanıcının söylediği ama hiçbir projeyle eşleşmeyen ad (uyarı için)
   ad?: string; sched?: Sched; eylem?: Eylem; // otomasyon
+  icerik?: string; klasor?: string; // not_olustur: not içeriği (markdown) / klasör (boş = kök)
 }
 export interface RouterResult { cevap: string; eylemler: AAction[] }
 export interface AssistantCtx { tab: string; noteOpen: boolean; notePath?: string; now: Date; projeler?: string[]; musteriler?: string[]; durumlar?: StatusCol[]; finKategoriler?: string[]; butceOzet?: string; verimOzet?: string; gunOzet?: string; ortamDurum?: string }
@@ -78,7 +79,7 @@ export const ROUTER_SCHEMA = {
         type: 'object',
         properties: {
           tur: { type: 'string' }, ekran: { type: 'string' }, talimat: { type: 'string' }, baslik: { type: 'string' }, mesaj: { type: 'string' },
-          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tekrar: { type: 'string' }, sesler: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, v: { type: 'number' } } } }, ortamIslem: { type: 'string' }, hazir: { type: 'string' }, soru: { type: 'string' }, kartlar: { type: 'array', items: { type: 'object', properties: { s: { type: 'string' }, c: { type: 'string' } } } }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
+          tarih: { type: 'string' }, saat: { type: 'string' }, bitis: { type: 'string' }, proje: { type: 'string' }, musteri: { type: 'string' }, tekrar: { type: 'string' }, sesler: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, v: { type: 'number' } } } }, ortamIslem: { type: 'string' }, hazir: { type: 'string' }, soru: { type: 'string' }, kartlar: { type: 'array', items: { type: 'object', properties: { s: { type: 'string' }, c: { type: 'string' } } } }, tutar: { type: 'number' }, finTur: { type: 'string' }, kategori: { type: 'string' }, butceTur: { type: 'string' }, gun: { type: 'number' }, metin: { type: 'string' }, hedef: { type: 'string' }, mevcut: { type: 'string' }, basliklar: { type: 'array', items: { type: 'string' } }, ad: { type: 'string' }, icerik: { type: 'string' }, klasor: { type: 'string' }, zamanlama: { type: 'string' }, eylemTuru: { type: 'string' }
         },
         required: ['tur']
       }
@@ -135,6 +136,8 @@ Verimlilik/üretkenlik soruları ("geçen haftaya göre nasıldım?") için eyle
 20. tur="alisveris_al", basliklar (dizi: alınan ürünler, kısa), kategori (söylendiyse nereden/hangi bölüm: "e-bebek", "market"; yoksa boş): Alışveriş listesinde ZATEN olan maddeyi alındı olarak işaretler ("e-bebekten bulaşık deterjanı aldım"). Yeni madde EKLEMEZ.
 21. tur="ortam", ortamIslem ("ayarla" | "degistir" | "hazir" | "durdur" | "sustur" | "sesac"), sesler (dizi: {id: ORTAM SESLERI id'si, v: 0-100 seviye}), hazir (HAZIR KARISIMLAR adı AYNEN): ortam seslerini yönetir. "ayarla": yalnızca verilen sesleri açar/kısar/açar (v=0 kapatır), diğerleri çalmaya devam eder ("gök gürültüsünü kıs", "rüzgâr ekle"). "degistir": verilen karışım dışındakileri kapatır ("sadece yağmur aç", "yağmur ve hafif rüzgâr aç"). "hazir": hazır karışım çalar. "durdur": hepsini kapatır. "sustur"/"sesac": sesi keser/geri açar. "hafif"≈20, "orta"≈50, "yüksek"≈80, belirtilmediyse 50.
 ÖNERİ istenirse ("çalışırken ne dinleyeyim", "uyumak için bir şey öner", "odaklanma karışımı"): HER öneriyi ayrı bir ortam eylemi olarak ver (2-3 tane, birbirinden farklı): ortamIslem="degistir", sesler=kendi tasarladığın karışım (2-4 ses, seviyeler dengeli), ad=kısa ve çağrıştırıcı karışım adı (örn. "Yağmurlu Kütüphane"). HAZIR KARISIMLAR uygunsa onları da "hazir" ile önerebilirsin. Cevapta her birinin neden uygun olduğunu tek cümleyle söyle; saate (şimdiki zaman) ve amaca göre seç.
+22. tur="not_olustur", baslik (not adı), icerik (notun TAM markdown içeriği; kısa ve işe yarar yaz), klasor (yalnız kullanıcı söylediyse): YENİ not oluşturur ve açar ("X adında not aç/oluştur"). Mevcut notu değiştirmek için kullanma. İçerik istenmediyse icerik boş kalabilir.
+23. tur="web_ara", soru (aranacak şey, Türkçe, tam cümle), baslik (YALNIZ kullanıcı sonucu not olarak kaydetmeyi istediyse not adı): güncel/dış dünya bilgisi (fiyat, link, haber, ürün karşılaştırma, "en popüler", "şu an") gerektiğinde İNTERNETTE GERÇEKTEN arar. Bu tür bilgiyi ASLA kendin uydurma, fiyat ya da link yazma; web_ara ver. Kullanıcının notları için 'not_sor' kullan.
 5. tur="ui", talimat: kullanıcı sayfadaki düğmelerle/alanlarla bir işlemi SENİN yapmanı istiyorsa ("Bütçe'ye şu kalemi ekle", "şu ayarı aç"). Not içeriği için 2'yi kullan, 5'i değil. Takvime/görev listesine görev eklemek için 5'i KULLANMA, 6'yı kullan.
 KURALLAR: Silme, gönderme, yayınlama, ödeme gibi işlemleri yapma teklif etme (kullanıcıya nasıl yapacağını anlat). Kişisel/gizli bilgi isteme. Eylem eklediysen "cevap"ta ne yapacağını kısaca söyle; kullanıcı onay kartıyla onaylayacak.
 ${hist ? `\nSOHBET:\n${hist}\n` : ''}
@@ -239,6 +242,14 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
         }
         if (sesler.length) out.push({ tur, ortamIslem: islem, sesler, ad: str(a.ad, 40) || undefined });
       } else out.push({ tur, ortamIslem: islem });
+    } else if (tur === 'not_olustur') {
+      const baslik = str(a.baslik, 80).replace(/[\\/:*?"<>|]+/g, ' ').trim();
+      const klasor = str(a.klasor, 60).replace(/[:*?"<>|\\]+/g, ' ').replace(/^\/+|\/+$/g, '').trim();
+      const icerik = String(a.icerik ?? '').replace(/\r\n/g, '\n').slice(0, 6000);
+      if (baslik) out.push({ tur, baslik, klasor: klasor || undefined, icerik });
+    } else if (tur === 'web_ara') {
+      const soru = str(a.soru, 400);
+      if (soru) out.push({ tur, soru, baslik: str(a.baslik, 80) || undefined });
     } else if (tur === 'alisveris_al') {
       const basliklar = (Array.isArray(a.basliklar) ? a.basliklar : []).map((b: unknown) => str(b, 60)).filter(Boolean).slice(0, 15);
       if (basliklar.length) out.push({ tur, basliklar, kategori: str(a.kategori, 30) || undefined });
