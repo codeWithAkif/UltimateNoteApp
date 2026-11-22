@@ -175,6 +175,7 @@ export const matchProject = (istek: string, projeler: string[]): string => {
 
 export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
   const out: AAction[] = [];
+  let kuralDustu = false;
   for (const a of Array.isArray(raw?.eylemler) ? raw.eylemler : []) {
     const tur = str(a?.tur, 20) as ActionKind;
     if (tur === 'git') {
@@ -191,11 +192,14 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
     } else if (tur === 'otomasyon') {
       const sched = parseSched(str(a.zamanlama, 40));
       const ad = str(a.ad, 60);
-      const et = str(a.eylemTuru, 10).toLowerCase();
+      const et = str(a.eylemTuru, 12).toLowerCase();
+      let ok = false;
       if (sched && ad) {
-        if (et === 'ac' && screenById(str(a.ekran, 20))) out.push({ tur, ad, sched, eylem: { tur: 'ac', ekran: str(a.ekran, 20), mesaj: str(a.mesaj, 160) || undefined } });
-        else if (et === 'bildir' && str(a.baslik, 80)) out.push({ tur, ad, sched, eylem: { tur: 'bildir', baslik: str(a.baslik, 80), mesaj: str(a.mesaj, 160) || undefined } });
+        // Model "bildirim"/"bildir", "ac"/"aç" gibi yazabilir; başlık yoksa kuralın adı bildirim başlığı olur.
+        if (/^(ac|aç)/.test(et) && screenById(str(a.ekran, 20))) { out.push({ tur, ad, sched, eylem: { tur: 'ac', ekran: str(a.ekran, 20), mesaj: str(a.mesaj, 160) || undefined } }); ok = true; }
+        else if (/^bildir/.test(et) || !et) { out.push({ tur, ad, sched, eylem: { tur: 'bildir', baslik: str(a.baslik, 80) || ad, mesaj: str(a.mesaj, 160) || undefined } }); ok = true; }
       }
+      if (!ok) kuralDustu = true;
     } else if (tur === 'gorev') {
       const tarih = str(a.tarih, 12), baslik = str(a.baslik, 120);
       // Model saati "13", "13.00", "13:00:00" ya da "13:00-14:00" gibi değişik biçimlerde döndürebiliyor; geçerli HH:MM'e çevrilir.
@@ -288,6 +292,8 @@ export const normalizeRouter = (raw: any, ctx: AssistantCtx): RouterResult => {
     }
     if (out.length >= 6) break;
   }
+  // Otomasyon geçersiz olduğu için atıldıysa modelin "kurdum" cevabı yanlış olur; kullanıcıya gerçeği ve nasıl yazacağı söylenir.
+  if (kuralDustu && !out.some(x => x.tur === 'otomasyon')) return { cevap: 'Kuralı kuramadım, zamanlamayı anlayamadım. Şöyle yazın: "her ayın 10\'unda 09:00\'da Aidat ödemesi diye bildirim göster". (Aylık kurallarda gün 1-28 arası olmalı.)', eylemler: out };
   return { cevap: str(raw?.cevap, 900) || 'Anladım.', eylemler: out };
 };
 

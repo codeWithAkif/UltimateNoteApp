@@ -22,7 +22,12 @@ export const schedText = (s: Sched): string =>
   s.tur === 'gunluk' ? `her-gun ${s.saat}` : s.tur === 'haftalik' ? `haftalik ${GUNLER[s.gun - 1]} ${s.saat}` : s.tur === 'aylik' ? `aylik ${s.gun} ${s.saat}` : `bir ${s.tarih} ${s.saat}`;
 
 export const parseSched = (txt: string): Sched | null => {
-  const t = fold(txt).trim().split(/\s+/);
+  // Model "9:00", "09.00", "10'u", "her ay" gibi serbest biçimler yazabiliyor; katı ayrıştırıcıya girmeden önce kanonik biçime çevrilir,
+  // yoksa kural sessizce düşüyordu.
+  const norm = fold(txt).replace(/\b(\d{1,2})[.:](\d{2})\b/g, (_m, h, mi) => `${h.padStart(2, '0')}:${mi}`)
+    .replace(/^her[\s-]+ay(in)?\b/, 'aylik').replace(/^her[\s-]+hafta\b/, 'haftalik').replace(/^her[\s-]+gun\b/, 'her-gun')
+    .replace(/(\d+)\s*(?:'|’)?\s*(?:inci|unda|inda|u|i|\.)(?=\s|$)/g, '$1').replace(/(?<![-\w])gunu?\b/g, ' ').replace(/[,]/g, ' ');
+  const t = norm.trim().split(/\s+/);
   if ((t[0] === 'her-gun' || t[0] === 'gunluk') && validTime(t[1] || '')) return { tur: 'gunluk', saat: t[1] };
   if (t[0] === 'haftalik') { const g = gunIndex(t[1] || ''); if (g && validTime(t[2] || '')) return { tur: 'haftalik', gun: g, saat: t[2] }; }
   if (t[0] === 'aylik') { const g = Number(t[1]); if (Number.isInteger(g) && g >= 1 && g <= 28 && validTime(t[2] || '')) return { tur: 'aylik', gun: g, saat: t[2] }; }
