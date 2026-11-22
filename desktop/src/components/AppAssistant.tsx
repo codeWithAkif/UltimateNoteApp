@@ -53,7 +53,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   changeTaskStatus: (id: string, status: string) => Promise<void>;
   financeCategoryNames: string[];
   addFinanceEntry: (input: NewFinanceEntryInput) => Promise<unknown>;
-  openNote: (path: string) => void;
+  openNote: (path: string) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState<boolean>(() => { try { return localStorage.getItem('assistant_open_v1') === '1'; } catch { return false; } });
   const [view, setView] = useState<'sohbet' | 'kurallar'>('sohbet');
@@ -393,8 +393,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     try {
       const path = notePathFor(a);
       await writeNote(path, a.icerik || '');
-      await wait(300);
-      openNote(path);
+      // Not listesi diske göre yeniden okunmadan açılırsa yeni not boş görünür; bu yüzden açmadan önce App listeyi yeniler (Günlük notu da böyle yapıyor).
+      await openNote(path);
       closeOnMobile();
       patchCard(msgId, c.id, { state: 'yapildi', not: `Not oluşturuldu: ${path.replace(/\.md$/i, '')}` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Not oluşturulamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }

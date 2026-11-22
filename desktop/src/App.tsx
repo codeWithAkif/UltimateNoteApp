@@ -11847,7 +11847,7 @@ grant execute on function get_db_size() to anon;`}
           </button>
         </div>
       )}
-      <AppAssistant ready={filesLoaded && firstSyncSettled} tab={activeTab} onNavigate={(id) => setActiveTab(id as any)} activeNotePath={activeNotePath} fileContents={fileContents} saveNote={(p, c) => handleSaveNote(p, c)} clientsFolder={clientsFolder} changeTaskStatus={(id, st) => handleChangeTaskStatus(id, st)} financeCategoryNames={financeCategories.map(c => c.name)} addFinanceEntry={(i) => handleAddFinanceEntry(i)} openNote={(p) => { handleSetActiveNotePath(p); setActiveTab('notes'); }} />
+      <AppAssistant ready={filesLoaded && firstSyncSettled} tab={activeTab} onNavigate={(id) => setActiveTab(id as any)} activeNotePath={activeNotePath} fileContents={fileContents} saveNote={(p, c) => handleSaveNote(p, c)} clientsFolder={clientsFolder} changeTaskStatus={(id, st) => handleChangeTaskStatus(id, st)} financeCategoryNames={financeCategories.map(c => c.name)} addFinanceEntry={(i) => handleAddFinanceEntry(i)} openNote={async (p) => { await loadAllData(); handleSetActiveNotePath(p); setActiveTab('notes'); }} />
     </div>
   );
 }
