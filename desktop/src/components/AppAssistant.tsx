@@ -1,10 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Hand, Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
 import '@fontsource/inter/latin-ext-500.css';
 import { isGeminiConfigured } from '../services/geminiMentor';
+import { parseDayNote } from './DayNoteCards';
+import { buildBriefing } from '../services/assistant/dayBriefing';
+import JarvisCore, { type CoreState } from './JarvisCore';
+import { canRecord, canTranscribe, startRecording, transcribe, type Recording } from '../services/assistant/voice';
+import type { DeskCard } from './HoloDesk';
+// El kontrolü (MediaPipe) yalnızca açılınca yüklenir: uygulamanın açılışını yavaşlatmaz
+const HoloDesk = React.lazy(() => import('./HoloDesk'));
 import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, projectSlug, TASK_PATH, SCREENS, parseReminders, removeLine } from '../services/assistant/assistantAI';
 import { designNote, lineDiff, type DesignResult, type DiffOp } from '../services/assistant/noteDesign';
 import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl } from '../services/assistant/pageAgent';
@@ -63,7 +70,21 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const recRef = useRef<any>(null);
   // Sesle yazma: tarayıcının SpeechRecognition'ı varsa (telefon WebView'ında olmayabilir; yoksa düğme gizlenir). Konuşma kutuya yazılır, otomatik gönderilmez.
   const SpeechCls: any = typeof window !== 'undefined' && !(window as any).electron ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
-  const toggleMic = () => {
+  // Masaüstünde (Electron) SpeechRecognition yok: ses kaydedilip Gemini ile yazıya çevrilir, çevrilince doğrudan gönderilir
+  const rec2 = useRef<Recording | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const toggleMic = async () => {
+    if (!SpeechCls) {
+      if (rec2.current) {
+        setListening(false); setTranscribing(true);
+        try { const blob = await rec2.current.stop(); rec2.current = null; const t = await transcribe(blob); setTranscribing(false); void send(t); }
+        catch (e: any) { rec2.current = null; setTranscribing(false); setErr(String(e?.message || 'Ses işlenemedi.')); }
+        return;
+      }
+      if (!canTranscribe()) { setErr('Sesli komut için Ayarlar > AI Mentor bölümüne Gemini anahtarı gerekir (Claude Code ses almıyor).'); return; }
+      try { rec2.current = await startRecording(); setErr(''); setListening(true); } catch { setErr('Mikrofon izni verilmedi. Uygulama/Windows ayarlarından izin verin.'); }
+      return;
+    }
     if (listening) { try { recRef.current?.stop(); } catch { /* yoksay */ } return; }
     try {
       const r = new SpeechCls();
@@ -90,9 +111,28 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const writeNote = async (path: string, content: string) => { filesRef.current = { ...filesRef.current, [path]: content }; await saveNote(path, content); };
   const noteOpen = tab === 'notes' && !!activeNotePath;
 
+  // Jarvis masası (el kontrolü): ekranlar küre, bugünün açık işleri kart olarak gelir
+  const [holo, setHolo] = useState(false);
+  const [holoBrief, setHoloBrief] = useState(false);
+  const deskCards = useMemo<DeskCard[]>(() => {
+    const orbs: [string, number][] = [['notes', 200], ['calendar', 170], ['tasks', 280], ['projects', 35], ['budget', 140], ['shopping', 20], ['dashboard', 320], ['aichat', 250]];
+    const out: DeskCard[] = orbs.map(([id, hue]) => ({ id: 'o-' + id, kind: 'orb', title: screenById(id)?.ad || id, hue, screen: id }));
+    out.push({ id: 'a-brief', kind: 'orb', title: 'Günümü anlat', hue: 50, action: 'briefing' }, { id: 'a-mic', kind: 'orb', title: 'Konuş', hue: 330, action: 'mic' });
+    if (!holo) return out;
+    const n = new Date(), today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+    const text = filesRef.current[`Günlükler/${today}.md`];
+    if (text) parseDayNote(text).cards.filter(c => c.status !== 'x').slice(0, 5).forEach((c, i) =>
+      out.push({ id: 't-' + i, kind: 'task', title: c.title.replace(/\*\*|==/g, '') || '(başlıksız)', sub: c.planned ? c.planned.replace('-', '–') : c.slug ? c.slug : undefined, hue: 45 + (i % 3) * 30 }));
+    return out;
+  }, [holo]);
+  const deskScenes = useMemo(() => (holo ? buildBriefing(filesRef.current, new Date()) : []), [holo]);
+
   const setOpenP = useCallback((o: boolean) => { setOpen(o); try { localStorage.setItem('assistant_open_v1', o ? '1' : '0'); } catch { /* yoksay */ } }, []);
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) { e.preventDefault(); setOpenP(!open); } };
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) { e.preventDefault(); setOpenP(!open); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'j' && !e.altKey) { e.preventDefault(); setHolo(v => !v); }
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [open, setOpenP]);
@@ -613,6 +653,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const send = async (text?: string) => {
     const message = (text ?? input).trim();
     if (!message || busy) return;
+    // "Günümü anlat": yapay zekâ gerekmez, notlardan hesaplanır; hemen açılır
+    if (/(g[üu]n[üu]m[üu]|bug[üu]n[üu])\s+anlat|g[üu]nl[üu]k brifing|sabah brifing/i.test(message)) {
+      setInput(''); setErr('');
+      setMsgs(ms => [...ms, { id: newId(), role: 'user', text: message }, { id: newId(), role: 'ai', text: 'Günlük brifingi açıyorum. Sahneler notlarınızdan hesaplanır, yapay zekâ rakam uydurmaz.' }]);
+      setHoloBrief(true); setHolo(true);
+      return;
+    }
     if (!isGeminiConfigured()) { setErr('Yapay zekâ ayarlı değil: Ayarlar > AI Mentor\'dan Gemini anahtarı ekleyin ya da masaüstünde Claude Code\'u açın.'); return; }
     setInput(''); setErr(''); setBusy(true);
     const um: Msg = { id: newId(), role: 'user', text: message };
@@ -899,13 +946,24 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     );
   };
 
+  // Asistanın çekirdek animasyonu ne yaptığını gösterir: dinliyor, düşünüyor ya da sayfada işlem yapıyor
+  const coreState: CoreState = listening ? 'listening' : (busy || transcribing) ? 'thinking' : run && run.durum === 'calisiyor' ? 'acting' : 'idle';
+  const coreLevel = () => rec2.current?.level() as number;
+
   const suggestions = noteOpen
     ? ['Başlığı mavi yap, altını 3 parçaya böl: solda görev listesi, ortada madde işaretleri', 'Bu notun en üstüne bir uyarı kutusu ekle', 'Bu ekranda ne yapabilirim?']
-    : ['Bu ekranda ne yapabilirim?', 'Yarın sabah 9\'da annemi aramayı hatırlat', 'Cuma 14:00-15:30 takvime sunum hazırlığı görevi ekle', 'Her pazartesi 09:00\'da alışveriş ekranını aç'];
+    : ['Günümü anlat', 'Bu ekranda ne yapabilirim?', 'Yarın sabah 9\'da annemi aramayı hatırlat', 'Cuma 14:00-15:30 takvime sunum hazırlığı görevi ekle', 'Her pazartesi 09:00\'da alışveriş ekranını aç'];
 
   const wrapStyle: React.CSSProperties = { fontFamily: FONT, fontSize: '13px', color: 'var(--text-primary)' };
   return (
     <div data-agent-ignore="1" style={wrapStyle}>
+      {holo && (
+        <Suspense fallback={null}>
+          <HoloDesk cards={deskCards} scenes={deskScenes} autoBrief={holoBrief} onNavigate={onNavigate}
+            onAsk={(t) => { setHolo(false); setHoloBrief(false); setOpenP(true); setView('sohbet'); void send(t); }}
+            onClose={() => { setHolo(false); setHoloBrief(false); }} />
+        </Suspense>
+      )}
       {/* otomasyon bildirim kartları */}
       {fired.length > 0 && (
         <div style={{ position: 'fixed', right: '16px', bottom: open ? '16px' : '72px', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 2147482000, width: 'min(340px, calc(100vw - 32px))', transform: open ? 'translateX(calc(-1 * min(430px, 100vw) - 8px))' : 'none' }}>
@@ -924,17 +982,18 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
 
       {!open && (
         <button type="button" onClick={() => setOpenP(true)} aria-label="Asistanı aç (Ctrl+K)" title="Asistan (Ctrl+K)"
-          style={{ position: 'fixed', right: '16px', bottom: '16px', width: '46px', height: '46px', borderRadius: '50%', border: 'none', background: 'var(--accent-color)', color: '#fff', cursor: 'pointer', display: 'grid', placeItems: 'center', zIndex: 2147482000, boxShadow: '0 6px 20px rgba(0,0,0,0.4)' }}>
-          <Sparkles size={20} />
+          style={{ position: 'fixed', right: '12px', bottom: '12px', width: '56px', height: '56px', borderRadius: '50%', border: '1px solid rgba(34,211,238,0.45)', background: 'radial-gradient(circle,#06243a 0%,#030b14 100%)', color: '#fff', cursor: 'pointer', display: 'grid', placeItems: 'center', zIndex: 2147482000, boxShadow: '0 0 18px rgba(34,211,238,0.35), 0 6px 20px rgba(0,0,0,0.5)', padding: 0 }}>
+          <JarvisCore state={coreState} size={56} level={coreLevel} />
         </button>
       )}
 
       {open && (
         <div role="dialog" aria-label="Asistan" style={{ position: 'fixed', right: 0, bottom: 0, ...(wide ? { height: '66vh', borderTop: border, borderTopLeftRadius: '10px' } : { top: 0 }), width: 'min(430px, 100vw)', background: 'var(--bg-secondary)', borderLeft: border, display: 'flex', flexDirection: 'column', zIndex: 2147482000, boxShadow: '-8px 0 30px rgba(0,0,0,0.35)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderBottom: border }}>
-            <Sparkles size={16} color="var(--accent-color)" />
+            <JarvisCore state={coreState} size={34} level={coreLevel} />
             <div style={{ fontWeight: 500, flex: 1 }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>
             <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px', background: auto ? 'var(--accent-color)' : undefined, color: auto ? '#fff' : undefined }} onClick={toggleAuto} title={auto ? 'Otomatik: net işlemler sormadan yapılır. Kapatmak için dokunun.' : 'Sor: her işlem için onay istenir. Otomatik için dokunun.'}>{auto ? '⚡ Otomatik' : 'Sor'}</button>
+            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
@@ -1007,6 +1066,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
               <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {msgs.length === 0 && (
                   <div>
+                    <div style={{ display: 'flex', justifyContent: 'center', margin: '2px 0 12px' }}><JarvisCore state={coreState} size={132} level={coreLevel} /></div>
                     <div style={{ ...lab, lineHeight: 1.6, marginBottom: '10px' }}>
                       Uygulamada ne yapabileceğinizi anlatırım, sizi ilgili ekrana götürürüm, açık notu tasarlarım, hatırlatma ve otomasyon kurarım, sayfadaki düğmelere sizin yerinize basarım. Hiçbir şeyi onayınız olmadan yazmam ya da silmem.
                     </div>
@@ -1039,7 +1099,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                     )}
                   </div>
                 )}
-                {busy && <div style={{ ...lab, display: 'flex', alignItems: 'center', gap: '6px' }}><RefreshCw size={13} className="animate-spin" /> Düşünüyor…</div>}
+                {busy && <div style={{ ...lab, display: 'flex', alignItems: 'center', gap: '8px' }}><JarvisCore state="thinking" size={30} /> Düşünüyor…</div>}
                 <div ref={endRef} />
               </div>
               <div style={{ padding: '10px 12px', borderTop: border }}>
@@ -1048,7 +1108,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                   <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={2} aria-label="Asistana mesaj" placeholder={noteOpen ? 'Örn. başlığı mavi yap, altını 3 parçaya böl…' : 'Ne yapmak istersiniz?'}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
                     style={{ flex: 1, resize: 'none', background: 'var(--bg-tertiary)', border, color: 'var(--text-primary)', borderRadius: '8px', padding: '7px 9px', fontSize: '13px', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                  {SpeechCls && <button type="button" style={{ ...btn, padding: '8px', background: listening ? '#ef4444' : undefined, color: listening ? '#fff' : undefined }} onClick={toggleMic} aria-label={listening ? 'Dinlemeyi durdur' : 'Sesle yaz'}><Mic size={14} /></button>}
+                  {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '8px', background: listening ? '#ef4444' : undefined, color: listening ? '#fff' : undefined, opacity: transcribing ? 0.5 : 1 }} disabled={transcribing} onClick={() => void toggleMic()} aria-label={listening ? 'Dinlemeyi durdur' : 'Sesle yaz'} title={listening ? 'Bitirmek için tekrar basın' : transcribing ? 'Yazıya çevriliyor…' : 'Konuşmak için basın'}><Mic size={14} /></button>}
                   <button type="button" style={{ ...btnP, padding: '8px', opacity: input.trim() && !busy ? 1 : 0.6 }} disabled={!input.trim() || busy} onClick={() => void send()} aria-label="Gönder"><Send size={14} /></button>
                 </div>
                 <div style={{ ...lab, marginTop: '5px' }}>{SCREENS.length} ekran biliyorum · sayfa içeriğiniz yapay zekâya gönderilmez, yalnızca ekrandaki düğme adları gider.</div>

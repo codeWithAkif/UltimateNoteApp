@@ -106,10 +106,24 @@ export const performStep = (map: Map<string, HTMLElement>, s: Step): { ok: boole
 
 // Hedef öğeyi kısa süre vurgular (asistan paneli hariç, kullanıcı ne olduğunu görsün)
 export const highlight = (el: HTMLElement, ms = 1400): void => {
+  // Asistanın hedefini gösteren HUD: dört kilit köşesi, tarama çizgisi ve "JARVIS" etiketi (görsel geri bildirim; ekranı değiştirmez)
+  if (!document.getElementById('agent-hud-css')) {
+    const st = document.createElement('style'); st.id = 'agent-hud-css';
+    st.textContent = '@keyframes agent-scan{0%{top:0}100%{top:calc(100% - 2px)}}@keyframes agent-lock{0%{transform:scale(1.6);opacity:0}100%{transform:scale(1);opacity:1}}'
+      + '.agent-hud{position:fixed;z-index:2147482600;pointer-events:none;transition:opacity .3s;animation:agent-lock .28s ease-out}'
+      + '.agent-hud i{position:absolute;width:14px;height:14px;border:2px solid #22d3ee;filter:drop-shadow(0 0 5px #22d3ee)}'
+      + '.agent-hud i:nth-child(1){left:0;top:0;border-right:0;border-bottom:0}.agent-hud i:nth-child(2){right:0;top:0;border-left:0;border-bottom:0}'
+      + '.agent-hud i:nth-child(3){left:0;bottom:0;border-right:0;border-top:0}.agent-hud i:nth-child(4){right:0;bottom:0;border-left:0;border-top:0}'
+      + '.agent-hud b{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#22d3ee,transparent);box-shadow:0 0 10px #22d3ee;animation:agent-scan .8s ease-in-out infinite alternate}'
+      + '.agent-hud em{position:absolute;left:0;top:-18px;font:500 10px Inter,system-ui,sans-serif;letter-spacing:.16em;color:#22d3ee;font-style:normal;text-shadow:0 0 6px #22d3ee}';
+    document.head.appendChild(st);
+  }
   const r = el.getBoundingClientRect();
   const box = document.createElement('div');
+  box.className = 'agent-hud';
   box.setAttribute('data-agent-ignore', '1');
-  Object.assign(box.style, { position: 'fixed', left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px`, border: '2px solid #6366f1', borderRadius: '8px', boxShadow: '0 0 0 4px rgba(99,102,241,0.25)', pointerEvents: 'none', zIndex: '2147483000', transition: 'opacity 0.3s' });
+  Object.assign(box.style, { left: `${r.left - 6}px`, top: `${r.top - 6}px`, width: `${r.width + 12}px`, height: `${r.height + 12}px` });
+  box.innerHTML = '<i></i><i></i><i></i><i></i><b></b><em>JARVIS</em>';
   document.body.appendChild(box);
   setTimeout(() => { box.style.opacity = '0'; setTimeout(() => box.remove(), 320); }, ms);
 };
