@@ -8,7 +8,8 @@ import { isGeminiConfigured } from '../services/geminiMentor';
 import { parseDayNote } from './DayNoteCards';
 import { buildBriefing } from '../services/assistant/dayBriefing';
 import JarvisCore, { type CoreState } from './JarvisCore';
-import { canRecord, canTranscribe, startRecording, transcribe, type Recording } from '../services/assistant/voice';
+import { canRecord, canTranscribe, startRecording, transcribe, speak, type Recording, type Speaking } from '../services/assistant/voice';
+import VoiceMode from './VoiceMode';
 import type { DeskCard } from './HoloDesk';
 // El kontrolü (MediaPipe) yalnızca açılınca yüklenir: uygulamanın açılışını yavaşlatmaz
 const HoloDesk = React.lazy(() => import('./HoloDesk'));
@@ -44,6 +45,7 @@ const ymdLabel = (t: string) => { const [y, m, d] = t.split('-').map(Number); re
 
 type CardState = 'hazirlaniyor' | 'bekliyor' | 'hazir' | 'yapildi' | 'iptal' | 'hata';
 interface CardT { id: string; a: AAction; state: CardState; not?: string; cands?: TaskCand[]; pick?: number; pairs?: CardPair[]; moves?: InboxMove[]; buy?: { istek: string; cands: LItem[]; pick: number }[]; design?: { path: string; eski: string; sonuc: DesignResult; diff: DiffOp[] } }
+interface SendInfo { say: string; bekleyen: number; hatalar: string[] }
 interface Msg { id: string; role: 'user' | 'ai'; text: string; cards?: CardT[] }
 interface Run { cardId: string; adim: number; durum: 'calisiyor' | 'bitti' | 'durdu' | 'hata'; log: string[] }
 interface Confirm { step: Step; pe?: PageEl; resolve: (v: 'yap' | 'yaptim' | 'dur') => void; neden: string }
@@ -171,6 +173,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   useEffect(() => { const mq = window.matchMedia('(min-width: 769px)'); const f = () => setWide(mq.matches); mq.addEventListener('change', f); return () => mq.removeEventListener('change', f); }, []);
   const toggleAuto = () => { const n = !auto; setAuto(n); try { localStorage.setItem('assistant_auto_v1', n ? '1' : '0'); } catch { /* yoksay */ } };
   const cardMeta = useRef(new Map<string, AAction>());
+  const cardRes = useRef(new Map<string, { state: string; not?: string }>());
+  // Sesli modda sayfa değiştirme/panel kapatma/not açma yapılmaz: kullanıcı konuşmaya odaklıdır, ekran onu bölmemeli.
+  const voiceRef = useRef(false);
   // İşlem bir sayfayı ilgilendiriyorsa başarıdan sonra o sayfa açılır; telefonda panel de kapanır ki sonuç görünsün.
   const screenFor = (a: AAction): string | null => {
     switch (a.tur) {
@@ -191,13 +196,14 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   };
   const closeOnMobile = () => { if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) setTimeout(() => setOpenP(false), 700); };
   const afterDone = (cardId: string) => {
+    if (voiceRef.current) return;
     const a = cardMeta.current.get(cardId); const target = a && screenFor(a);
     if (!target) return;
     onNavigate(target);
     closeOnMobile();
   };
   const patchCard = (msgId: string, cardId: string, p: Partial<CardT>) => { if (p.state === 'yapildi') afterDone(cardId); patchCard0(msgId, cardId, p); };
-  const patchCard0 = (msgId: string, cardId: string, p: Partial<CardT>) => setMsgs(ms => ms.map(m => (m.id === msgId ? { ...m, cards: (m.cards || []).map(c => (c.id === cardId ? { ...c, ...p } : c)) } : m)));
+  const patchCard0 = (msgId: string, cardId: string, p: Partial<CardT>) => { if (p.state) cardRes.current.set(cardId, { state: p.state, not: p.not }); setMsgs(ms => ms.map(m => (m.id === msgId ? { ...m, cards: (m.cards || []).map(c => (c.id === cardId ? { ...c, ...p } : c)) } : m))); };
 
   const prepareDesign = async (msgId: string, c: CardT, path: string) => {
     const eski = filesRef.current[path] ?? '';
@@ -437,8 +443,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const path = notePathFor(a);
       await writeNote(path, a.icerik || '');
       // Not listesi diske göre yeniden okunmadan açılırsa yeni not boş görünür; bu yüzden açmadan önce App listeyi yeniler (Günlük notu da böyle yapıyor).
-      await openNote(path);
-      closeOnMobile();
+      if (!voiceRef.current) { await openNote(path); closeOnMobile(); }
       patchCard(msgId, c.id, { state: 'yapildi', not: `Not oluşturuldu: ${path.replace(/\.md$/i, '')}` });
     } catch (e: any) { patchCard(msgId, c.id, { state: 'hata', not: `Not oluşturulamadı: ${String(e?.message || e)}. Tekrar deneyin.` }); }
   };
@@ -650,12 +655,13 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     }
   };
 
-  const send = async (text?: string) => {
+  const send = async (text?: string): Promise<SendInfo | undefined> => {
     const message = (text ?? input).trim();
     if (!message || busy) return;
     // "Günümü anlat": yapay zekâ gerekmez, notlardan hesaplanır; hemen açılır
     if (/(g[üu]n[üu]m[üu]|bug[üu]n[üu])\s+anlat|g[üu]nl[üu]k brifing|sabah brifing/i.test(message)) {
       setInput(''); setErr('');
+      if (voiceRef.current) { const say = buildBriefing(filesRef.current, new Date()).map(x => x.oku).join(' '); return { say: say || 'Bugün için kayıtlı bir şey bulamadım.', bekleyen: 0, hatalar: [] }; }
       setMsgs(ms => [...ms, { id: newId(), role: 'user', text: message }, { id: newId(), role: 'ai', text: 'Günlük brifingi açıyorum. Sahneler notlarınızdan hesaplanır, yapay zekâ rakam uydurmaz.' }]);
       setHoloBrief(true); setHolo(true);
       return;
@@ -713,18 +719,135 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       setMsgs(ms => [...ms, am]);
       for (const c of cards) cardMeta.current.set(c.id, c.a);
       // Otomatik mod: net eylemler sırayla (aynı dosyaya yazanlar birbirini ezmesin diye) onay beklemeden uygulanır.
-      if (autoRef.current) {
-        const todo = cards.filter(autoOk);
-        void (async () => { for (const c of todo) { patchCard0(am.id, c.id, { state: 'hazirlaniyor' }); try { await runCard(am.id, c); } catch (e: any) { patchCard0(am.id, c.id, { state: 'hata', not: String(e?.message || e) }); } } })();
+      const todo = autoRef.current ? cards.filter(autoOk) : [];
+      if (todo.length) {
+        const job = (async () => { for (const c of todo) { patchCard0(am.id, c.id, { state: 'hazirlaniyor' }); try { await runCard(am.id, c); } catch (e: any) { patchCard0(am.id, c.id, { state: 'hata', not: String(e?.message || e) }); } } })();
+        // Sesli modda sonuç söylenecek: işler bitmeden cevap okunmasın.
+        if (voiceRef.current) await job; else void job;
       }
       for (const c of cards) {
         if (c.a.tur === 'notu_tasarla' && activeNotePath) void prepareDesign(am.id, c, activeNotePath);
         if (c.a.tur === 'kart_uret' && activeNotePath) void prepareCards(am.id, c, activeNotePath);
         if (c.a.tur === 'inbox_ayir') void prepareInbox(am.id, c);
       }
-    } catch (e: any) { setErr(String(e?.message || e)); }
+      const hatalar = todo.map(c => cardRes.current.get(c.id)).filter(r => r?.state === 'hata').map(r => r?.not || 'hata');
+      return { say: answerText || res.cevap, bekleyen: cards.filter(c => !todo.includes(c)).length, hatalar };
+    } catch (e: any) { setErr(String(e?.message || e)); return { say: `Bir sorun oldu: ${String(e?.message || e).slice(0, 140)}`, bekleyen: 0, hatalar: [] }; }
     finally { setBusy(false); }
   };
+  const sendRef = useRef(send); sendRef.current = send;
+
+  // ---------------- sesli mod ----------------
+  // Dinle -> gönder (işler otomatik modda yapılır) -> sonucu oku -> yine dinle. SpeechRecognition varsa (telefon) o dinler; yoksa (masaüstü)
+  // kayıt alınıp sessizlikte kesilir ve Gemini ile yazıya çevrilir.
+  const [voice, setVoice] = useState(false);
+  const [vState, setVState] = useState<CoreState>('idle');
+  const [vUser, setVUser] = useState('');
+  const [vReply, setVReply] = useState('');
+  const [vNote, setVNote] = useState('');
+  const vStop = useRef<(() => void) | null>(null);
+  const vSpeak = useRef<Speaking | null>(null);
+  const vLevel = useRef<() => number>(() => 0);
+  const vFatal = useRef('');
+  const [wake, setWake] = useState<boolean>(() => { try { return localStorage.getItem('assistant_wake_v1') === '1'; } catch { return false; } });
+  const setWakeP = (v: boolean) => { setWake(v); try { localStorage.setItem('assistant_wake_v1', v ? '1' : '0'); } catch { /* yoksay */ } };
+
+  const listenOnce = (): Promise<string> => new Promise((resolve) => {
+    if (SpeechCls) {
+      let got = '';
+      try {
+        const r = new SpeechCls();
+        r.lang = 'tr-TR'; r.interimResults = true; r.continuous = false;
+        r.onresult = (ev: any) => { let t = ''; for (let i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript; got = t.trim(); setVUser(got); };
+        r.onerror = (ev: any) => { if (ev?.error === 'not-allowed' || ev?.error === 'service-not-allowed') vFatal.current = 'Mikrofon izni verilmedi. Uygulama ayarlarından mikrofona izin verin.'; };
+        r.onend = () => resolve(got);
+        vStop.current = () => { try { r.abort(); } catch { /* yoksay */ } };
+        r.start();
+      } catch { vFatal.current = 'Mikrofon başlatılamadı.'; resolve(''); }
+      return;
+    }
+    void (async () => {
+      let rec: Recording | null = null;
+      try {
+        rec = await startRecording();
+        const r0 = rec; vLevel.current = () => r0.level();
+        let cancelled = false; vStop.current = () => { cancelled = true; r0.cancel(); };
+        const t0 = Date.now(); let spoke = false, lastVoice = Date.now();
+        // Konuşma başlayınca ~1,3 sn sessizlikte kayıt kesilir; hiç konuşulmazsa 8 sn sonra boş döner.
+        await new Promise<void>((done) => {
+          const iv = setInterval(() => {
+            const l = r0.level();
+            if (l > 0.1) { spoke = true; lastVoice = Date.now(); }
+            if (cancelled || (spoke && Date.now() - lastVoice > 1300) || (!spoke && Date.now() - t0 > 8000) || Date.now() - t0 > 30000) { clearInterval(iv); done(); }
+          }, 100);
+        });
+        if (cancelled) { resolve(''); return; }
+        if (!spoke) { r0.cancel(); resolve(''); return; }
+        setVState('thinking');
+        const t = await transcribe(await r0.stop());
+        setVUser(t); resolve(t);
+      } catch (e: any) { if (!rec) vFatal.current = 'Mikrofon izni verilmedi. Windows ayarlarından izin verin.'; resolve(''); }
+      finally { vLevel.current = () => 0; }
+    })();
+  });
+  // Okunacak metin: tablo/link/kaynak listesi sesli okunmaz (ekranda kalır), uzun cevap ilk cümlelerle kısaltılır.
+  const spokenText = (info: SendInfo): string => {
+    let t = info.say.replace(/Kaynaklar:[\s\S]*$/i, '').replace(/Not: Fiyatlar[\s\S]*$/, '').replace(/https?:\/\/\S+/g, '').replace(/^[-*]\s+/gm, '').replace(/[*_`#>|]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t.length > 420) { const cut = t.slice(0, 420); const i = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! ')); t = (i > 150 ? cut.slice(0, i + 1) : cut) + ' Ayrıntıyı ekrana yazdım.'; }
+    if (info.hatalar.length) t += ` Bir işlem yapılamadı: ${info.hatalar[0].slice(0, 120)}`;
+    if (info.bekleyen > 0) t += ' Bu işlem için onay gerekiyor, asistan ekranına bıraktım.';
+    return t || 'Tamam.';
+  };
+  const sayIt = async (text: string) => { const sp = speak(text); vSpeak.current = sp; setVState('speaking'); await sp.done; vSpeak.current = null; };
+  const stopVoice = () => { voiceRef.current = false; vStop.current?.(); vSpeak.current?.stop(); };
+  const startVoice = async () => {
+    if (voiceRef.current) return;
+    if (!isGeminiConfigured()) { setErr('Yapay zekâ ayarlı değil: Ayarlar > AI Mentor\'dan Gemini anahtarı ekleyin.'); return; }
+    if (!SpeechCls && !canTranscribe()) { setErr('Sesli mod için mikrofon ve Ayarlar > AI Mentor\'da Gemini anahtarı gerekir.'); return; }
+    voiceRef.current = true; vFatal.current = '';
+    setVoice(true); setVUser(''); setVReply(''); setVNote(''); setErr('');
+    let idle = 0;
+    try {
+      while (voiceRef.current) {
+        setVState('listening'); setVUser('');
+        const heard = await listenOnce();
+        if (!voiceRef.current) break;
+        if (vFatal.current) { setVNote(vFatal.current); break; }
+        if (!heard) { if (++idle >= 4) { setVNote('Ses duyulmadı, sesli mod kapandı.'); break; } continue; }
+        idle = 0;
+        if (/^(tamam|kapat|dur|yeter|bu kadar|gorusuruz)( ultran)?[.!]?$/.test(foldTr(heard).trim())) { await sayIt('Görüşürüz.'); break; }
+        setVState('thinking');
+        const info = await sendRef.current(heard);
+        if (!voiceRef.current) break;
+        if (!info) continue;
+        setVReply(info.say.replace(/\n{3,}/g, '\n\n'));
+        await sayIt(spokenText(info));
+      }
+    } finally { voiceRef.current = false; vStop.current?.(); vSpeak.current?.stop(); setVoice(false); setVState('idle'); }
+  };
+  const startVoiceRef = useRef(startVoice); startVoiceRef.current = startVoice;
+
+  // "Ultran" uyandırma: yalnızca uygulama açık ve ön plandayken, SpeechRecognition olan cihazda (telefon) çalışır. Ekran kapalıyken/arka planda çalışmaz.
+  useEffect(() => {
+    if (!wake || !SpeechCls || voice || !ready) return;
+    let stop = false; let r: any; let tm: any;
+    const begin = () => {
+      if (stop) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') { tm = setTimeout(begin, 2500); return; }
+      try {
+        r = new SpeechCls(); r.lang = 'tr-TR'; r.continuous = true; r.interimResults = true;
+        r.onresult = (ev: any) => {
+          let t = ''; for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          if (/ult(r|ir)an|ultren|altran/.test(foldTr(t))) { stop = true; try { r.abort(); } catch { /* yoksay */ } void startVoiceRef.current(); }
+        };
+        r.onerror = (ev: any) => { if (ev?.error === 'not-allowed' || ev?.error === 'service-not-allowed') { stop = true; setWakeP(false); setErr('Mikrofon izni verilmedi, "Ultran" uyandırması kapatıldı.'); } };
+        r.onend = () => { if (!stop) tm = setTimeout(begin, 500); };
+        r.start();
+      } catch { tm = setTimeout(begin, 3000); }
+    };
+    begin();
+    return () => { stop = true; clearTimeout(tm); try { r?.abort(); } catch { /* yoksay */ } };
+  }, [wake, voice, ready]);
 
   // ---------------- görünüm ----------------
   const stateNote = (c: CardT) => c.not && <div style={{ ...lab, marginTop: '4px', color: c.state === 'hata' ? '#ef4444' : c.state === 'yapildi' ? '#22c55e' : undefined }}>{c.not}</div>;
@@ -957,6 +1080,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const wrapStyle: React.CSSProperties = { fontFamily: FONT, fontSize: '13px', color: 'var(--text-primary)' };
   return (
     <div data-agent-ignore="1" style={wrapStyle}>
+      {voice && <VoiceMode state={vState} level={() => (vState === 'speaking' ? (vSpeak.current?.level?.() ?? 0.35) : vLevel.current())} user={vUser} reply={vReply} note={vNote} wake={wake} canWake={!!SpeechCls} onWake={setWakeP} onClose={stopVoice} />}
       {holo && (
         <Suspense fallback={null}>
           <HoloDesk cards={deskCards} scenes={deskScenes} autoBrief={holoBrief} onNavigate={onNavigate}
@@ -993,7 +1117,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
             <JarvisCore state={coreState} size={34} level={coreLevel} />
             <div style={{ fontWeight: 500, flex: 1 }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>
             <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px', background: auto ? 'var(--accent-color)' : undefined, color: auto ? '#fff' : undefined }} onClick={toggleAuto} title={auto ? 'Otomatik: net işlemler sormadan yapılır. Kapatmak için dokunun.' : 'Sor: her işlem için onay istenir. Otomatik için dokunun.'}>{auto ? '⚡ Otomatik' : 'Sor'}</button>
-            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>
+            {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => void startVoice()} title="Sesli mod: konuşarak sürekli sohbet" aria-label="Sesli mod"><Mic size={13} /> Sesli</button>}
+            {wide && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>}
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
@@ -1074,6 +1199,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
                       {suggestions.map(s => <button key={s} type="button" style={{ ...btn, whiteSpace: 'normal', textAlign: 'left' }} onClick={() => void send(s)}>{s}</button>)}
                     </div>
                     <div style={{ ...lab, marginTop: '10px' }}>Kısayol: Ctrl+K</div>
+                    {SpeechCls && <label style={{ ...lab, marginTop: '8px', display: 'flex', gap: '6px', alignItems: 'center' }}><input type="checkbox" checked={wake} onChange={(e) => setWakeP(e.target.checked)} /> “Ultran” deyince sesli modu aç (uygulama açıkken dinler)</label>}
                   </div>
                 )}
                 {msgs.map(m => (
