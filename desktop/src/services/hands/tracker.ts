@@ -9,7 +9,7 @@ const asset = (p: string) => new URL(`mediapipe/${p}`, document.baseURI).href;
 export async function openCamera(video: HTMLVideoElement): Promise<MediaStream> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, max: 60 } },
+    video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30, max: 30 } }, // düşük çözünürlük: model zaten küçültür, kare başı iş azalır
   });
   video.srcObject = stream;
   video.muted = true;
@@ -23,7 +23,16 @@ export async function openCamera(video: HTMLVideoElement): Promise<MediaStream> 
   return stream;
 }
 
-export async function loadLandmarker(): Promise<{ lm: HandLandmarker; delegate: 'GPU' | 'CPU' }> {
+// Model bir kez yüklenir ve masa kapanınca da bellekte kalır: her açışta yeniden yükleme beklenmez
+let cached: Promise<{ lm: HandLandmarker; delegate: 'GPU' | 'CPU' }> | null = null;
+let ready = false;
+export const landmarkerReady = () => ready;
+export function loadLandmarker(): Promise<{ lm: HandLandmarker; delegate: 'GPU' | 'CPU' }> {
+  if (!cached) cached = loadLandmarkerOnce().then(r => { ready = true; return r; }, e => { cached = null; throw e; });
+  return cached;
+}
+
+async function loadLandmarkerOnce(): Promise<{ lm: HandLandmarker; delegate: 'GPU' | 'CPU' }> {
   const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
   const files = await FilesetResolver.forVisionTasks(asset('wasm'));
   const make = (delegate: 'GPU' | 'CPU') => HandLandmarker.createFromOptions(files, {

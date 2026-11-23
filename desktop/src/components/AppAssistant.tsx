@@ -1,5 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Hand, Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
+import { Hand, Orbit, Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
@@ -13,6 +13,7 @@ import VoiceMode from './VoiceMode';
 import type { DeskCard } from './HoloDesk';
 // El kontrolü (MediaPipe) yalnızca açılınca yüklenir: uygulamanın açılışını yavaşlatmaz
 const HoloDesk = React.lazy(() => import('./HoloDesk'));
+const NoteSpace = React.lazy(() => import('./NoteSpace'));
 import { type AAction, type ChatTurn, askRouter, screenById, reminderPath, appendReminder, appendTask, projectSlug, TASK_PATH, SCREENS, parseReminders, removeLine } from '../services/assistant/assistantAI';
 import { designNote, lineDiff, type DesignResult, type DiffOp } from '../services/assistant/noteDesign';
 import { snapshotPage, planStep, performStep, highlight, type Step, type PageEl } from '../services/assistant/pageAgent';
@@ -116,10 +117,11 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   // Jarvis masası (el kontrolü): ekranlar küre, bugünün açık işleri kart olarak gelir
   const [holo, setHolo] = useState(false);
   const [holoBrief, setHoloBrief] = useState(false);
+  const [space, setSpace] = useState(false); // Not uzayı: notlar derinlikte yüzen kartlar
   const deskCards = useMemo<DeskCard[]>(() => {
     const orbs: [string, number][] = [['notes', 200], ['calendar', 170], ['tasks', 280], ['projects', 35], ['budget', 140], ['shopping', 20], ['dashboard', 320], ['aichat', 250]];
     const out: DeskCard[] = orbs.map(([id, hue]) => ({ id: 'o-' + id, kind: 'orb', title: screenById(id)?.ad || id, hue, screen: id }));
-    out.push({ id: 'a-brief', kind: 'orb', title: 'Günümü anlat', hue: 50, action: 'briefing' }, { id: 'a-mic', kind: 'orb', title: 'Konuş', hue: 330, action: 'mic' });
+    out.push({ id: 'o-notespace', kind: 'orb', title: 'Not uzayı', hue: 175, screen: 'notespace' }, { id: 'a-brief', kind: 'orb', title: 'Günümü anlat', hue: 50, action: 'briefing' }, { id: 'a-mic', kind: 'orb', title: 'Konuş', hue: 330, action: 'mic' });
     if (!holo) return out;
     const n = new Date(), today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
     const text = filesRef.current[`Günlükler/${today}.md`];
@@ -134,6 +136,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     const h = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.shiftKey && !e.altKey) { e.preventDefault(); setOpenP(!open); }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'j' && !e.altKey) { e.preventDefault(); setHolo(v => !v); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'u' && !e.altKey) { e.preventDefault(); setSpace(v => !v); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
@@ -1087,9 +1090,14 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       {voice && <VoiceMode state={vState} level={() => (vState === 'speaking' ? (vSpeak.current?.level?.() ?? 0.35) : vLevel.current())} user={vUser} reply={vReply} note={vNote} wake={wake} canWake={!!SpeechCls} onWake={setWakeP} gv={gv} onGv={setGvP} onClose={stopVoice} />}
       {holo && (
         <Suspense fallback={null}>
-          <HoloDesk cards={deskCards} scenes={deskScenes} autoBrief={holoBrief} onNavigate={onNavigate}
+          <HoloDesk cards={deskCards} scenes={deskScenes} autoBrief={holoBrief} onNavigate={(id) => { if (id === 'notespace') { setHolo(false); setHoloBrief(false); setSpace(true); } else onNavigate(id); }}
             onAsk={(t) => { setHolo(false); setHoloBrief(false); setOpenP(true); setView('sohbet'); void send(t); }}
             onClose={() => { setHolo(false); setHoloBrief(false); }} />
+        </Suspense>
+      )}
+      {space && (
+        <Suspense fallback={null}>
+          <NoteSpace files={fileContents} onOpenInApp={(p) => { setSpace(false); void openNote(p); }} onClose={() => setSpace(false)} />
         </Suspense>
       )}
       {/* otomasyon bildirim kartları */}
@@ -1123,6 +1131,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
             <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px', background: auto ? 'var(--accent-color)' : undefined, color: auto ? '#fff' : undefined }} onClick={toggleAuto} title={auto ? 'Otomatik: net işlemler sormadan yapılır. Kapatmak için dokunun.' : 'Sor: her işlem için onay istenir. Otomatik için dokunun.'}>{auto ? '⚡ Otomatik' : 'Sor'}</button>
             {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => void startVoice()} title="Sesli mod: konuşarak sürekli sohbet" aria-label="Sesli mod"><Mic size={13} /> Sesli</button>}
             {wide && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>}
+            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => setSpace(true)} title="Not uzayı: tüm notlarınız önünüzde yüzer; tıklayıp sağda açın, rafa toplayıp yan yana okuyun (Ctrl+Shift+U)" aria-label="Not uzayını aç"><Orbit size={13} /> Uzay</button>
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>

@@ -49,7 +49,7 @@ export function analyze(p: P[]): HandShape {
 
   let gesture: Gesture = 'diger';
   // Çimdik: uçlar birleşik ve işaret ucu avuca kıvrılmamış (yumrukta başparmak işaretin üstüne yatar, bu çimdik sayılmaz)
-  const pinching = pinch < 0.32 && d(p[8], p[0]) > size * 0.9;
+  const pinching = pinch < 0.42 && d(p[8], p[0]) > size * 0.9;
   if (pinching) gesture = 'cimdik';
   else if (idx && midF && ring && pinky) gesture = 'acik';
   else if (idx && midF && !ring && !pinky) gesture = 'zafer';
@@ -84,7 +84,7 @@ export class OneEuro {
 export interface HandEvents { pinchDown: boolean; pinchUp: boolean; gestureChanged: boolean }
 
 // Çimdik girişi ve çıkışı farklı eşiklerde (histerezis): parmaklar eşikte titreşirken tutma sürekli kopmasın.
-const PINCH_ON = 0.3, PINCH_OFF = 0.46;
+const PINCH_ON = 0.38, PINCH_OFF = 0.58;
 
 export class TrackedHand {
   pts: P[] = [];
@@ -125,7 +125,7 @@ export class TrackedHand {
     const ev: HandEvents = { pinchDown: false, pinchUp: false, gestureChanged: false };
     // Çimdik: kapanırken hemen (2 kare), açılırken 2 kare üst üste eşik aşılırsa bırak
     if (!this.pinching) {
-      if (this.shape.pinch < PINCH_ON && this.shape.gesture === 'cimdik') { this.offN++; if (this.offN >= 2) { this.pinching = true; this.pinchSince = now; this.pinchStartPalm = { ...pp }; this.offN = 0; ev.pinchDown = true; } }
+      if (this.shape.pinch < PINCH_ON && this.shape.gesture === 'cimdik') { this.offN++; if (this.offN >= 1) { this.pinching = true; this.pinchSince = now; this.pinchStartPalm = { ...pp }; this.offN = 0; ev.pinchDown = true; } }
       else this.offN = 0;
     } else if (this.shape.pinch > PINCH_OFF) { this.offN++; if (this.offN >= 2) { this.pinching = false; this.offN = 0; ev.pinchUp = true; } }
     else this.offN = 0;
