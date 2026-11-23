@@ -126,6 +126,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   // Otomatik mod (varsayılan açık): net eylemler onay beklemeden uygulanır. Belirsiz olanlar (birden çok eşleşme, eşleşmeyen proje, önizleme gerektirenler) yine kartla sorar.
   const [auto, setAuto] = useState<boolean>(() => { try { return localStorage.getItem('assistant_auto_v1') !== '0'; } catch { return true; } });
   const autoRef = useRef(auto); autoRef.current = auto;
+  // Geniş ekranda panel tam yükseklikte olursa sağ üstteki pencere/araç düğmelerini örter; bu yüzden orada ekranın ~2/3'ü kadar ve alta yaslı açılır.
+  const [wide, setWide] = useState<boolean>(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 769px)').matches);
+  useEffect(() => { const mq = window.matchMedia('(min-width: 769px)'); const f = () => setWide(mq.matches); mq.addEventListener('change', f); return () => mq.removeEventListener('change', f); }, []);
   const toggleAuto = () => { const n = !auto; setAuto(n); try { localStorage.setItem('assistant_auto_v1', n ? '1' : '0'); } catch { /* yoksay */ } };
   const cardMeta = useRef(new Map<string, AAction>());
   // İşlem bir sayfayı ilgilendiriyorsa başarıdan sonra o sayfa açılır; telefonda panel de kapanır ki sonuç görünsün.
@@ -927,7 +930,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       )}
 
       {open && (
-        <div role="dialog" aria-label="Asistan" style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(430px, 100vw)', background: 'var(--bg-secondary)', borderLeft: border, display: 'flex', flexDirection: 'column', zIndex: 2147482000, boxShadow: '-8px 0 30px rgba(0,0,0,0.35)' }}>
+        <div role="dialog" aria-label="Asistan" style={{ position: 'fixed', right: 0, bottom: 0, ...(wide ? { height: '66vh', borderTop: border, borderTopLeftRadius: '10px' } : { top: 0 }), width: 'min(430px, 100vw)', background: 'var(--bg-secondary)', borderLeft: border, display: 'flex', flexDirection: 'column', zIndex: 2147482000, boxShadow: '-8px 0 30px rgba(0,0,0,0.35)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderBottom: border }}>
             <Sparkles size={16} color="var(--accent-color)" />
             <div style={{ fontWeight: 500, flex: 1 }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>

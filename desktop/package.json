@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "1.79.20",
+  "version": "1.79.21",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
