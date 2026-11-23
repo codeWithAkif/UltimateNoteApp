@@ -588,6 +588,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     };
     for (let adim = 1; adim <= 14; adim++) {
       if (stopRef.current) { finish('durdu', 'Durduruldu.'); return; }
+      if (voiceRef.current) setVState('acting');
       const { els, map } = snapshotPage(document);
       let step: Step;
       try { step = await planStep({ talimat, els, map, gecmis, ekranAd: screenById(tabRef.current)?.ad || tabRef.current, adim }); }
@@ -595,15 +596,26 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       if (stopRef.current) { finish('durdu', 'Durduruldu.'); return; }
       setRun(r => (r ? { ...r, adim, log: [...r.log, step.aciklama] } : r));
       if (step.tur === 'bitti') { finish('bitti', step.aciklama); return; }
-      if (step.tur === 'sor') { finish('durdu', step.aciklama); setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: step.aciklama }]); return; }
+      if (step.tur === 'sor') {
+        setMsgs(ms => [...ms, { id: newId(), role: 'ai', text: step.aciklama }]);
+        // Sesli modda eksik bilgi sesli sorulur, cevap dinlenir ve ajan kaldığı yerden devam eder ("toplantı kiminle?" gibi)
+        if (voiceRef.current) {
+          const ans = await voiceAsk(step.aciklama);
+          if (ans && voiceRef.current && !stopRef.current) { gecmis.push(`Kullanıcıya soruldu: "${step.aciklama}" → cevabı: "${ans}"`); setVState('acting'); continue; }
+        }
+        finish('durdu', step.aciklama); return;
+      }
       if (step.tur === 'basarisiz') { finish('hata', step.aciklama); return; }
       if (step.tur === 'git') { onNavigate(step.ekran!); gecmis.push(`${step.aciklama} → ekran açıldı`); await wait(900); continue; }
       const el = map.get(step.ref!); const pe = els.find(e => e.ref === step.ref);
       if (!el) { finish('hata', 'Öğe bulunamadı.'); return; }
       if (pe?.risk === 'yasak') { finish('durdu', `"${pe.ad}" düğmesine dokunmam yasak (birleştirme/yayın gibi işlemler yalnızca sizin elinizde).`); return; }
       highlight(el, 1500);
-      const needConfirm = pe?.risk === 'onay' || stepModeRef.current;
-      if (needConfirm) {
+      const needConfirm = pe?.risk === 'onay' || (stepModeRef.current && !voiceRef.current);
+      if (voiceRef.current && pe?.risk === 'onay') {
+        if (!(await voiceConfirm(`“${pe.ad}” işlemini yapayım mı? Geri alınamayabilir.`))) { finish('durdu', 'Onay verilmedi, yapmadım.'); return; }
+        setVState('acting'); await wait(300);
+      } else if (needConfirm) {
         const ans = await new Promise<'yap' | 'yaptim' | 'dur'>(res => setConfirm({ step, pe, resolve: res, neden: pe?.risk === 'onay' ? 'Bu işlem geri alınamayabilir, onayınız gerekiyor.' : 'Adım adım kip açık.' }));
         setConfirm(null);
         if (ans === 'dur' || stopRef.current) { finish('durdu', 'Durduruldu.'); return; }
@@ -627,6 +639,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       case 'kart_ekle': return !!a.kartlar?.length;
       case 'not_olustur': return filesRef.current[`${(a.klasor || '').split('/').map(sanitizeName).filter(Boolean).join('/')}${a.klasor ? '/' : ''}${sanitizeName(a.baslik || '')}.md`] === undefined;
       case 'gorev': case 'gorevler': return !a.projeIstek;
+      case 'ui': return voiceRef.current && !!a.talimat; // sayfayı sizin yerinize kullanma: yalnızca sesli konuşmada (metinde 'Başla' kartı kalır)
       case 'proje_ac': return !!a.musteri;
       case 'gorev_tasi': case 'gorev_gun': return (c.cands?.length ?? 0) === 1;
       case 'alisveris_al': return !!c.buy?.length && c.buy.every(g => g.cands.length <= 1) && c.buy.some(g => g.cands.length === 1);
@@ -652,6 +665,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       case 'kelime_ekle': return doWords(msgId, c);
       case 'kart_ekle': return doCards(msgId, c, (noteOpen ? activeNotePath : null) || 'Ezber Kartları.md');
       case 'ortam': return doAmbient(msgId, c);
+      case 'ui': return runAgent(msgId, c);
       case 'not_olustur': return doNote(msgId, c);
       case 'git': onNavigate(a.ekran!); patchCard(msgId, c.id, { state: 'yapildi' }); return;
       default: return;
@@ -677,7 +691,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     setMsgs(ms => [...ms, um]);
     try {
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
-      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), ortamDurum: (() => { const st = ambientAudioService.getState(); const on = AMBIENT_SOUNDS.filter(s => st.playingMap[s.id] && st.isGlobalPlaying && !st.isMuted).map(s => `${s.name} %${Math.round((st.volumeMap[s.id] ?? 0) * 100)}`); return on.join(', '); })(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message });
+      const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), ortamDurum: (() => { const st = ambientAudioService.getState(); const on = AMBIENT_SOUNDS.filter(s => st.playingMap[s.id] && st.isGlobalPlaying && !st.isMuted).map(s => `${s.name} %${Math.round((st.volumeMap[s.id] ?? 0) * 100)}`); return on.join(', '); })(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message: voiceRef.current ? `${message}
+
+[Sesli konuşma: cevabın sesli okunacak, en çok 2 kısa cümle yaz. Bir iş için gerekli bilgi eksikse (saat, kiminle, ne hakkında) tahmin etme; tek kısa soru sor, cevabı bir sonraki mesajda gelecek.]` : message });
       // Notlarımla Sohbet: not sorusu salt okunur olduğundan onay kartı olmadan, notlar aranıp cevap doğrudan yazılır.
       const ask = res.eylemler.find(a => a.tur === 'not_sor');
       let answerText = '';
@@ -724,7 +740,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       setMsgs(ms => [...ms, am]);
       for (const c of cards) cardMeta.current.set(c.id, c.a);
       // Otomatik mod: net eylemler sırayla (aynı dosyaya yazanlar birbirini ezmesin diye) onay beklemeden uygulanır.
-      const todo = autoRef.current ? cards.filter(autoOk) : [];
+      const todo = (autoRef.current || voiceRef.current) ? cards.filter(autoOk) : [];
       if (todo.length) {
         const job = (async () => { for (const c of todo) { patchCard0(am.id, c.id, { state: 'hazirlaniyor' }); try { await runCard(am.id, c); } catch (e: any) { patchCard0(am.id, c.id, { state: 'hata', not: String(e?.message || e) }); } } })();
         // Sesli modda sonuç söylenecek: işler bitmeden cevap okunmasın.
@@ -736,7 +752,9 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
         if (c.a.tur === 'inbox_ayir') void prepareInbox(am.id, c);
       }
       const hatalar = todo.map(c => cardRes.current.get(c.id)).filter(r => r?.state === 'hata').map(r => r?.not || 'hata');
-      return { say: answerText || res.cevap, bekleyen: cards.filter(c => !todo.includes(c)).length, hatalar };
+      // Sayfa ajanı bir şey yaptıysa sonucu da söylenir ("Toplantıyı ekledim" gibi)
+      const ajanSonuc = voiceRef.current ? todo.filter(c => c.a.tur === 'ui').map(c => cardRes.current.get(c.id)).filter(r => r?.state === 'yapildi' && r.not).map(r => r!.not).join(' ') : '';
+      return { say: [answerText || res.cevap, ajanSonuc].filter(Boolean).join(' '), bekleyen: cards.filter(c => !todo.includes(c)).length, hatalar };
     } catch (e: any) { setErr(String(e?.message || e)); return { say: `Bir sorun oldu: ${String(e?.message || e).slice(0, 140)}`, bekleyen: 0, hatalar: [] }; }
     finally { setBusy(false); }
   };
@@ -806,13 +824,22 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
     return t || 'Tamam.';
   };
   const sayIt = async (text: string) => { const sp = speak(text); vSpeak.current = sp; setVState('speaking'); await sp.done; vSpeak.current = null; };
+  // Sesli soru: soruyu okur, cevabı dinler (boş dönerse cevap yok demektir)
+  const voiceAsk = async (q: string): Promise<string> => {
+    setVReply(q); await sayIt(q);
+    if (!voiceRef.current) return '';
+    setVState('listening'); setVUser('');
+    const a = await listenOnce();
+    return voiceRef.current ? a : '';
+  };
+  const voiceConfirm = async (q: string): Promise<boolean> => /^(evet|tamam|olur|yap|yapabilirsin|onayl[ai]yorum|devam)([ .!,]|$)/.test(foldTr(await voiceAsk(q)).trim());
   const stopVoice = () => { voiceRef.current = false; vStop.current?.(); vSpeak.current?.stop(); };
   const startVoice = async () => {
     if (voiceRef.current) return;
     if (!isGeminiConfigured()) { setErr('Yapay zekâ ayarlı değil: Ayarlar > AI Mentor\'dan Gemini anahtarı ekleyin.'); return; }
     if (!SpeechCls && !canTranscribe()) { setErr('Sesli mod için mikrofon ve Ayarlar > AI Mentor\'da Gemini anahtarı gerekir.'); return; }
     voiceRef.current = true; vFatal.current = '';
-    setVoice(true); setVUser(''); setVReply(''); setVNote(''); setErr('');
+    setOpen(false); setVoice(true); setVUser(''); setVReply(''); setVNote(''); setErr('');
     let idle = 0;
     try {
       while (voiceRef.current) {
