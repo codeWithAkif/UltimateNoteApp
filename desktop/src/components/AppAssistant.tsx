@@ -8,7 +8,7 @@ import { isGeminiConfigured } from '../services/geminiMentor';
 import { parseDayNote } from './DayNoteCards';
 import { buildBriefing } from '../services/assistant/dayBriefing';
 import JarvisCore, { type CoreState } from './JarvisCore';
-import { canRecord, canTranscribe, startRecording, transcribe, speak, type Recording, type Speaking } from '../services/assistant/voice';
+import { canRecord, canTranscribe, startRecording, transcribe, speak, useGeminiVoice, setGeminiVoice, type Recording, type Speaking } from '../services/assistant/voice';
 import VoiceMode from './VoiceMode';
 import type { DeskCard } from './HoloDesk';
 // El kontrolü (MediaPipe) yalnızca açılınca yüklenir: uygulamanın açılışını yavaşlatmaz
@@ -663,6 +663,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       setInput(''); setErr('');
       if (voiceRef.current) { const say = buildBriefing(filesRef.current, new Date()).map(x => x.oku).join(' '); return { say: say || 'Bugün için kayıtlı bir şey bulamadım.', bekleyen: 0, hatalar: [] }; }
       setMsgs(ms => [...ms, { id: newId(), role: 'user', text: message }, { id: newId(), role: 'ai', text: 'Günlük brifingi açıyorum. Sahneler notlarınızdan hesaplanır, yapay zekâ rakam uydurmaz.' }]);
+      // El masası telefonda ekranı kapladığı ve elemanlar üst üste bindiği için yalnızca geniş ekranda açılır; telefonda brifing düz yazı olarak sohbete gelir.
+      if (!wide) { const say = buildBriefing(filesRef.current, new Date()).map(x => x.oku).join(' '); setMsgs(ms => ms.map((m, i) => (i === ms.length - 1 ? { ...m, text: say || 'Bugün için kayıtlı bir şey bulamadım.' } : m))); return; }
       setHoloBrief(true); setHolo(true);
       return;
     }
@@ -750,6 +752,8 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const vLevel = useRef<() => number>(() => 0);
   const vFatal = useRef('');
   const [wake, setWake] = useState<boolean>(() => { try { return localStorage.getItem('assistant_wake_v1') === '1'; } catch { return false; } });
+  const [gv, setGv] = useState<boolean>(() => useGeminiVoice());
+  const setGvP = (v: boolean) => { setGv(v); setGeminiVoice(v); };
   const setWakeP = (v: boolean) => { setWake(v); try { localStorage.setItem('assistant_wake_v1', v ? '1' : '0'); } catch { /* yoksay */ } };
 
   const listenOnce = (): Promise<string> => new Promise((resolve) => {
@@ -1080,7 +1084,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   const wrapStyle: React.CSSProperties = { fontFamily: FONT, fontSize: '13px', color: 'var(--text-primary)' };
   return (
     <div data-agent-ignore="1" style={wrapStyle}>
-      {voice && <VoiceMode state={vState} level={() => (vState === 'speaking' ? (vSpeak.current?.level?.() ?? 0.35) : vLevel.current())} user={vUser} reply={vReply} note={vNote} wake={wake} canWake={!!SpeechCls} onWake={setWakeP} onClose={stopVoice} />}
+      {voice && <VoiceMode state={vState} level={() => (vState === 'speaking' ? (vSpeak.current?.level?.() ?? 0.35) : vLevel.current())} user={vUser} reply={vReply} note={vNote} wake={wake} canWake={!!SpeechCls} onWake={setWakeP} gv={gv} onGv={setGvP} onClose={stopVoice} />}
       {holo && (
         <Suspense fallback={null}>
           <HoloDesk cards={deskCards} scenes={deskScenes} autoBrief={holoBrief} onNavigate={onNavigate}

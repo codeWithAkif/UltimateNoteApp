@@ -6,9 +6,9 @@ import JarvisCore, { type CoreState } from './JarvisCore';
 
 const LABEL: Record<CoreState, string> = { idle: 'Hazır', listening: 'Dinliyorum…', thinking: 'Düşünüyorum…', speaking: 'Konuşuyorum…', acting: 'İşlem yapıyorum…' };
 
-export default function VoiceMode({ state, level, user, reply, note, wake, canWake, onWake, onClose }: {
+export default function VoiceMode({ state, level, user, reply, note, wake, canWake, onWake, gv, onGv, onClose }: {
   state: CoreState; level: () => number; user: string; reply: string; note: string;
-  wake: boolean; canWake: boolean; onWake: (v: boolean) => void; onClose: () => void;
+  wake: boolean; canWake: boolean; onWake: (v: boolean) => void; gv: boolean; onGv: (v: boolean) => void; onClose: () => void;
 }) {
   const size = Math.min(260, Math.round((typeof window !== 'undefined' ? window.innerWidth : 360) * 0.62));
   return (
@@ -23,6 +23,9 @@ export default function VoiceMode({ state, level, user, reply, note, wake, canWa
       {reply && <div style={{ marginTop: '12px', fontSize: '15px', lineHeight: 1.5, textAlign: 'center', maxWidth: '560px', maxHeight: '26vh', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{reply}</div>}
       {note && <div style={{ marginTop: '12px', fontSize: '13px', color: '#fbbf24', textAlign: 'center', maxWidth: '560px' }}>{note}</div>}
       <div style={{ flex: 1 }} />
+      <label style={{ fontSize: '12.5px', opacity: 0.8, display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' }}>
+        <input type="checkbox" checked={gv} onChange={(e) => onGv(e.target.checked)} /> Gemini sesi kullan (daha doğal, ama ücretsiz kotayı hızlı doldurur)
+      </label>
       {canWake && (
         <label style={{ fontSize: '12.5px', opacity: 0.8, display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' }}>
           <input type="checkbox" checked={wake} onChange={(e) => onWake(e.target.checked)} /> “Ultran” deyince sesli modu aç (uygulama açıkken dinler)

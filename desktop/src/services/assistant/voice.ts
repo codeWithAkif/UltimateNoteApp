@@ -68,6 +68,11 @@ export async function transcribe(blob: Blob): Promise<string> {
 // Asistan sesi erkek: Gemini'nin hazır seslerinden derin ve sakin olanı (Charon). Varsayılan ses (Kore) kadın olduğu için açıkça seçilir.
 const ASSISTANT_VOICE = 'Charon';
 
+// Gemini sesi (TTS) ücretsiz kotada çok sınırlı ve her cevapta bir istek yer; bu yüzden varsayılan cihazın kendi sesi (ücretsiz, kotasız).
+const GV_KEY = 'assistant_gemini_voice_v1';
+export const useGeminiVoice = (): boolean => { try { return localStorage.getItem(GV_KEY) === '1'; } catch { return false; } };
+export const setGeminiVoice = (v: boolean) => { try { localStorage.setItem(GV_KEY, v ? '1' : '0'); } catch { /* yoksay */ } };
+
 export interface Speaking { done: Promise<void>; stop: () => void; /** Çalan sesin anlık seviyesi (cihaz sesinde yok: undefined) */ level?: () => number | undefined }
 
 /** Metni okur. Gemini anahtarı varsa doğal ses, hata ya da anahtar yoksa cihazın kendi Türkçe sesi. */
@@ -90,7 +95,7 @@ export function speak(text: string): Speaking {
     } catch { resolve(); }
   });
   const done = (async () => {
-    if (getGeminiApiKey()) {
+    if (getGeminiApiKey() && useGeminiVoice()) {
       try {
         const { audioBase64, mimeType } = await synthesizeSpeech(text.slice(0, 900), ASSISTANT_VOICE);
         if (stopped) return;

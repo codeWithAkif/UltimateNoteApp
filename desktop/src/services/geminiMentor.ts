@@ -57,7 +57,7 @@ const isFallbackWorthy = (e: any): boolean => {
 // Projede yazılan kodun ne için gerekli olduğunu açıklayan Türkçe yorum satırı (Kural 5):
 // Gemini'nin "responseSchema" ile yapılandırılmış JSON çıktısı özelliğini kullanır —
 // serbest metin ayrıştırmaya güvenmek yerine her zaman geçerli JSON döndürmesini garanti eder.
-export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Promise<T> {
+export async function callGeminiOnly<T>(prompt: string, responseSchema: any, model: string = getGeminiModel()): Promise<T> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error('Gemini API anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden ekleyin.');
@@ -69,7 +69,7 @@ export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Pr
   let res: Response;
   try {
     res = await fetch(
-      `${GEMINI_API_BASE}/${getGeminiModel()}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      `${GEMINI_API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -102,12 +102,36 @@ export async function callGeminiOnly<T>(prompt: string, responseSchema: any): Pr
   return JSON.parse(text) as T;
 }
 
+// Gemini "yoğun" (503) ya da kota (429) verince tek model hemen pes ediyordu. Önce kısa bekleyip bir kez daha, olmazsa hafif yedek modellerle denenir:
+// ücretsiz kota model başına ayrı olduğundan yedek model çoğu zaman çalışır. Zaman aşımında (504) aynı modeli tekrar denemeyip doğrudan yedeğe geçilir (bekleme uzamasın).
+const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+const isBusy = (e: any) => [429, 500, 502, 503, 504].includes(e?.status);
+async function callGeminiResilient<T>(prompt: string, responseSchema: any): Promise<T> {
+  const main = getGeminiModel();
+  try { return await callGeminiOnly<T>(prompt, responseSchema, main); }
+  catch (e: any) {
+    if (!isBusy(e)) throw e;
+    let last = e;
+    if (e.status !== 504) {
+      await sleep(1200);
+      try { return await callGeminiOnly<T>(prompt, responseSchema, main); } catch (e2: any) { if (!isBusy(e2)) throw e2; last = e2; }
+    }
+    for (const m of GEMINI_FALLBACK_MODELS) {
+      if (m === main) continue;
+      try { return await callGeminiOnly<T>(prompt, responseSchema, m); }
+      catch (e3: any) { if (e3?.status === 404) continue; last = e3; if (!isBusy(e3)) throw e3; }
+    }
+    throw last;
+  }
+}
+
 // Yapılandırılmış JSON isteği: sağlayıcılar sırayla denenir. Varsayılan sıra: Gemini (ücretsiz) -> Claude Code (yerel, abonelik; Ayarlar'dan açıldıysa)
 // "Önce Claude Code" seçiliyse yerel olan başa geçer. Bir sağlayıcı kota/sunucu/ağ hatası verirse ya da kullanılamazsa
 // sıradakine geçilir (Gemini'nin 400 gibi istek hataları gizlenmez). Hepsi başarısız olursa her birinin nedeni gösterilir.
 export async function callGemini<T>(prompt: string, responseSchema: any): Promise<T> {
   interface Prov { name: string; run: () => Promise<T>; worthy: (e: any) => boolean }
-  const gem: Prov | null = getGeminiApiKey() ? { name: 'Gemini', run: () => callGeminiOnly<T>(prompt, responseSchema), worthy: isFallbackWorthy } : null;
+  const gem: Prov | null = getGeminiApiKey() ? { name: 'Gemini', run: () => callGeminiResilient<T>(prompt, responseSchema), worthy: isFallbackWorthy } : null;
   const cli: Prov | null = isClaudeCliEnabled() ? { name: 'Claude Code (yerel)', run: () => claudeCliJson<T>(prompt, responseSchema), worthy: () => true } : null;
   const order = (isClaudeCliFirst() ? [cli, gem] : [gem, cli]).filter((x): x is Prov => !!x);
   if (order.length === 0) throw new Error('Yapay zekâ anahtarı ayarlanmamış. Ayarlar > AI Mentor bölümünden Gemini anahtarı ekleyin ya da (masaüstünde) Claude Code (yerel) seçeneğini açın.');
