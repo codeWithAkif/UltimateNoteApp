@@ -65,6 +65,9 @@ export async function transcribe(blob: Blob): Promise<string> {
 
 // ---------------------------------------------------------------- sesli okuma
 
+// Asistan sesi erkek: Gemini'nin hazır seslerinden derin ve sakin olanı (Charon). Varsayılan ses (Kore) kadın olduğu için açıkça seçilir.
+const ASSISTANT_VOICE = 'Charon';
+
 export interface Speaking { done: Promise<void>; stop: () => void; /** Çalan sesin anlık seviyesi (cihaz sesinde yok: undefined) */ level?: () => number | undefined }
 
 /** Metni okur. Gemini anahtarı varsa doğal ses, hata ya da anahtar yoksa cihazın kendi Türkçe sesi. */
@@ -78,8 +81,10 @@ export function speak(text: string): Speaking {
     try {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'tr-TR';
-      const v = window.speechSynthesis.getVoices().find(x => x.lang.toLowerCase().startsWith('tr'));
-      if (v) u.voice = v;
+      // Cihaz sesine düşünce de erkek ses aranır (adında erkek/male/Tolga gibi geçen); bulunamazsa ses alçaltılarak erkeğe yaklaştırılır.
+      const tr = window.speechSynthesis.getVoices().filter(x => x.lang.toLowerCase().startsWith('tr'));
+      const male = tr.find(x => /tolga|erkek|\bmale\b|ahmet|cem|yusuf/i.test(x.name) && !/female|kad[ıi]n/i.test(x.name));
+      if (male) u.voice = male; else { if (tr[0]) u.voice = tr[0]; u.pitch = 0.7; }
       u.onend = () => resolve(); u.onerror = () => resolve();
       window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
     } catch { resolve(); }
@@ -87,7 +92,7 @@ export function speak(text: string): Speaking {
   const done = (async () => {
     if (getGeminiApiKey()) {
       try {
-        const { audioBase64, mimeType } = await synthesizeSpeech(text.slice(0, 900));
+        const { audioBase64, mimeType } = await synthesizeSpeech(text.slice(0, 900), ASSISTANT_VOICE);
         if (stopped) return;
         audio = new Audio(pcmBase64ToWavUrl(audioBase64, mimeType));
         meter = makeMeter(audio, true);
