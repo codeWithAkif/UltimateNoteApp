@@ -1,6 +1,7 @@
 ﻿import type { CalendarNavRequest } from '../quickSlots';
 import React, { useState, useEffect, useRef } from 'react';
 import NotesView from './NotesView';
+import DayNoteCards from './DayNoteCards';
 import { createPortal } from 'react-dom';
 import { 
   format, 
@@ -44,7 +45,10 @@ import {
   ChevronUp,
   Building2,
   ExternalLink,
-  ListTodo
+  ListTodo,
+  Maximize2,
+  Minimize2,
+  Search as SearchIcon
 } from 'lucide-react';
 import Hourglass from './Hourglass';
 import { BriefingLauncherModal, MeetingBriefingModal, type BriefingEvent } from './MeetingBriefing';
@@ -650,6 +654,16 @@ export default function CalendarView({
   const [briefingTarget, setBriefingTarget] = useState<{ title: string; when: string } | null>(null);
   const [selectedTaskNotePath, setSelectedTaskNotePath] = useState<string | null>(null);
 
+  // Sağ panel: iki sekme (Planlanmamış görevler / Günlük not), geniş çekmece kipi ve not görünümü (kart/metin).
+  // Hepsi yalnızca bu cihazda hatırlanır; veriye dokunmaz.
+  const [sidebarTab, setSidebarTab] = useState<'gorevler' | 'not'>(() => (localStorage.getItem('calendar_sidebar_tab') === 'not' ? 'not' : 'gorevler'));
+  const [sidebarWide, setSidebarWide] = useState<boolean>(() => localStorage.getItem('calendar_sidebar_wide') === '1');
+  const [noteMode, setNoteMode] = useState<'kart' | 'metin'>(() => (localStorage.getItem('calendar_note_mode') === 'metin' ? 'metin' : 'kart'));
+  const [noteQuery, setNoteQuery] = useState('');
+  const pickSidebarTab = (t: 'gorevler' | 'not') => { setSidebarTab(t); localStorage.setItem('calendar_sidebar_tab', t); };
+  const toggleSidebarWide = () => { const v = !sidebarWide; setSidebarWide(v); localStorage.setItem('calendar_sidebar_wide', v ? '1' : '0'); };
+  const pickNoteMode = (m: 'kart' | 'metin') => { setNoteMode(m); localStorage.setItem('calendar_note_mode', m); };
+
   // Right sidebar resizable width state
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     const saved = localStorage.getItem('calendar_sidebar_width');
@@ -688,6 +702,7 @@ export default function CalendarView({
   const handleSelectTaskForNote = (task: { filePath?: string; noteName?: string; content: string; lineIdx?: number; isExternal?: boolean }) => {
     if (task.isExternal || !task.filePath) return;
     setSelectedTaskNotePath(task.filePath);
+    pickSidebarTab('not');
   };
   // İSTEK: takvimde müşteri seçince sadece o müşterilerin görevleri gösterilsin, "Tümü"
   // (boş seçim) seçilince eskisi gibi hepsi görünsün (çoklu seçim desteği).
@@ -713,6 +728,9 @@ export default function CalendarView({
   // artık HER platformda varsayılan olarak "Günlük" görünümüyle açılıyor.
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'threeDay' | 'day'>('day');
   const [currentDate, setCurrentDate] = useState(new Date());
+  // Panelde gösterilecek not: seçilen görevin notu; seçim yoksa o günün günlük notu (varsa).
+  const dailyNotePath = `Günlükler/${format(currentDate, 'yyyy-MM-dd')}.md`;
+  const notePathNow: string | null = selectedTaskNotePath || (fileContents[dailyNotePath] !== undefined ? dailyNotePath : null);
   // Hızlı slot yönlendirmesi: bugüne ve istenen görünüme geç.
   useEffect(() => {
     if (!navRequest) return;
@@ -5224,7 +5242,7 @@ export default function CalendarView({
       {/* 3. Right Section: Unscheduled Tasks Inbox panel */}
       <div 
         className={`calendar-unscheduled-sidebar ${isUnplannedOpen ? 'open' : ''} ${embedded ? 'force-hidden' : ''}`}
-        style={{ width: `${sidebarWidth}px`, position: 'relative' }}
+        style={{ width: `${sidebarWide && window.innerWidth > 900 ? Math.min(900, Math.round(window.innerWidth * 0.6)) : sidebarWidth}px`, position: 'relative' }}
         onDragOver={(e) => {
           e.preventDefault();
           e.currentTarget.classList.add('drop-hover');
@@ -5252,11 +5270,21 @@ export default function CalendarView({
           title="Kenar çubuğunu genişletmek/daraltmak için sürükleyin"
         />
 
-        <div className="sidebar-header-title">
-          <CheckSquare size={16} className="text-accent" />
-          <h3>Planlanmamış Görevler</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', borderBottom: '1px solid var(--border-color)', marginTop: '-6px' }}>
+          {([['gorevler', 'Planlanmamış', unscheduledTasks.length], ['not', 'Günlük not', 0]] as ['gorevler' | 'not', string, number][]).map(([id, label, n]) => (
+            <button key={id} type="button" onClick={() => pickSidebarTab(id)}
+              style={{ background: 'none', border: 'none', borderBottom: `2px solid ${sidebarTab === id ? 'var(--accent-color, #6366f1)' : 'transparent'}`, color: sidebarTab === id ? 'var(--text-primary)' : 'var(--text-muted)', padding: '8px 12px', fontSize: '13px', fontWeight: sidebarTab === id ? 600 : 400, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', fontFamily: 'inherit' }}>
+              {label}{n > 0 && <span style={{ fontSize: '10.5px', fontWeight: 700, background: 'rgba(255,255,255,0.08)', borderRadius: '10px', padding: '1px 7px' }}>{n}</span>}
+            </button>
+          ))}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="hidden-mobile" onClick={toggleSidebarWide} title={sidebarWide ? 'Paneli daralt' : 'Paneli genişlet'} aria-label={sidebarWide ? 'Paneli daralt' : 'Paneli genişlet'}
+            style={{ background: 'none', border: 'none', color: sidebarWide ? 'var(--accent-color, #6366f1)' : 'var(--text-muted)', cursor: 'pointer', padding: '6px', display: 'inline-flex' }}>
+            {sidebarWide ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
         </div>
-        
+
+        {sidebarTab === 'gorevler' && (<>
         <p className="sidebar-subtitle-desc">
           Görevleri takvime sürükleyin veya takvimden buraya geri bırakarak planı kaldırın.
         </p>
@@ -5673,21 +5701,44 @@ export default function CalendarView({
           </div>
         )}
 
+        </>)}
+
         {/* Bottom Section: Selected Task Note Editor (NotesView) */}
+        {sidebarTab === 'not' && (
         <div
           className="calendar-note-panel"
           style={{
-            borderTop: '1px solid var(--border-color)',
-            paddingTop: '12px',
-            marginTop: '12px',
             display: 'flex',
             flexDirection: 'column',
             flex: 1,
-            minHeight: '220px',
+            minHeight: 0,
             overflow: 'hidden'
           }}
         >
-          {!selectedTaskNotePath ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: '1px solid var(--border-color)', marginBottom: '8px' }}>
+            <FileText size={14} style={{ color: 'var(--text-muted)', flex: 'none' }} />
+            <span style={{ fontSize: '13px', fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {notePathNow ? notePathNow.split('/').pop()!.replace(/\.md$/i, '') : 'Not seçilmedi'}
+            </span>
+            {notePathNow && noteMode === 'kart' && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '3px 8px' }}>
+                <SearchIcon size={12} style={{ color: 'var(--text-muted)' }} />
+                <input value={noteQuery} onChange={(e) => setNoteQuery(e.target.value)} placeholder="Ara" aria-label="Notta ara"
+                  style={{ width: sidebarWide ? '150px' : '80px', background: 'transparent', border: 'none', outline: 'none', color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'inherit' }} />
+              </span>
+            )}
+            {notePathNow && (
+              <span style={{ display: 'inline-flex', border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden' }}>
+                {(['kart', 'metin'] as const).map(m => (
+                  <button key={m} type="button" onClick={() => pickNoteMode(m)}
+                    style={{ border: 'none', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', fontFamily: 'inherit', background: noteMode === m ? 'var(--accent-color, #6366f1)' : 'transparent', color: noteMode === m ? '#fff' : 'var(--text-secondary)' }}>
+                    {m === 'kart' ? 'Kart' : 'Metin'}
+                  </button>
+                ))}
+              </span>
+            )}
+          </div>
+          {!notePathNow ? (
             <div style={{
               flex: 1,
               display: 'flex',
@@ -5709,6 +5760,12 @@ export default function CalendarView({
                 Takvimdeki herhangi bir göreve tıkladığınızda not içeriği burada açılır ve doğrudan düzenleyebilirsiniz.
               </span>
             </div>
+          ) : noteMode === 'kart' ? (
+            <DayNoteCards
+              content={fileContents[notePathNow] ?? ''}
+              query={noteQuery}
+              clientBySlug={(slug) => Object.keys(clientProjectSlugs).find(c => (clientProjectSlugs[c] || []).includes(slug))}
+            />
           ) : (
             <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <NotesView
@@ -5716,7 +5773,7 @@ export default function CalendarView({
                 selectedTag={null}
                 fileContents={fileContents}
                 notes={notes}
-                activeNotePath={selectedTaskNotePath}
+                activeNotePath={notePathNow}
                 setActiveNotePath={setSelectedTaskNotePath}
                 onSaveNote={onSaveNote}
                 onDeletePath={onDeletePath}
@@ -5739,6 +5796,7 @@ export default function CalendarView({
             </div>
           )}
         </div>
+        )}
       </div>
 
       {popoverState && createPortal(

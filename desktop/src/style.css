@@ -9370,3 +9370,10 @@ input:focus, textarea:focus, select:focus {
   .kanban-card.kb-anim, .kanban-card.kb-anim::before, .kanban-card.kb-anim::after,
   .dev-glow::before, .kb-eye, .kb-lock, .kb-live-dot, .ai-working::after, .ai-working .ai-dot, .kanban-card .kb-check { animation: none !important; }
 }
+
+
+/* Takvim sağ panelindeki not (Metin kipi): araç çubuğu yalnızca "Ara" kalacak şekilde sadeleştirilir; yazma alanı büyür. */
+.calendar-note-panel .editor-header { padding: 4px 0 !important; min-height: 0 !important; }
+.calendar-note-panel .editor-header .active-note-meta { display: none !important; }
+.calendar-note-panel .editor-header button:not(.find-toggle-btn):not(.btn-back) { display: none !important; }
+.calendar-note-panel .editor-header .sync-status-container span { display: none !important; }
