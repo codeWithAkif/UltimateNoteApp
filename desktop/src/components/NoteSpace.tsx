@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Search, ExternalLink, Hand, Columns2, Trash2 } from 'lucide-react';
+import { X, Search, ExternalLink, Hand, Columns2, Trash2, Filter, LayoutGrid } from 'lucide-react';
+import NoteText from './NoteText';
+import StudyTable from './StudyTable';
+import { noteTags, folderOf } from '../services/noteSpaceUtils';
 import { HandBank, type P } from '../services/hands/gestures';
 import { openCamera, loadLandmarker, landmarkerReady, detect } from '../services/hands/tracker';
 
@@ -39,6 +42,7 @@ function buildNodes(files: Record<string, string>): N[] {
   });
   return out;
 }
+
 
 // Notlar arası bağlantılar: [[Not adı]], [[Not adı|takma ad]], [[Not adı#başlık]]. Ad eşleşmesi klasörsüz ve büyük/küçük harfsiz yapılır.
 interface Edge { a: N; b: N }
@@ -140,24 +144,6 @@ function layout(nodes: N[], edges: Edge[]) {
   nodes.forEach((x, i) => { x.X = X[i]; x.Y = Y[i]; x.Z = Z[i]; });
 }
 
-// Panelde gösterilen not metni: yalnızca okunur; başlık, madde ve görev işaretleri hafifçe biçimlenir
-function NoteText({ text }: { text: string }) {
-  const body = text.replace(/^---[\s\S]*?---\s*/, '');
-  return (
-    <div style={{ fontSize: 13, lineHeight: 1.55 }}>
-      {body.split(/\r?\n/).map((ln, i) => {
-        const h = /^(#{1,6})\s+(.*)/.exec(ln);
-        if (h) return <div key={i} style={{ fontWeight: 600, fontSize: h[1].length === 1 ? 18 : h[1].length === 2 ? 15.5 : 14, margin: '10px 0 4px', color: '#e8fbff' }}>{h[2]}</div>;
-        const t = /^(\s*)- \[([ xX])\]\s*(.*)/.exec(ln);
-        if (t) return <div key={i} style={{ paddingLeft: t[1].length * 6, display: 'flex', gap: 7, opacity: t[2] === ' ' ? 1 : 0.55 }}><span>{t[2] === ' ' ? '☐' : '☑'}</span><span style={{ textDecoration: t[2] === ' ' ? 'none' : 'line-through' }}>{t[3]}</span></div>;
-        const b = /^(\s*)[-*]\s+(.*)/.exec(ln);
-        if (b) return <div key={i} style={{ paddingLeft: b[1].length * 6 + 4, display: 'flex', gap: 7 }}><span style={{ opacity: 0.6 }}>•</span><span>{b[2]}</span></div>;
-        return <div key={i} style={{ minHeight: ln.trim() ? undefined : 8, overflowWrap: 'anywhere' }}>{ln}</div>;
-      })}
-    </div>
-  );
-}
-
 const CSS = `
 .ns-root{position:fixed;inset:0;z-index:2147483000;background:radial-gradient(ellipse at 40% 45%,#06223a 0%,#02080f 70%);color:#d7f3ff;font-family:'Inter','Segoe UI',system-ui,sans-serif;overflow:hidden;user-select:none}
 .ns-space{position:absolute;inset:0;z-index:0;touch-action:none;cursor:grab;background-image:linear-gradient(rgba(0,200,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(0,200,255,.045) 1px,transparent 1px);background-size:64px 64px}
@@ -175,6 +161,13 @@ const CSS = `
 .ns-card:hover .ns-plus,.ns-card.col .ns-plus{opacity:1}.ns-card.col .ns-plus{background:#ffd166;color:#241800}
 .ns-top{position:absolute;z-index:5;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:10px 160px 10px 14px;pointer-events:none;font-size:12px}
 .ns-top>*{pointer-events:auto}
+.ns-filter{position:absolute;z-index:6;left:14px;top:52px;width:min(560px,calc(100% - 28px));max-height:62vh;overflow:auto;padding:12px;border-radius:14px;background:rgba(4,22,36,.96);border:1px solid rgba(0,200,255,.45);box-shadow:0 10px 40px rgba(0,0,0,.55);display:flex;flex-direction:column;gap:8px;font-size:12px}
+.ns-fh{letter-spacing:.08em;text-transform:uppercase;color:#7fdcff;font-size:11px}.ns-fh span{opacity:.6;text-transform:none;letter-spacing:0}
+.ns-chips{display:flex;flex-wrap:wrap;gap:6px}
+.ns-fchip{cursor:pointer;background:rgba(0,60,90,.5);border:1px solid rgba(0,200,255,.35);color:#cfefff;border-radius:999px;padding:4px 10px;font:inherit}.ns-fchip i{font-style:normal;opacity:.55;margin-left:4px}.ns-fchip.on{background:rgba(0,170,230,.55);border-color:#7fe6ff;color:#fff}
+.ns-ftag{background:rgba(0,40,60,.7);border:1px solid rgba(0,200,255,.35);border-radius:8px;padding:5px 8px;color:#e8fbff;font:inherit;outline:none;user-select:text}
+.ns-fa{display:flex;gap:8px;align-items:center}.ns-fa span{margin-left:auto;opacity:.7}
+.ns-empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#7fb8cc;pointer-events:none;z-index:2}
 .ns-title{letter-spacing:.14em;text-transform:uppercase;color:#7fdcff;font-size:12px}
 .ns-search{display:flex;align-items:center;gap:6px;background:rgba(0,40,60,.7);border:1px solid rgba(0,200,255,.4);border-radius:9px;padding:5px 9px;min-width:220px}
 .ns-search input{background:none;border:none;outline:none;color:#e8fbff;font-size:12.5px;width:100%;font-family:inherit;user-select:text}
@@ -210,14 +203,41 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
   const cbRef = useRef({ onOpenInApp, onClose }); cbRef.current = { onOpenInApp, onClose };
 
   // Yerleşim hesabı pahalı: yalnızca not listesi ya da bağlantılar değişince yapılır; içerik düzenlemeleri aynı konumları kullanır
+  // Filtre: klasörler (herhangi biri) ve etiketler (hepsi). Düğümler süzülmüş kümeden kurulur; kalan notlar baştan, sıkı yerleşir
+  const [study, setStudy] = useState<string[] | null>(null); // Çalışma masası açıkken uzay duraklar
+  const studyRef = useRef(false); studyRef.current = !!study;
+  const [selFolders, setSelFolders] = useState<string[]>([]);
+  const [selTags, setSelTags] = useState<string[]>([]);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [tagQ, setTagQ] = useState('');
+  const meta = useMemo(() => {
+    const folders = new Map<string, number>(), tags = new Map<string, number>(), per = new Map<string, Set<string>>();
+    for (const p of Object.keys(files)) {
+      if (!p.endsWith('.md') || p.split('/').some(x => x.startsWith('.'))) continue;
+      const f = folderOf(p); folders.set(f, (folders.get(f) || 0) + 1);
+      const t = noteTags(files[p] || ''); per.set(p, t);
+      for (const x of t) tags.set(x, (tags.get(x) || 0) + 1);
+    }
+    return { folders, tags, per, total: per.size };
+  }, [files]);
+  const filteredFiles = useMemo(() => {
+    if (!selFolders.length && !selTags.length) return files;
+    const out: Record<string, string> = {};
+    for (const [p, t] of meta.per) {
+      if (selFolders.length && !selFolders.includes(folderOf(p))) continue;
+      if (selTags.length && !selTags.every(x => t.has(x))) continue;
+      out[p] = files[p];
+    }
+    return out;
+  }, [files, meta, selFolders, selTags]);
   const layoutCache = useRef<{ sig: string; pos: Map<string, [number, number, number]> } | null>(null);
   const { nodes, links } = useMemo(() => {
-    const nds = buildNodes(files), lk = buildEdges(nds, files);
+    const nds = buildNodes(filteredFiles), lk = buildEdges(nds, filteredFiles);
     const sig = `${nds.length}:${lk.edges.map(e => `${e.a.path}>${e.b.path}`).join('|')}:${nds.map(x => x.path).join('|')}`;
     if (layoutCache.current && layoutCache.current.sig === sig) { for (const x of nds) { const q = layoutCache.current.pos.get(x.path); if (q) { x.X = q[0]; x.Y = q[1]; x.Z = q[2]; } } }
     else { layout(nds, lk.edges); layoutCache.current = { sig, pos: new Map(nds.map(x => [x.path, [x.X, x.Y, x.Z] as [number, number, number]])) }; }
     return { nodes: nds, links: lk };
-  }, [files]);
+  }, [filteredFiles]);
   const nodesRef = useRef(nodes); nodesRef.current = nodes;
   const linksRef = useRef(links); linksRef.current = links;
   const linkRef = useRef<HTMLCanvasElement>(null);
@@ -227,6 +247,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
   const [drop, setDrop] = useState(false);
   const [carry, setCarry] = useState(false); // bir kart elde taşınıyor: raf parlar, "buraya bırak" olduğu anlaşılsın
   const [handsOn, setHandsOn] = useState(() => { try { return window.innerWidth >= 900 && localStorage.getItem('ns-hands-off') !== '1'; } catch { return window.innerWidth >= 900; } });
+  const handsActive = handsOn && !study;
   const toggleHands = () => setHandsOn(v => { try { localStorage.setItem('ns-hands-off', v ? '1' : '0'); } catch { /* yoksay */ } return !v; });
   const [status, setStatus] = useState('');
   const openRef = useRef(open); openRef.current = open;
@@ -236,12 +257,21 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
   const panelW = useRef(0);
   const act = useRef<{ pdown: (p: Ptr) => void; pmove: (p: Ptr) => void; pup: (p: Ptr) => void; zoomBy: (dz: number) => void }>({ pdown: () => {}, pmove: () => {}, pup: () => {}, zoomBy: () => {} });
 
+  // Filtre değişince düğümler yeniden yerleşir: kamera başa döner (eski konum artık boş bir yer olabilir)
+  const filterKey = `${selFolders.join('|')}#${selTags.join('|')}`;
+  const firstFilter = useRef(true);
+  useEffect(() => {
+    if (firstFilter.current) { firstFilter.current = false; return; }
+    tgt.current = { x: 0, y: 0, z: -140 }; cam.current = { x: 0, y: 0, z: -140 }; dirty.current = true;
+  }, [filterKey]);
   const maxZ = useMemo(() => nodes.reduce((m, n) => Math.max(m, n.Z), 0), [nodes]);
   const maxZRef = useRef(maxZ); maxZRef.current = maxZ;
 
   const fly = (n: N) => { const d = n.Z - cam.current.z; tgt.current = { x: n.X, y: n.Y, z: d < 480 ? tgt.current.z : n.Z - 480 }; dirty.current = true; }; // zaten yakınsa mesafe korunur: not açılınca kamera geri çekilmez
   const openNotes = (paths: string[]) => { setOpen(paths.slice(0, 4)); const w = Math.min(window.innerWidth * 0.94, Math.min(paths.length, 4) * 430, window.innerWidth * 0.8); panelW.current = paths.length ? w : 0; dirty.current = true; };
-  const toggleShelf = (path: string) => setShelf(s => (s.includes(path) ? s.filter(x => x !== path) : [...s, path]));
+  // Raf en çok 10 not alır: Çalışma masasında büyük kartlar için
+  const SHELF_MAX = 10;
+  const toggleShelf = (path: string) => setShelf(s => { if (s.includes(path)) return s.filter(x => x !== path); if (s.length >= SHELF_MAX) { setStatus(`Raf dolu (en fazla ${SHELF_MAX} not)`); setTimeout(() => setStatus(x => (x.startsWith('Raf dolu') ? '' : x)), 1800); return s; } return [...s, path]; });
 
   // arama: eşleşmeyenler soluklaşır
   useEffect(() => {
@@ -338,7 +368,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
       if (!p.down) return; p.down = false; ghost.style.display = 'none'; setDrop(false); setCarry(false); p.card?.el?.classList.remove('held');
       const quick = performance.now() - p.t0 < 900 && p.moved < (p.hand ? 40 : 6);
       if (p.mode === 'card' && p.card) {
-        if (p.moved > 16 && overTray(p.x, p.y)) setShelf(s => (s.includes(p.card!.path) ? s : [...s, p.card!.path]));
+        if (p.moved > 16 && overTray(p.x, p.y)) setShelf(s => (s.includes(p.card!.path) || s.length >= 10 ? s : [...s, p.card!.path]));
         else if (quick) { if (p.plus) toggleShelf(p.card.path); else { openNotes([p.card.path]); fly(p.card); } }
       } else if (p.mode === 'ui' && quick) {
         const el = document.elementFromPoint(p.x, p.y) as HTMLElement | null;
@@ -358,6 +388,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
     space.addEventListener('pointerdown', pd); window.addEventListener('pointermove', pm); window.addEventListener('pointerup', pu);
     space.addEventListener('wheel', wheel, { passive: false });
     const key = (e: KeyboardEvent) => {
+      if (studyRef.current) return; // Çalışma masası kendi tuşlarını yönetir
       const inInput = (e.target as HTMLElement)?.tagName === 'INPUT';
       if (e.key === 'Escape') { cbRef.current.onClose(); return; }
       if (inInput) { if (e.key === 'Enter') { const m = nodesRef.current.filter(n => n.match); if (m.length && m.length < nodesRef.current.length) { const c = cam.current; m.sort((a, b) => Math.hypot(a.X - c.x, a.Y - c.y, a.Z - c.z) - Math.hypot(b.X - c.x, b.Y - c.y, b.Z - c.z)); fly(m[0]); } } return; }
@@ -378,7 +409,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
 
   // ---- el kontrolü (isteğe bağlı): çimdik = tıkla / tut-sürükle, iki elle aç-kapa = ileri/geri
   useEffect(() => {
-    if (!handsOn) { curRefs.current.forEach(c => { if (c) c.style.display = 'none'; }); return; }
+    if (!handsActive) { curRefs.current.forEach(c => { if (c) c.style.display = 'none'; }); return; }
     let alive = true, raf = 0, stream: MediaStream | null = null, lm: import('@mediapipe/tasks-vision').HandLandmarker | null = null, lastVT = -1, lastDet = 0, lastT = performance.now(), prevDist = 0;
     const bank = new HandBank(); const ptrs = new Map<string, Ptr>();
     const video = videoRef.current!;
@@ -466,7 +497,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
     };
     raf = requestAnimationFrame(loop);
     return () => { alive = false; cancelAnimationFrame(raf); try { stream?.getTracks().forEach(t => t.stop()); } catch { /* yoksay */ } for (const p of ptrs.values()) act.current.pup(p); curRefs.current.forEach(c => { if (c) c.style.display = 'none'; }); };
-  }, [handsOn]);
+  }, [handsActive]);
 
   const cards = useMemo(() => nodes.map(n => (
     <div key={n.path} className="ns-card" ref={el => { n.el = el; }} data-path={n.path} style={{ ['--h' as any]: n.hue, display: 'none' }}>
@@ -484,13 +515,38 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
       <video ref={videoRef} muted playsInline style={{ position: 'absolute', width: 2, height: 2, opacity: 0, pointerEvents: 'none' }} />
       <div ref={spaceRef} className="ns-space"><canvas ref={linkRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 0 }} />{cards}</div>
       <div className="ns-top">
-        <span className="ns-title">Not uzayı · {nodes.length} not</span>
+        <span className="ns-title">Not uzayı · {nodes.length}{selFolders.length + selTags.length ? ` / ${meta.total}` : ''} not</span>
         <label className="ns-search"><Search size={13} /><input value={q} onChange={e => setQ(e.target.value)} placeholder="Ara (Enter: en yakına uç)" /></label>
+        <button type="button" className={`ns-btn${filterOpen || selFolders.length + selTags.length ? ' on' : ''}`} onClick={() => setFilterOpen(v => !v)} aria-pressed={filterOpen}><Filter size={13} /> Filtre{selFolders.length + selTags.length ? ` (${selFolders.length + selTags.length})` : ''}</button>
         {status && <span style={{ color: '#ffd37f' }}>{status}</span>}
         <button type="button" className={`ns-btn${handsOn ? ' on' : ''}`} onClick={toggleHands} aria-pressed={handsOn}><Hand size={13} /> El kontrolü: {handsOn ? 'açık' : 'kapalı'}</button>
         <button type="button" className="ns-btn" onClick={() => cbRef.current.onClose()} aria-label="Kapat"><X size={14} /></button>
       </div>
 
+      {filterOpen && (
+        <div className="ns-filter" data-agent-ignore="1">
+          <div className="ns-fh">Klasörler <span>(seçilenlerden herhangi biri)</span></div>
+          <div className="ns-chips">
+            {[...meta.folders.entries()].sort((a, b) => b[1] - a[1]).map(([f, c]) => (
+              <button key={f || '_kok'} type="button" className={`ns-fchip${selFolders.includes(f) ? ' on' : ''}`} onClick={() => setSelFolders(x => (x.includes(f) ? x.filter(y => y !== f) : [...x, f]))}>{f || '(Kök)'}<i>{c}</i></button>
+            ))}
+          </div>
+          <div className="ns-fh">Etiketler <span>(seçilenlerin hepsini içeren)</span></div>
+          <input className="ns-ftag" value={tagQ} onChange={e => setTagQ(e.target.value)} placeholder="Etiket ara…" />
+          <div className="ns-chips">
+            {[...selTags, ...[...meta.tags.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t).filter(t => !selTags.includes(t) && (!tagQ.trim() || t.includes(tagQ.trim().toLowerCase().replace(/^#/, '')))).slice(0, 60)].map(t => (
+              <button key={t} type="button" className={`ns-fchip${selTags.includes(t) ? ' on' : ''}`} onClick={() => setSelTags(x => (x.includes(t) ? x.filter(y => y !== t) : [...x, t]))}>#{t}<i>{meta.tags.get(t) || 0}</i></button>
+            ))}
+            {meta.tags.size === 0 && <span style={{ opacity: 0.6 }}>Notlarda #etiket bulunamadı.</span>}
+          </div>
+          <div className="ns-fa">
+            <button type="button" className="ns-btn" disabled={!selFolders.length && !selTags.length} onClick={() => { setSelFolders([]); setSelTags([]); }}>Filtreyi temizle</button>
+            <span>{nodes.length} / {meta.total} not</span>
+            <button type="button" className="ns-btn" onClick={() => setFilterOpen(false)}>Kapat</button>
+          </div>
+        </div>
+      )}
+      {nodes.length === 0 && <div className="ns-empty">Filtreye uyan not yok. Filtreyi gevşetin ya da temizleyin.</div>}
       {open.length > 0 && (
         <div className="ns-panels" style={{ width: `min(${Math.min(open.length, 4) * 430}px, 94vw, 80vw)` }}>
           {open.map(p => (
@@ -521,9 +577,11 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
         {shelf.map(p => <span key={p} className="ns-chip"><span title={p}>{titleOf(p)}</span><b onClick={() => toggleShelf(p)}>×</b></span>)}
         {shelf.length > 0 && <>
           <button type="button" className="ns-btn" onClick={() => openNotes(shelf)}><Columns2 size={13} /> Yan yana aç ({Math.min(shelf.length, 4)})</button>
+          <button type="button" className="ns-btn on" onClick={() => setStudy(shelf.slice(0, SHELF_MAX))}><LayoutGrid size={13} /> Çalışma masası ({Math.min(shelf.length, SHELF_MAX)})</button>
           <button type="button" className="ns-btn" onClick={() => setShelf([])} aria-label="Rafı boşalt"><Trash2 size={13} /></button>
         </>}
       </div>
+      {study && <StudyTable files={files} paths={study} onOpenInApp={(p) => cbRef.current.onOpenInApp(p)} onBack={() => setStudy(null)} onClose={() => cbRef.current.onClose()} />}
       <div ref={ghostRef} className="ns-ghost" />
       <div ref={el => { curRefs.current[0] = el; }} className="ns-cur" /><div ref={el => { curRefs.current[1] = el; }} className="ns-cur" />
       <div className="ns-hint">El: işaret parmağın açık, diğerleri kapalıyken nota doğrult = aç (halka dolunca) · yumruk = uzayı tut (sürükle = kaydır, yaklaştır/uzaklaştır = ileri-geri) · barış işareti = başa dön · Tekerlek / ↑↓: ileri-geri · Sürükle: kaydır · Tıkla: aç · Ctrl+tık: rafa al · Esc: kapat</div>

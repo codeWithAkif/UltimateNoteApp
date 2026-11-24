@@ -1154,15 +1154,15 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
 
       {open && (
         <div role="dialog" aria-label="Asistan" style={{ position: 'fixed', right: 0, bottom: 0, ...(wide ? { height: '66vh', borderTop: border, borderTopLeftRadius: '10px' } : { top: 0 }), width: 'min(430px, 100vw)', background: 'var(--bg-secondary)', borderLeft: border, display: 'flex', flexDirection: 'column', zIndex: 2147482000, boxShadow: '-8px 0 30px rgba(0,0,0,0.35)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderBottom: border }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 8px', padding: '10px 12px', borderBottom: border }}>
             <JarvisCore state={coreState} size={34} level={coreLevel} />
-            <div style={{ fontWeight: 500, flex: 1 }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>
+            <div style={{ fontWeight: 500, flex: '1 1 90px', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Asistan <span style={lab}>· {screenById(tab)?.ad || tab}</span></div>
             <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px', background: auto ? 'var(--accent-color)' : undefined, color: auto ? '#fff' : undefined }} onClick={toggleAuto} title={auto ? 'Otomatik: net işlemler sormadan yapılır. Kapatmak için dokunun.' : 'Sor: her işlem için onay istenir. Otomatik için dokunun.'}>{auto ? '⚡ Otomatik' : 'Sor'}</button>
-            {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => void startVoice()} title="Sesli mod: konuşarak sürekli sohbet" aria-label="Sesli mod"><Mic size={13} /> Sesli</button>}
-            {wide && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>}
-            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => setSpace(true)} title="Not uzayı: tüm notlarınız önünüzde yüzer; tıklayıp sağda açın, rafa toplayıp yan yana okuyun (Ctrl+Shift+U)" aria-label="Not uzayını aç"><Orbit size={13} /> Uzay</button>
+            {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => void startVoice()} title="Sesli mod: konuşarak sürekli sohbet" aria-label="Sesli mod"><Mic size={13} /></button>}
+            {wide && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /></button>}
+            <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => setSpace(true)} title="Not uzayı: tüm notlarınız önünüzde yüzer; tıklayıp sağda açın, rafa toplayıp yan yana okuyun (Ctrl+Shift+U)" aria-label="Not uzayını aç"><Orbit size={13} /></button>
             <button type="button" style={{ ...btn, padding: '4px 7px', background: voiceCfg ? 'var(--accent-color)' : undefined, color: voiceCfg ? '#fff' : undefined }} onClick={() => setVoiceCfg(v => !v)} title="Ses ayarları: Azure doğal Türkçe sesi" aria-label="Ses ayarları" aria-pressed={voiceCfg}><Settings2 size={14} /></button>
-            <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
+            <button type="button" style={{ ...btn, padding: '4px 7px', flexShrink: 0, order: 2 }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat" title="Kapat (aşağıdaki simgeye iner; Ctrl+K ile geri açılır)"><X size={14} /></button>
           </div>
           {voiceCfg && <AzureVoiceSettings />}
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
