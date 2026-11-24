@@ -32,7 +32,7 @@ const CSS = `
 .holo-card .t{font-size:13px;font-weight:500;line-height:1.25;overflow-wrap:anywhere}
 .holo-card .s{font-size:11px;opacity:.7;margin-top:2px}
 .holo-card.orb .t{font-size:12px}
-.holo-ui{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#7fdcff;pointer-events:none}
+.holo-ui{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 160px 12px 16px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#7fdcff;pointer-events:none}
 .holo-x.on{background:rgba(0,120,160,.7);border-color:#7fe6ff}.holo-x{pointer-events:auto;cursor:pointer;margin-left:auto;background:rgba(0,40,60,.6);border:1px solid rgba(0,200,255,.4);color:#bfeeff;border-radius:8px;padding:6px 9px;display:inline-flex}
 .holo-root.briefing .holo-card{opacity:.1;transition:opacity .4s}.holo-card{transition:opacity .4s}.holo-brief{position:absolute;left:50%;top:62%;transform:translate(-50%,-50%);width:min(560px,86vw);padding:28px 34px;border-radius:18px;background:rgba(4,22,36,.82);border:1px solid rgba(0,200,255,.55);box-shadow:0 0 60px rgba(0,190,255,.28),inset 0 0 40px rgba(0,190,255,.1);backdrop-filter:blur(10px);text-align:center;pointer-events:none}
 .holo-brief .bt{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:#7fdcff}

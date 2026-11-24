@@ -49,7 +49,7 @@ export function analyze(p: P[]): HandShape {
 
   let gesture: Gesture = 'diger';
   // Çimdik: uçlar birleşik ve işaret ucu avuca kıvrılmamış (yumrukta başparmak işaretin üstüne yatar, bu çimdik sayılmaz)
-  const pinching = pinch < 0.42 && d(p[8], p[0]) > size * 0.9;
+  const pinching = pinch < 0.42 && d(p[8], palm) > size * 0.8; // yumrukta işaret ucu avuca yapışıktır; çimdikte avuçtan uzaktır (bilek mesafesi kameraya dönükken yanıltıyordu)
   if (pinching) gesture = 'cimdik';
   else if (idx && midF && ring && pinky) gesture = 'acik';
   else if (idx && midF && !ring && !pinky) gesture = 'zafer';
