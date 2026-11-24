@@ -576,6 +576,9 @@ ipcMain.handle('list-media-files', async () => {
 
 // IPC Handler: Şirket proje yönetim uygulamasından "bana atanan işler" (bkz. taskSource.cjs). E-posta/şifre işletim sistemi anahtar zinciriyle
 // şifreli dosyada saklanır (Google ayarlarıyla aynı yöntem); renderer'a ŞİFRE ASLA GERİ DÖNMEZ, giriş burada yapılır.
+// Azure AI Speech sesi (anahtar safeStorage'da, istek bu süreçten; bkz. azureSpeech.cjs)
+require('./azureSpeech.cjs').register({ ipcMain, app, safeStorage, net, fs, path });
+
 const taskSource = require('./taskSource.cjs');
 const taskSourceCredPath = () => path.join(app.getPath('userData'), 'task-source-credentials.enc');
 const readTaskSourceCreds = () => {

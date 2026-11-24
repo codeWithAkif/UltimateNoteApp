@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { X, Settings2 } from 'lucide-react';
 import JarvisCore, { type CoreState } from './JarvisCore';
+import AzureVoiceSettings from './AzureVoiceSettings';
 
 const LABEL: Record<CoreState, string> = { idle: 'Hazır', listening: 'Dinliyorum…', thinking: 'Düşünüyorum…', speaking: 'Konuşuyorum…', acting: 'Uygulamayı kullanıyorum…' };
 
@@ -34,6 +35,7 @@ export default function VoiceMode({ state, level, user, reply, note, wake, canWa
         <div style={{ ...bubble, textAlign: 'left', pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12.5px' }}>
           <label style={{ display: 'flex', gap: '6px', alignItems: 'center' }}><input type="checkbox" checked={gv} onChange={(e) => onGv(e.target.checked)} /> Gemini sesi kullan (daha doğal, ama ücretsiz kotayı hızlı doldurur)</label>
           {canWake && <label style={{ display: 'flex', gap: '6px', alignItems: 'center' }}><input type="checkbox" checked={wake} onChange={(e) => onWake(e.target.checked)} /> “Ultran” deyince sesli modu aç (uygulama açıkken dinler)</label>}
+          <AzureVoiceSettings compact />
           <div style={{ opacity: 0.6 }}>Kapatmak için “tamam” ya da “dur” de</div>
         </div>
       )}

@@ -61,6 +61,10 @@ export interface ElectronAPI {
   restartAndInstall: (opts?: { silent?: boolean }) => Promise<{ success: boolean }>;
   checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
   onWebResearch?: (callback: (text: string) => void) => () => void;
+  azureSpeechSave?: (cfg: { key: string; region: string; voice?: string }) => Promise<{ ok: boolean; error?: string }>;
+  azureSpeechStatus?: () => Promise<{ has: boolean; region: string; voice: string }>;
+  azureSpeechClear?: () => Promise<{ ok: boolean }>;
+  azureSpeechSpeak?: (text: string) => Promise<{ ok: boolean; base64?: string; mime?: string; error?: string }>;
   transcriptScan?: (folder?: string) => Promise<{ success: boolean; folder?: string; error?: string; files: { path: string; name: string; mtimeMs: number; size: number }[] }>;
   transcriptRead?: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
   transcriptPickFolder?: () => Promise<string | null>;

@@ -73,6 +73,16 @@ const GV_KEY = 'assistant_gemini_voice_v1';
 export const useGeminiVoice = (): boolean => { try { return localStorage.getItem(GV_KEY) === '1'; } catch { return false; } };
 export const setGeminiVoice = (v: boolean) => { try { localStorage.setItem(GV_KEY, v ? '1' : '0'); } catch { /* yoksay */ } };
 
+// Azure Neural sesi (Edge'in doğal Türkçe sesleri, Ahmet/Emel). Anahtar Electron ana sürecinde korumalı depoda durur; yalnızca masaüstünde vardır.
+// Açıkken önce bu denenir; anahtar/kota/ağ hatasında sırayla Gemini sesine (açıksa), sonra cihaz sesine düşülür.
+const AZ_KEY = 'assistant_azure_voice_v1';
+export const azureAvailable = (): boolean => typeof window !== 'undefined' && !!window.electron?.azureSpeechSpeak;
+export const useAzureVoice = (): boolean => { try { return localStorage.getItem(AZ_KEY) === '1'; } catch { return false; } };
+export const setAzureVoice = (v: boolean) => { try { localStorage.setItem(AZ_KEY, v ? '1' : '0'); } catch { /* yoksay */ } };
+let lastErr = '';
+/** Son okumada Azure'dan gelen hata (boşsa sorun yok); arayüz "neden başka ses çaldı" demek için gösterebilir */
+export const lastSpeakError = (): string => lastErr;
+
 export interface Speaking { done: Promise<void>; stop: () => void; /** Çalan sesin anlık seviyesi (cihaz sesinde yok: undefined) */ level?: () => number | undefined }
 
 /** Metni okur. Gemini anahtarı varsa doğal ses, hata ya da anahtar yoksa cihazın kendi Türkçe sesi. */
@@ -95,6 +105,23 @@ export function speak(text: string): Speaking {
     } catch { resolve(); }
   });
   const done = (async () => {
+    if (useAzureVoice() && azureAvailable()) {
+      try {
+        const r = await window.electron.azureSpeechSpeak!(text.slice(0, 1500));
+        if (stopped) return;
+        if (r.ok && r.base64) {
+          const bin = atob(r.base64), bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const url = URL.createObjectURL(new Blob([bytes], { type: r.mime || 'audio/mpeg' }));
+          audio = new Audio(url);
+          meter = makeMeter(audio, true);
+          await new Promise<void>((resolve) => { audio!.onended = () => resolve(); audio!.onerror = () => resolve(); void audio!.play().catch(() => resolve()); });
+          URL.revokeObjectURL(url); lastErr = '';
+          return;
+        }
+        lastErr = r.error || 'Azure sesi üretilemedi.';
+      } catch { lastErr = 'Azure sesi çalınamadı.'; }
+    }
     if (getGeminiApiKey() && useGeminiVoice()) {
       try {
         const { audioBase64, mimeType } = await synthesizeSpeech(text.slice(0, 900), ASSISTANT_VOICE);

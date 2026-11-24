@@ -1,5 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Hand, Orbit, Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
+import { Hand, Orbit, Settings2, Sparkles, X, Send, Check, Mic, Navigation, FileText, Bell, Repeat, MousePointerClick, RefreshCw, Undo2, Trash2, Square } from 'lucide-react';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
 import '@fontsource/inter/latin-ext-400.css';
@@ -10,6 +10,7 @@ import { buildBriefing } from '../services/assistant/dayBriefing';
 import JarvisCore, { type CoreState } from './JarvisCore';
 import { canRecord, canTranscribe, startRecording, transcribe, speak, useGeminiVoice, setGeminiVoice, type Recording, type Speaking } from '../services/assistant/voice';
 import VoiceMode from './VoiceMode';
+import AzureVoiceSettings from './AzureVoiceSettings';
 import type { DeskCard } from './HoloDesk';
 // El kontrolü (MediaPipe) yalnızca açılınca yüklenir: uygulamanın açılışını yavaşlatmaz
 const HoloDesk = React.lazy(() => import('./HoloDesk'));
@@ -117,6 +118,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
   // Jarvis masası (el kontrolü): ekranlar küre, bugünün açık işleri kart olarak gelir
   const [holo, setHolo] = useState(false);
   const [holoBrief, setHoloBrief] = useState(false);
+  const [voiceCfg, setVoiceCfg] = useState(false); // ses ayarları (Azure anahtarı) paneli
   const [space, setSpace] = useState(false); // Not uzayı: notlar derinlikte yüzen kartlar
   const deskCards = useMemo<DeskCard[]>(() => {
     const orbs: [string, number][] = [['notes', 200], ['calendar', 170], ['tasks', 280], ['projects', 35], ['budget', 140], ['shopping', 20], ['dashboard', 320], ['aichat', 250]];
@@ -693,7 +695,7 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
       const history: ChatTurn[] = msgs.slice(-6).map(m => ({ role: m.role, text: m.text }));
       const res = await askRouter({ ctx: { tab, noteOpen, notePath: activeNotePath || undefined, now: new Date(), projeler: [...projectMapRef.current.keys()], musteriler: [...clientMapRef.current.keys()], durumlar: columnsFor(), finKategoriler: financeCategoryNames, butceOzet: butceOzet(), ortamDurum: (() => { const st = ambientAudioService.getState(); const on = AMBIENT_SOUNDS.filter(s => st.playingMap[s.id] && st.isGlobalPlaying && !st.isMuted).map(s => `${s.name} %${Math.round((st.volumeMap[s.id] ?? 0) * 100)}`); return on.join(', '); })(), verimOzet: productivitySummary(filesRef.current, new Date()), gunOzet: (() => { const n = new Date(); const t = todayYmd(); return daySummary(filesRef.current, n, parseReminders(filesRef.current).filter(r => r.tarih === t).map(r => ({ saat: r.saat, baslik: r.baslik }))); })() }, history, message: voiceRef.current ? `${message}
 
-[Sesli konuşma: cevabın sesli okunacak, en çok 2 kısa cümle yaz. Bir iş için gerekli bilgi eksikse (saat, kiminle, ne hakkında) tahmin etme; tek kısa soru sor, cevabı bir sonraki mesajda gelecek.]` : message });
+[Sesli konuşma: cevabın sesli okunacak, en çok 2 kısa cümle yaz. Tarih/saat/tutar gibi ZORUNLU bilgi eksikse tek kısa soru sor; kiminle/ne hakkında gibi isteğe bağlı bilgiyi sorma, genel başlıkla ekle. Aynı şeyi ikinci kez sorma.]` : message });
       // Notlarımla Sohbet: not sorusu salt okunur olduğundan onay kartı olmadan, notlar aranıp cevap doğrudan yazılır.
       const ask = res.eylemler.find(a => a.tur === 'not_sor');
       let answerText = '';
@@ -1159,8 +1161,10 @@ export default function AppAssistant({ ready, tab, onNavigate, activeNotePath, f
             {(SpeechCls || canRecord()) && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => void startVoice()} title="Sesli mod: konuşarak sürekli sohbet" aria-label="Sesli mod"><Mic size={13} /> Sesli</button>}
             {wide && <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => { setHoloBrief(false); setHolo(true); }} title="Jarvis masası: elinizi kamerayla izler, çimdikle ekranları açarsınız (Ctrl+Shift+J)" aria-label="Jarvis masasını aç"><Hand size={13} /> El</button>}
             <button type="button" style={{ ...btn, padding: '4px 8px', fontSize: '11.5px' }} onClick={() => setSpace(true)} title="Not uzayı: tüm notlarınız önünüzde yüzer; tıklayıp sağda açın, rafa toplayıp yan yana okuyun (Ctrl+Shift+U)" aria-label="Not uzayını aç"><Orbit size={13} /> Uzay</button>
+            <button type="button" style={{ ...btn, padding: '4px 7px', background: voiceCfg ? 'var(--accent-color)' : undefined, color: voiceCfg ? '#fff' : undefined }} onClick={() => setVoiceCfg(v => !v)} title="Ses ayarları: Azure doğal Türkçe sesi" aria-label="Ses ayarları" aria-pressed={voiceCfg}><Settings2 size={14} /></button>
             <button type="button" style={{ ...btn, padding: '4px 7px' }} onClick={() => setOpenP(false)} aria-label="Asistanı kapat"><X size={14} /></button>
           </div>
+          {voiceCfg && <AzureVoiceSettings />}
           <div style={{ display: 'flex', gap: '2px', padding: '0 12px', borderBottom: border }}>
             {([['sohbet', 'Sohbet'], ['kurallar', `Otomasyon ve alarm${rules.length + alarms.length ? ` (${rules.length + alarms.length})` : ''}`]] as ['sohbet' | 'kurallar', string][]).map(([id, t]) => (
               <button key={id} type="button" onClick={() => setView(id)} style={{ background: 'none', border: 'none', borderBottom: `2px solid ${view === id ? 'var(--accent-color)' : 'transparent'}`, color: view === id ? 'var(--text-primary)' : 'var(--text-muted)', padding: '8px 10px', fontSize: '13px', fontWeight: view === id ? 500 : 400, cursor: 'pointer', fontFamily: 'inherit' }}>{t}</button>
