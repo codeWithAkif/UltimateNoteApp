@@ -49,3 +49,11 @@ export const resolveLinks = (files: Record<string, string>, path: string): { out
   const back = paths.filter(p => p !== path && linkTargets(files[p] || '').includes(mine));
   return { out: [...new Set(out)], back };
 };
+
+/** Ezber kartları: notta `[card: soru || cevap]` (isteğe bağlı `[srs: boxN, tarih]`) biçiminde yazılır (FlashcardView ile aynı biçim). */
+export interface DeskCard { q: string; a: string; box: number }
+export const parseCards = (text: string): DeskCard[] => {
+  const out: DeskCard[] = [], re = /\[card:\s*([^\]]+?)\s*\|\|\s*([^\]]+?)\s*\](?:\s*\[srs:\s*box(\d+),\s*\d{4}-\d{2}-\d{2}\s*\])?/;
+  for (const line of text.split('\n')) { const m = re.exec(line); if (m) out.push({ q: m[1].trim(), a: m[2].trim(), box: m[3] ? parseInt(m[3]) : 1 }); }
+  return out;
+};

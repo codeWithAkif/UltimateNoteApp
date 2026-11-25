@@ -4,6 +4,8 @@ import {
   Briefcase, Code, Heart, Star, BookOpen, Sparkles, Coffee, Rocket, Smile, HelpCircle,
   ChevronLeft, ChevronRight, ChevronDown, Sun, Moon, Layout, Award
 } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
+import { openStudyDesk } from '../services/studyDesk';
 import { type DevPath, getRankForXp, getAllSystemNoteNames } from '../devPaths';
 import { type PunctualityState, getPunctualityLabel, computeSavedTimeStats } from '../punctuality';
 import PunctualityGauge from './PunctualityGauge';
@@ -768,6 +770,16 @@ export default function Sidebar({
               <span>Mini</span>
             </button>
             
+            <button 
+              className="footer-btn" 
+              onClick={() => openStudyDesk()}
+              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', padding: '6px 4px', fontSize: '11px', cursor: 'pointer' }}
+              title="Çalışma masası: seçtiğiniz not, kitap, dil ve ezber çalışmaları önünüzde (Ctrl+Shift+M)"
+            >
+              <LayoutGrid size={13} />
+              <span>Masa</span>
+            </button>
+
             <button 
               className="footer-btn" 
               onClick={onOpenHelp}

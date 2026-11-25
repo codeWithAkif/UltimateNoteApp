@@ -24,7 +24,7 @@ async function once(): Promise<FaceLandmarker> {
     minFaceDetectionConfidence: 0.5,
     minFacePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
-    outputFaceBlendshapes: false,
+    outputFaceBlendshapes: true, // modelin öğrendiği bakış yönü skorları (eyeLookIn/Out/Up/Down): ham iris geometrisinden çoğu zaman daha kararlı
     outputFacialTransformationMatrixes: false,
   });
   try { return await make('GPU'); }
@@ -34,7 +34,9 @@ async function once(): Promise<FaceLandmarker> {
 /** Ayna çevrilmiş (ekranda sağ = kullanıcının sağı) özellikler.
  *  nx/ny: burun ucu (0..1, video). yaw/pitch: burun ucunun göz ortasına göre kayması (göz arası mesafe biriminde): BAŞ dönüşü.
  *  gx/gy: irisin göz içindeki konumu (0..1; gx sağa baktıkça artar, gy aşağı baktıkça artar): GÖZ. İris noktaları modelde hazır gelir (478 nokta). */
-export interface FaceFeat { nx: number; ny: number; yaw: number; pitch: number; gx: number; gy: number; /** göz açıklığı (göz arası mesafeye oranla): göz kırpmayı yakalamak için */ open?: number }
+export interface FaceFeat { nx: number; ny: number; yaw: number; pitch: number; gx: number; gy: number; /** göz açıklığı (göz arası mesafeye oranla): göz kırpmayı yakalamak için */ open?: number; /** baş yana eğimi (derece): kişinin kendi sağına eğince pozitif */ roll?: number;
+  /** Aday göz sinyalleri (kalibrasyon hangisi bu kişide en iyi çalışıyorsa onu seçer): g2 = iris, göz çizgisi eksenine göre (baş eğimine dayanıklı), bx/by = modelin bakış skorları */
+  g2x?: number; g2y?: number; bx?: number; by?: number }
 
 export function detectFace(fl: FaceLandmarker, video: HTMLVideoElement, ts: number): FaceFeat | null {
   const r = fl.detectForVideo(video, ts);
@@ -45,20 +47,36 @@ export function detectFace(fl: FaceLandmarker, video: HTMLVideoElement, ts: numb
   if (eye < 0.02) return null; // yüz çok küçük/uzak: güvenilmez
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
   // Göz: iris merkezi (468 sağ göz, 473 sol göz; kullanıcıya göre) göz köşelerine ve göz kapaklarına oranla. Göz kapalıysa (göz kırpma) kare atlanır.
-  let gx = 0.5, gy = 0.5, open = 0.2;
+  let gx = 0.5, gy = 0.5, open = 0.2, g2x: number | undefined, g2y: number | undefined, bx: number | undefined, by: number | undefined;
+  const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
   if (lm.length >= 478) {
+    // Göz çizgisi eksenine göre iris: iris, göz köşelerini birleştiren doğruya izdüşürülür (yatay) ve doğrudan uzaklığına bakılır (dikey, göz genişliğine oranla). Kapak hareketine ve baş eğimine bağlı değildir.
+    const axis = (p0: any, p1: any, ir: any) => { const ux = (p1.x - p0.x) * vw, uy = (p1.y - p0.y) * vh, dx = (ir.x - p0.x) * vw, dy = (ir.y - p0.y) * vh, l2 = ux * ux + uy * uy || 1; return { t: (dx * ux + dy * uy) / l2, s: (ux * dy - uy * dx) / l2 }; };
+    const aR = axis(lm[33], lm[133], lm[468]), aL = axis(lm[362], lm[263], lm[473]);
+    if ([aR.t, aL.t, aR.s, aL.s].every(Number.isFinite)) { g2x = 1 - (aR.t + aL.t) / 2; g2y = 0.5 + (aR.s + aL.s) / 2; }
+    const bs = Object.fromEntries((r.faceBlendshapes?.[0]?.categories || []).map((c: any) => [c.categoryName, c.score]));
+    if (bs.eyeLookInLeft !== undefined) { // kişinin sağına bakınca: sol göz içe (In), sağ göz dışa (Out)
+      bx = 0.5 + ((bs.eyeLookInLeft - bs.eyeLookOutLeft) + (bs.eyeLookOutRight - bs.eyeLookInRight)) / 4;
+      by = 0.5 + ((bs.eyeLookDownLeft + bs.eyeLookDownRight) - (bs.eyeLookUpLeft + bs.eyeLookUpRight)) / 4;
+    }
     open = (Math.abs(lm[145].y - lm[159].y) + Math.abs(lm[374].y - lm[386].y)) / 2 / eye;
     const gxR = (lm[468].x - lm[33].x) / (lm[133].x - lm[33].x), gxL = (lm[473].x - lm[362].x) / (lm[263].x - lm[362].x);
     const gyR = (lm[468].y - lm[159].y) / (lm[145].y - lm[159].y), gyL = (lm[473].y - lm[386].y) / (lm[374].y - lm[386].y);
     if ([gxR, gxL, gyR, gyL].every(Number.isFinite)) { gx = 1 - (gxR + gxL) / 2; gy = (gyR + gyL) / 2; } // ayna: sağa bakınca artsın
   }
-  return { nx: 1 - nose.x, ny: nose.y, yaw: ((1 - nose.x) - (1 - mx)) / eye, pitch: (nose.y - my) / eye, gx, gy, open };
+  // Eğim: göz çizgisinin açısı. Görüntü ayna değil ham olduğundan kişinin sağ gözü (33) görüntünün solundadır; sağa eğince o göz aşağı iner. En-boy oranı açıyı bozmasın diye piksel oranıyla hesaplanır.
+  const roll = (Math.atan2((a.y - b.y) * vh, (b.x - a.x) * vw) * 180) / Math.PI;
+  return { nx: 1 - nose.x, ny: nose.y, yaw: ((1 - nose.x) - (1 - mx)) / eye, pitch: (nose.y - my) / eye, gx, gy, open, roll, g2x, g2y, bx, by };
 }
 
 /** Kalibrasyon sonucu. x = ax·taban(f), y = ay·taban(f). Katsayı sayısı modeli belirler:
  *  3 = yalnız baş [1,a,b] · 4 = baş+göz [1,a,b,g] · 6 = eski baş ikinci derece · 7 = baş+göz+kareler · 10 = tam ikinci derece.
  *  m: veri ortalaması [nx,ny,yaw,pitch,gx,gy] (merkezleme, kararlılık). eg: "göz payı" çarpanı (1 = öğrenilen). */
-export interface FaceCal { ax: number[]; ay: number[]; m?: number[]; eg?: number }
+export type GazeSrc = 'i' | 'a' | 'b'; // i: iris/göz kapakları · a: iris/göz ekseni · b: modelin bakış skorları
+export const GAZE_NAME: Record<GazeSrc, string> = { i: 'iris (kapaklara göre)', a: 'iris (göz eksenine göre)', b: 'model bakış skoru' };
+export interface FaceCal { ax: number[]; ay: number[]; m?: number[]; eg?: number; src?: GazeSrc }
+/** Seçilen göz sinyalini gx/gy yerine koyar (kalibrasyon ve çalışma aynı sinyali kullansın) */
+export const srcFeat = (src: GazeSrc | undefined, f: FaceFeat): FaceFeat => (src === 'a' && f.g2x !== undefined ? { ...f, gx: f.g2x, gy: f.g2y ?? f.gy } : src === 'b' && f.bx !== undefined ? { ...f, gx: f.bx, gy: f.by ?? f.gy } : f);
 
 type Basis = (f: FaceFeat, m: number[], k: number, eg: number) => number[];
 const tab = (a: number, b: number, g: number, k: number): number[] => {
@@ -98,13 +116,23 @@ const lsqN = (rows: number[][], ys: number[], ridge: number, lin: number): numbe
   return out;
 };
 
-export interface CalPoint { f: FaceFeat; x: number; y: number }
+/** ph: noktanın hangi aşamada işaretlendiği. 'b' birlikte (doğal bakış) · 'h' yalnız baş (gözler başa göre sabit) · 'e' yalnız göz (baş sabit) */
+export type CalPhase = 'b' | 'h' | 'e';
+export interface CalPoint { f: FaceFeat; x: number; y: number; ph?: CalPhase }
+
+/** Kare özelliklerinin ortalaması (tüm alanlar) */
+export function avgFeat(fs: FaceFeat[]): FaceFeat {
+  const o: any = {}, keys = ['nx', 'ny', 'yaw', 'pitch', 'gx', 'gy', 'g2x', 'g2y', 'bx', 'by', 'roll', 'open'] as const;
+  for (const k of keys) { const v = fs.map(f => f[k]).filter((x): x is number => typeof x === 'number'); if (v.length === fs.length && v.length) o[k] = v.reduce((a, b) => a + b, 0) / v.length; }
+  return o as FaceFeat;
+}
 
 // Taban terimlerinden hangileri GÖZ içerir (g'li): bunlar "göz payı"dır, diğerleri "baş payı"dır. Katsayı sayısına göre: 4: [g] · 7: [g,g²] · 10: [g,g²,a·g,b·g]
 const eyeTerm = (k: number, i: number): boolean => (k === 4 ? i === 3 : k === 7 ? i === 3 || i === 6 : k === 10 ? i === 3 || i === 6 || i === 8 || i === 9 : false);
 
 /** Ekran konumunu baş ve göz payı olarak ayrı verir: baş = kaba bölge (yavaş, ağır yumuşatılır), göz = bölge içi ince konum (hızlı). Toplamları mapFeat'tir. */
-export const mapParts = (c: FaceCal, f: FaceFeat): { hx: number; hy: number; ex: number; ey: number } => {
+export const mapParts = (c: FaceCal, f0: FaceFeat): { hx: number; hy: number; ex: number; ey: number } => {
+  const f = srcFeat(c.src, f0);
   const m = c.m || [0, 0, 0, 0, 0, 0], eg = c.eg ?? 1;
   const bx = baseX(f, m, c.ax.length, eg), by = baseY(f, m, c.ay.length, eg);
   let hx = 0, ex = 0, hy = 0, ey = 0;
@@ -173,4 +201,26 @@ export function fitCal(pts: CalPoint[], W?: number, H?: number, forceK?: number)
 export function calibrate(pts: CalPoint[], W: number, H: number): FaceCal | null {
   const r = fitCal(pts, W, H);
   return r.cal && Math.max(...r.errs) < Math.hypot(W, H) * 0.22 ? r.cal : null;
+}
+
+/** Göz sinyalini kişiye göre seçer: her aday için model kurulur ve birini dışarıda bırakarak (LOO) sınanır; yeni noktalarda en az hata veren seçilir.
+ *  Tüm noktalarda bulunmayan aday (ör. eski kayıtlı noktalar) elenir. Dönüş: seçilen modelin kalibrasyonu ve her adayın LOO hatası. */
+export function fitBest(pts: CalPoint[], W?: number, H?: number): { cal: FaceCal | null; errs: number[]; mean: number; src: GazeSrc; loo: Partial<Record<GazeSrc, number>> } {
+  const has = (s: GazeSrc) => s === 'i' || pts.every(p => (s === 'a' ? p.f.g2x !== undefined : p.f.bx !== undefined));
+  const loo: Partial<Record<GazeSrc, number>> = {};
+  let best: GazeSrc = 'i', bestE = Infinity;
+  for (const s of ['i', 'a', 'b'] as GazeSrc[]) {
+    if (!has(s)) continue;
+    const q = pts.map(p => ({ ...p, f: srcFeat(s, p.f) }));
+    if (!fitCal(q, W, H).cal) continue;
+    let e = 0, k = 0;
+    for (let i = 0; i < q.length; i++) { const r = fitCal(q.filter((_, j) => j !== i)); if (!r.cal) continue; const m = mapFeat(r.cal, q[i].f); e += Math.hypot(m.x - q[i].x, m.y - q[i].y); k++; }
+    if (!k) continue;
+    e /= k; loo[s] = e;
+    if (e < bestE) { bestE = e; best = s; }
+  }
+  const q = pts.map(p => ({ ...p, f: srcFeat(best, p.f) }));
+  const r = fitCal(q, W, H);
+  if (r.cal) r.cal.src = best;
+  return { ...r, src: best, loo };
 }

@@ -1,3 +1,4 @@
+import DeskButton from './DeskButton';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   BookOpen, Check, X, Search, Layers, RefreshCw, Plus, Calendar, FileText, ArrowRight, Star
@@ -1173,6 +1174,7 @@ export default function FlashcardView({
                     <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       <FileText size={11} /> {card.filePath.split('/').pop()}
                     </span>
+                    <DeskButton path={card.filePath} kind="cards" compact />
                     <button
                       onClick={() => onSelectNote(card.filePath)}
                       style={{

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, ExternalLink, Hand, Columns2, Trash2, Filter, LayoutGrid } from 'lucide-react';
 import NoteText from './NoteText';
 import StudyTable from './StudyTable';
+import { useDesk, addToDesk, clearDesk, toggleDesk } from '../services/studyDesk';
 import { noteTags, folderOf } from '../services/noteSpaceUtils';
 import { HandBank, type P } from '../services/hands/gestures';
 import { openCamera, loadLandmarker, landmarkerReady, detect } from '../services/hands/tracker';
@@ -204,7 +205,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
 
   // Yerleşim hesabı pahalı: yalnızca not listesi ya da bağlantılar değişince yapılır; içerik düzenlemeleri aynı konumları kullanır
   // Filtre: klasörler (herhangi biri) ve etiketler (hepsi). Düğümler süzülmüş kümeden kurulur; kalan notlar baştan, sıkı yerleşir
-  const [study, setStudy] = useState<string[] | null>(null); // Çalışma masası açıkken uzay duraklar
+  const [study, setStudy] = useState(false); // Çalışma masası açıkken uzay duraklar
   const studyRef = useRef(false); studyRef.current = !!study;
   const [selFolders, setSelFolders] = useState<string[]>([]);
   const [selTags, setSelTags] = useState<string[]>([]);
@@ -243,7 +244,8 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
   const linkRef = useRef<HTMLCanvasElement>(null);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState<string[]>([]);
-  const [shelf, setShelf] = useState<string[]>([]);
+  const deskItems = useDesk(); // raf = ortak çalışma masası deposu (uygulamanın her yerinden eklenebilir)
+  const shelf = useMemo(() => deskItems.map(x => x.path), [deskItems]);
   const [drop, setDrop] = useState(false);
   const [carry, setCarry] = useState(false); // bir kart elde taşınıyor: raf parlar, "buraya bırak" olduğu anlaşılsın
   const [handsOn, setHandsOn] = useState(() => { try { return window.innerWidth >= 900 && localStorage.getItem('ns-hands-off') !== '1'; } catch { return window.innerWidth >= 900; } });
@@ -271,7 +273,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
   const openNotes = (paths: string[]) => { setOpen(paths.slice(0, 4)); const w = Math.min(window.innerWidth * 0.94, Math.min(paths.length, 4) * 430, window.innerWidth * 0.8); panelW.current = paths.length ? w : 0; dirty.current = true; };
   // Raf en çok 10 not alır: Çalışma masasında büyük kartlar için
   const SHELF_MAX = 10;
-  const toggleShelf = (path: string) => setShelf(s => { if (s.includes(path)) return s.filter(x => x !== path); if (s.length >= SHELF_MAX) { setStatus(`Raf dolu (en fazla ${SHELF_MAX} not)`); setTimeout(() => setStatus(x => (x.startsWith('Raf dolu') ? '' : x)), 1800); return s; } return [...s, path]; });
+  const toggleShelf = (path: string) => { if (toggleDesk(path, 'note') === 'full') { setStatus(`Raf dolu (en fazla ${SHELF_MAX} not)`); setTimeout(() => setStatus(x => (x.startsWith('Raf dolu') ? '' : x)), 1800); } };
 
   // arama: eşleşmeyenler soluklaşır
   useEffect(() => {
@@ -368,7 +370,7 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
       if (!p.down) return; p.down = false; ghost.style.display = 'none'; setDrop(false); setCarry(false); p.card?.el?.classList.remove('held');
       const quick = performance.now() - p.t0 < 900 && p.moved < (p.hand ? 40 : 6);
       if (p.mode === 'card' && p.card) {
-        if (p.moved > 16 && overTray(p.x, p.y)) setShelf(s => (s.includes(p.card!.path) || s.length >= 10 ? s : [...s, p.card!.path]));
+        if (p.moved > 16 && overTray(p.x, p.y)) addToDesk(p.card!.path, 'note');
         else if (quick) { if (p.plus) toggleShelf(p.card.path); else { openNotes([p.card.path]); fly(p.card); } }
       } else if (p.mode === 'ui' && quick) {
         const el = document.elementFromPoint(p.x, p.y) as HTMLElement | null;
@@ -577,11 +579,11 @@ export default function NoteSpace({ files, onOpenInApp, onClose }: { files: Reco
         {shelf.map(p => <span key={p} className="ns-chip"><span title={p}>{titleOf(p)}</span><b onClick={() => toggleShelf(p)}>×</b></span>)}
         {shelf.length > 0 && <>
           <button type="button" className="ns-btn" onClick={() => openNotes(shelf)}><Columns2 size={13} /> Yan yana aç ({Math.min(shelf.length, 4)})</button>
-          <button type="button" className="ns-btn on" onClick={() => setStudy(shelf.slice(0, SHELF_MAX))}><LayoutGrid size={13} /> Çalışma masası ({Math.min(shelf.length, SHELF_MAX)})</button>
-          <button type="button" className="ns-btn" onClick={() => setShelf([])} aria-label="Rafı boşalt"><Trash2 size={13} /></button>
+          <button type="button" className="ns-btn on" onClick={() => setStudy(true)}><LayoutGrid size={13} /> Çalışma masası ({Math.min(shelf.length, SHELF_MAX)})</button>
+          <button type="button" className="ns-btn" onClick={() => clearDesk()} aria-label="Rafı boşalt"><Trash2 size={13} /></button>
         </>}
       </div>
-      {study && <StudyTable files={files} paths={study} onOpenInApp={(p) => cbRef.current.onOpenInApp(p)} onBack={() => setStudy(null)} onClose={() => cbRef.current.onClose()} />}
+      {study && <StudyTable files={files} items={deskItems} onOpenInApp={(p) => cbRef.current.onOpenInApp(p)} onBack={() => setStudy(false)} onClose={() => cbRef.current.onClose()} />}
       <div ref={ghostRef} className="ns-ghost" />
       <div ref={el => { curRefs.current[0] = el; }} className="ns-cur" /><div ref={el => { curRefs.current[1] = el; }} className="ns-cur" />
       <div className="ns-hint">El: işaret parmağın açık, diğerleri kapalıyken nota doğrult = aç (halka dolunca) · yumruk = uzayı tut (sürükle = kaydır, yaklaştır/uzaklaştır = ileri-geri) · barış işareti = başa dön · Tekerlek / ↑↓: ileri-geri · Sürükle: kaydır · Tıkla: aç · Ctrl+tık: rafa al · Esc: kapat</div>

@@ -41,6 +41,8 @@ import DatabaseView from './components/DatabaseView';
 import BrowserView from './components/BrowserView';
 import FlashcardView from './components/FlashcardView';
 import AmbientMixerView from './components/AmbientMixerView';
+import StudyDeskHost from './components/StudyDeskHost';
+import { setMusicBridge } from './services/studyDesk';
 import ForgeWorkbenchView from './components/ForgeWorkbenchView';
 import NoteMentorView from './components/NoteMentorView';
 import NotesChatView from './components/NotesChatView';
@@ -2404,6 +2406,13 @@ export default function App() {
       setIsPlaying(prev => !prev);
     }
   };
+
+  // Çalışma masasındaki radyo müzik çaları bu köprüden yönetir (işleyiciler her çizimde yenilendiği için son hâli ref'ten çağrılır)
+  const musicCtl = useRef({ pp: handlePlayPause, next: handleNextTrack, prev: handlePrevTrack });
+  musicCtl.current = { pp: handlePlayPause, next: handleNextTrack, prev: handlePrevTrack };
+  useEffect(() => {
+    setMusicBridge({ title: currentTrack?.name || '', playing: isPlaying, hasTracks: tracks.length > 0, onPlayPause: () => musicCtl.current.pp(), onNext: () => musicCtl.current.next(), onPrev: () => musicCtl.current.prev() });
+  }, [currentTrack?.name, isPlaying, tracks.length]);
 
   const handlePlayTrack = (track: Track) => {
     if (isCapacitor && track.source !== 'youtube') {
@@ -8520,6 +8529,7 @@ Sol menüdeki **Diğer Araçlar → Yardım** bölümünden tam kılavuza ulaşa
           )}
 
           <LanguageReminder fileContents={fileContents} />
+          <StudyDeskHost files={fileContents} onOpenNote={(path) => { setActiveTab('notes'); handleSetActiveNotePath(path); }} />
 
           {activeTab === 'language' && (
             <LanguageView

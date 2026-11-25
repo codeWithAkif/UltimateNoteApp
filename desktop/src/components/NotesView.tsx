@@ -1,3 +1,4 @@
+import DeskButton from './DeskButton';
 import { TASK_FLAGS, parseFlags, toggleFlagInLine, flagScoreBonus, flagChip, statusChip, inlineTagChip, type TaskFlag } from '../taskFlags';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { perfRecorder } from '../services/perfRecorder';
@@ -281,6 +282,7 @@ const NoteListPane = React.memo(function NoteListPane({
               {new Date(note.updatedAt).toLocaleDateString('tr-TR')}
             </span>
           </div>
+          <DeskButton path={note.path} kind="note" compact style={{ marginRight: 26, flexShrink: 0 }} />
           <button
             className="btn-delete-note"
             onClick={(e) => {

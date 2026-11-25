@@ -1,3 +1,4 @@
+import DeskButton from './DeskButton';
 import React, { useState } from 'react';
 import { BookOpen, Plus, X, ChevronLeft, Feather, Pencil, ScrollText, RotateCcw, CalendarPlus } from 'lucide-react';
 
@@ -483,6 +484,7 @@ export default function LibraryView({ notes, scannedContents, onOpenNote, onSave
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
                   <h2 style={{ margin: 0, fontSize: '18px' }}>{activeChapter.name.replace(/\.md$/i, '')}</h2>
+                  <DeskButton path={activeChapter.path} kind="book" compact />
                   <button
                     type="button"
                     onClick={() => onOpenNote?.(activeChapter.path)}
